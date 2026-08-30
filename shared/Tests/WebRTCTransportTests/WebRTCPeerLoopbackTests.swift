@@ -48,6 +48,85 @@ private final class DecodedVideoDimensionProbe:
     }
 }
 
+private final class DecodedVideoRTPTimestampProbe:
+    NSObject,
+    LKRTCVideoRenderer,
+    @unchecked Sendable
+{
+    struct Observation: Equatable {
+        let rtpTimestamp: UInt32
+        let width: Int
+        let height: Int
+        let markerClassification: ScreenVideoInBandMarkerClassification
+    }
+
+    private let lock = NSLock()
+    private var renderedRTPTimestamps: Set<UInt32> = []
+    private var observations: [Observation] = []
+
+    /// Models markerArmed: the cover is already installed and only bounded observations from this
+    /// point may satisfy the exact encoder-timestamp presentation proof.
+    func clearForCoveredAttempt() {
+        lock.withLock {
+            renderedRTPTimestamps.removeAll(keepingCapacity: true)
+            observations.removeAll(keepingCapacity: true)
+        }
+    }
+
+    func exactMarkerObservation(
+        matching marker: ScreenVideoInBandMarkerNonce
+    ) -> Observation? {
+        lock.withLock {
+            observations.last {
+                $0.markerClassification == .exactMarker(marker)
+            }
+        }
+    }
+
+    func realObservation(
+        sameOrNewerThan receiverRTPFloor: UInt32,
+        after receiverMarkerRTPTimestamp: UInt32
+    ) -> Observation? {
+        lock.withLock {
+            observations.last {
+                $0.markerClassification == .definitelyNotMarker
+                    && $0.rtpTimestamp != receiverMarkerRTPTimestamp
+                    && WebRTCRTPSerialComparator.isSameOrNewer(
+                        $0.rtpTimestamp,
+                        than: receiverRTPFloor
+                    )
+            }
+        }
+    }
+
+    func snapshot() -> [Observation] {
+        lock.withLock { observations }
+    }
+
+    func setSize(_: CGSize) {}
+
+    func renderFrame(_ frame: LKRTCVideoFrame?) {
+        guard let frame else { return }
+        let timestamp = UInt32(bitPattern: frame.timeStamp)
+        let observation = Observation(
+            rtpTimestamp: timestamp,
+            width: Int(frame.width),
+            height: Int(frame.height),
+            markerClassification:
+                ScreenVideoInBandMarkerClassifier.classify(frame)
+        )
+        lock.withLock {
+            if renderedRTPTimestamps.insert(timestamp).inserted {
+                observations.append(observation)
+                if observations.count > 64 {
+                    let retired = observations.removeFirst()
+                    renderedRTPTimestamps.remove(retired.rtpTimestamp)
+                }
+            }
+        }
+    }
+}
+
 private final class BoundedCallbackProbe<Value: Sendable>:
     @unchecked Sendable
 {
@@ -292,11 +371,21 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
             ),
         ]
         var firstUpdate: WebRTCScreenVideoEncodingUpdate?
+        let expectedVideoPriority = WebRTCScreenVideoPrioritySnapshot(
+            bitratePriorities: [0.5],
+            networkPriorityRawValues: [LKRTCPriority.low.rawValue]
+        )
+        let initialVideoPriority = await host
+            .screenVideoPriorityForTesting()
+        XCTAssertEqual(initialVideoPriority, expectedVideoPriority)
         for profile in profiles {
             let update = try await host.applyScreenVideoEncodingLimits(profile)
             firstUpdate = firstUpdate ?? update
             let applied = await host.screenVideoEncodingLimitsForTesting()
             XCTAssertEqual(applied, profile)
+            let preservedPriority = await host
+                .screenVideoPriorityForTesting()
+            XCTAssertEqual(preservedPriority, expectedVideoPriority)
         }
 
         let staleUpdate = try XCTUnwrap(firstUpdate)
@@ -318,6 +407,9 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
         let limitsAfterRollback =
             await host.screenVideoEncodingLimitsForTesting()
         XCTAssertEqual(limitsAfterRollback, priorLimits)
+        let priorityAfterRollback = await host
+            .screenVideoPriorityForTesting()
+        XCTAssertEqual(priorityAfterRollback, expectedVideoPriority)
 
         do {
             _ = try await host.applyScreenVideoEncodingLimits(
@@ -340,6 +432,19 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
             limitsAfterRejection,
             priorLimits,
             "Rejected limits must not mutate the last native sender profile."
+        )
+
+        _ = try await host.setScreenVideoEncodingActive(true)
+        let activeBeforeTransportUncertainty = await host
+            .screenVideoEncodingActivityForTesting()
+        XCTAssertEqual(activeBeforeTransportUncertainty, [true])
+        await host.suspendScreenMediaForTransportUncertainty()
+        let inactiveAfterTransportUncertainty = await host
+            .screenVideoEncodingActivityForTesting()
+        XCTAssertEqual(
+            inactiveAfterTransportUncertainty,
+            [false],
+            "Transport uncertainty must prove the RTP zero-video floor, not only disable the track."
         )
     }
 
@@ -1671,6 +1776,73 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
         )
     }
 
+    func testScreenMediaSuspensionNeedsExactAnswerEchoAndOlderPeerKeepsLegacyPath()
+        async throws {
+        let host = try WebRTCPeer(
+            configuration: WebRTCTransportConfiguration(role: .host, iceServers: [])
+        )
+        let viewer = try WebRTCPeer.makeHeadlessViewerForTesting(
+            configuration: WebRTCTransportConfiguration(role: .viewer, iceServers: [])
+        )
+        defer {
+            Task {
+                await host.close(reason: .normal)
+                await viewer.close(reason: .normal)
+            }
+        }
+
+        let offerTask = Task<String?, Never> {
+            for await event in host.events {
+                if case .outboundSignal(.offer(let sdp)) = event { return sdp }
+            }
+            return nil
+        }
+        try await host.start()
+        let offeredValue = await offerTask.value
+        let offered = try XCTUnwrap(offeredValue)
+        XCTAssertTrue(ScreenMediaSuspensionSDP.peerSupportsSuspension(in: offered))
+
+        let legacyOffer = offered
+            .replacingOccurrences(
+                of: ScreenMediaSuspensionSDP.attributeLine + "\r\n",
+                with: ""
+            )
+            .replacingOccurrences(
+                of: ScreenMediaSuspensionSDP.attributeLine + "\n",
+                with: ""
+            )
+        XCTAssertFalse(
+            ScreenMediaSuspensionSDP.peerSupportsSuspension(in: legacyOffer)
+        )
+
+        let answerTask = Task<String?, Never> {
+            for await event in viewer.events {
+                if case .outboundSignal(.answer(let sdp)) = event { return sdp }
+            }
+            return nil
+        }
+        try await viewer.handle(.offer(sdp: legacyOffer))
+        let answerValue = await answerTask.value
+        let answer = try XCTUnwrap(answerValue)
+        XCTAssertFalse(
+            ScreenMediaSuspensionSDP.peerSupportsSuspension(in: answer)
+        )
+        try await host.handle(.answer(sdp: answer))
+
+        let viewerNegotiated = await viewer.screenMediaSuspensionIsNegotiated()
+        let hostNegotiated = await host.screenMediaSuspensionIsNegotiated()
+        XCTAssertFalse(viewerNegotiated)
+        XCTAssertFalse(hostNegotiated)
+        do {
+            try await host.sendScreenMediaSuspensionNotice(
+                .init(screenRequestID: 1, suspensionGeneration: 1)
+            )
+            XCTFail("An unnegotiated host must never send a new control kind.")
+        } catch let error as WebRTCTransportError {
+            XCTAssertEqual(error, .transportNotHealthy)
+        }
+    }
+
     func testHostViewerLoopbackNegotiatesControlsVideoAndCloses() async throws {
         let host = try WebRTCPeer(
             configuration: WebRTCTransportConfiguration(role: .host, iceServers: [])
@@ -1913,8 +2085,25 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
         assertHighFidelityOpusPolicy(in: initialOfferAudioSections[0])
         XCTAssertTrue(initialOfferAudioSections[1].contains("a=recvonly"))
         assertIPhoneMicrophoneOpusPolicy(in: initialOfferAudioSections[1])
+        let initialOfferVideoSection = try XCTUnwrap(
+            mediaSections(kind: "video", in: initialOffer).first
+        )
+        XCTAssertNotNil(
+            initialOfferVideoSection.range(
+                of: #"a=rtpmap:\d+ H264/90000"#,
+                options: [.regularExpression, .caseInsensitive]
+            ),
+            "The marker proof must run through the pinned H.264 screen codec."
+        )
+        assertH264FeedbackAndRTX(in: initialOfferVideoSection)
 
         let initialAnswer = try XCTUnwrap(connectedSnapshot.viewerAnswers.first)
+        let hostScreenMediaNegotiated =
+            await host.screenMediaSuspensionIsNegotiated()
+        let viewerScreenMediaNegotiated =
+            await viewer.screenMediaSuspensionIsNegotiated()
+        XCTAssertTrue(hostScreenMediaNegotiated)
+        XCTAssertTrue(viewerScreenMediaNegotiated)
         let initialAnswerAudioSections = mediaSections(
             kind: "audio",
             in: initialAnswer
@@ -2040,6 +2229,11 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
         for encoding in senderEncodings {
             XCTAssertEqual(encoding.maximumBitrateBps, 192_000)
             XCTAssertNil(encoding.minimumBitrateBps)
+            XCTAssertEqual(encoding.bitratePriority, 4, accuracy: 0.000_001)
+            XCTAssertEqual(
+                encoding.networkPriorityRawValue,
+                LKRTCPriority.low.rawValue
+            )
         }
         XCTAssertNotNil(host.externalAudioCapturer)
 
@@ -2679,17 +2873,561 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
                 width: profile.width,
                 height: profile.height
             )
-            for _ in 0..<12 {
+            let timestampBase = Int64(
+                clamping: DispatchTime.now().uptimeNanoseconds
+            )
+            let sentTimestamps = (0..<12).map {
+                timestampBase + Int64($0) * 20_000_000
+            }
+            for timestamp in sentTimestamps {
                 capturer.capture(
                     pixelBuffer: pixelBuffer,
-                    timestampNanoseconds: Int64(
-                        clamping: DispatchTime.now().uptimeNanoseconds
-                    )
+                    timestampNanoseconds: timestamp
                 )
                 try await Task.sleep(for: .milliseconds(20))
             }
             await fulfillment(of: [decodedFrame], timeout: 3)
         }
+
+        // Exercise the complete negotiated same-track resume fence at the actual 32 kbps / 1 fps
+        // / 12x H.264 floor. The notice precedes the viewer cover and ordinary Hide; the marker
+        // and real frame then cross distinct encoder/receiver RTP serial domains.
+        _ = try await host.applyScreenVideoEncodingLimits(
+            WebRTCScreenVideoEncodingLimits(
+                maximumBitrateBps: 32_000,
+                maximumFramesPerSecond: 1,
+                scaleResolutionDownBy: 12
+            )
+        )
+        let suspension = WebRTCScreenMediaSuspensionNotice(
+            screenRequestID: showID,
+            suspensionGeneration: 1
+        )
+        try await host.sendScreenMediaSuspensionNotice(suspension)
+        var suspensionSnapshot = await recorder.snapshot()
+        for _ in 0..<300 where suspensionSnapshot.screenMediaSuspensions.isEmpty {
+            try await Task.sleep(for: .milliseconds(10))
+            suspensionSnapshot = await recorder.snapshot()
+        }
+        XCTAssertEqual(suspensionSnapshot.screenMediaSuspensions, [suspension])
+        XCTAssertFalse(viewerInputAuthorization.isValid)
+        XCTAssertFalse(hostInputAuthorization.isValid)
+
+        let covered = WebRTCScreenMediaCoveredAcknowledgement(
+            suspension: suspension
+        )
+        try await viewer.sendScreenMediaCoveredAcknowledgement(covered)
+        var coveredSnapshot = await recorder.snapshot()
+        for _ in 0..<300
+            where coveredSnapshot.screenMediaCoveredAcknowledgements.isEmpty {
+            try await Task.sleep(for: .milliseconds(10))
+            coveredSnapshot = await recorder.snapshot()
+        }
+        XCTAssertEqual(
+            coveredSnapshot.screenMediaCoveredAcknowledgements,
+            [covered]
+        )
+
+        let prematureAttemptID = UUID()
+        let prematureMarker = ScreenVideoInBandMarkerNonce(
+            bytes: withUnsafeBytes(of: prematureAttemptID.uuid) { Array($0) }
+        )!
+        do {
+            try await host.beginScreenMediaResumeProbeIfTransportHealthy(
+                attemptID: prematureAttemptID,
+                marker: prematureMarker,
+                boundaryRevision: 100,
+                markerInputGateIsClosed: true,
+                authorization: WebRTCControlAuthorization()
+            )
+            XCTFail("A resume probe must not open before ordinary Hide reaches Inactive.")
+        } catch let error as WebRTCTransportError {
+            XCTAssertEqual(error, .transportNotHealthy)
+        }
+
+        let suspensionHideID = try await viewer.setScreenVisible(false)
+        XCTAssertEqual(suspensionHideID, showID + 1)
+        await fulfillment(
+            of: [expectations.screenMediaHideRequestReceived],
+            timeout: 3
+        )
+        try await host.acknowledgeControlRequest(
+            id: suspensionHideID,
+            state: .inactive
+        )
+        await fulfillment(
+            of: [expectations.screenMediaHideAcknowledged],
+            timeout: 3
+        )
+        let inactiveSuspensionEncoding = await host
+            .screenVideoEncodingActivityForTesting()
+        XCTAssertEqual(inactiveSuspensionEncoding, [false])
+
+        let markerProbe = DecodedVideoRTPTimestampProbe()
+        await MainActor.run {
+            remoteVideoTrack.addRenderer(markerProbe)
+        }
+        defer {
+            Task { @MainActor in
+                remoteVideoTrack.removeRenderer(markerProbe)
+            }
+        }
+        let marker = try XCTUnwrap(
+            ScreenVideoInBandMarkerNonce(
+                bytes: [
+                    0xA6, 0xD3, 0x59, 0xC7, 0xE1, 0x8B, 0x42, 0xF0,
+                    0x9A, 0x1C, 0x73, 0xB5, 0x0D, 0x24, 0xE6, 0x08,
+                ]
+            )
+        )
+        let markerAttemptID = UUID(
+            uuidString: "A6D359C7-E18B-42F0-9A1C-73B50D24E608"
+        )!
+        let markerBuffer = try makeResumeMarkerPixelBuffer(
+            width: 480,
+            height: 960,
+            marker: marker
+        )
+        markerProbe.clearForCoveredAttempt()
+        let cancelledProbeAuthorization = WebRTCControlAuthorization()
+        let cancelledAttemptID = UUID(
+            uuidString: "A6D359C7-E18B-42F0-9A1C-73B50D24E607"
+        )!
+        let cancelledMarker = ScreenVideoInBandMarkerNonce(
+            bytes: withUnsafeBytes(of: cancelledAttemptID.uuid) { Array($0) }
+        )!
+        try await host.beginScreenMediaResumeProbeIfTransportHealthy(
+            attemptID: cancelledAttemptID,
+            marker: cancelledMarker,
+            boundaryRevision: 100,
+            markerInputGateIsClosed: true,
+            authorization: cancelledProbeAuthorization
+        )
+        await host.cancelScreenMediaResumeProbe(
+            attemptID: cancelledAttemptID,
+            reason: "Exercise covered retry."
+        )
+        XCTAssertFalse(cancelledProbeAuthorization.isValid)
+        let encodingAfterCancelledProbe = await host
+            .screenVideoEncodingActivityForTesting()
+        XCTAssertEqual(encodingAfterCancelledProbe, [false])
+
+        let parameterMutationAttemptID = UUID(
+            uuidString: "A6D359C7-E18B-42F0-9A1C-73B50D24E606"
+        )!
+        let parameterMutationAuthorization = WebRTCControlAuthorization()
+        try await host.beginScreenMediaResumeProbeIfTransportHealthy(
+            attemptID: parameterMutationAttemptID,
+            marker: ScreenVideoInBandMarkerNonce(
+                attemptID: parameterMutationAttemptID
+            ),
+            boundaryRevision: 101,
+            markerInputGateIsClosed: true,
+            authorization: parameterMutationAuthorization
+        )
+        do {
+            _ = try await host.applyScreenVideoEncodingLimits(
+                WebRTCScreenVideoEncodingLimits(
+                    maximumBitrateBps: 32_000,
+                    maximumFramesPerSecond: 1,
+                    scaleResolutionDownBy: 12
+                )
+            )
+            XCTFail("Encoding-parameter mutation must retire an active resume proof.")
+        } catch let error as WebRTCTransportError {
+            XCTAssertEqual(error, .transportNotHealthy)
+        }
+        XCTAssertFalse(parameterMutationAuthorization.isValid)
+        let encodingAfterParameterMutation = await host
+            .screenVideoEncodingActivityForTesting()
+        XCTAssertEqual(encodingAfterParameterMutation, [false])
+
+        let activityMutationAttemptID = UUID(
+            uuidString: "A6D359C7-E18B-42F0-9A1C-73B50D24E605"
+        )!
+        let activityMutationAuthorization = WebRTCControlAuthorization()
+        try await host.beginScreenMediaResumeProbeIfTransportHealthy(
+            attemptID: activityMutationAttemptID,
+            marker: ScreenVideoInBandMarkerNonce(
+                attemptID: activityMutationAttemptID
+            ),
+            boundaryRevision: 102,
+            markerInputGateIsClosed: true,
+            authorization: activityMutationAuthorization
+        )
+        do {
+            _ = try await host.setScreenVideoEncodingActive(true)
+            XCTFail("Sender-activity mutation must retire an active resume proof.")
+        } catch let error as WebRTCTransportError {
+            XCTAssertEqual(error, .transportNotHealthy)
+        }
+        XCTAssertFalse(activityMutationAuthorization.isValid)
+        let encodingAfterActivityMutation = await host
+            .screenVideoEncodingActivityForTesting()
+        XCTAssertEqual(encodingAfterActivityMutation, [false])
+
+        let probeAuthorization = WebRTCControlAuthorization()
+        try await host.beginScreenMediaResumeProbeIfTransportHealthy(
+            attemptID: markerAttemptID,
+            marker: marker,
+            boundaryRevision: 103,
+            markerInputGateIsClosed: true,
+            authorization: probeAuthorization
+        )
+        await host.cancelScreenMediaResumeProbe(
+            attemptID: cancelledAttemptID,
+            reason: "A delayed cancellation from the retired retry."
+        )
+        XCTAssertTrue(probeAuthorization.isValid)
+        let activeProbeEncoding = await host
+            .screenVideoEncodingActivityForTesting()
+        XCTAssertEqual(activeProbeEncoding, [true])
+        // A delayed stale real frame may emerge after the source barrier was installed. Marker
+        // phase must drop it; only the exact attempt nonce may become receiver-domain Tm.
+        capturer.capture(
+            pixelBuffer: pixelBuffer,
+            timestampNanoseconds: Int64(
+                clamping: DispatchTime.now().uptimeNanoseconds
+            )
+        )
+        try await Task.sleep(for: .milliseconds(100))
+        let staleFrameSnapshot = await recorder.snapshot()
+        XCTAssertFalse(staleFrameSnapshot.screenMediaProbeEvents.contains {
+            if case .markerEncoded(let proof) = $0 {
+                return proof.attemptID == markerAttemptID
+            }
+            return false
+        })
+        XCTAssertNil(
+            markerProbe.exactMarkerObservation(matching: marker),
+            "A delayed ordinary frame must not classify as the attempt nonce."
+        )
+        var markerEventSnapshot = await recorder.snapshot()
+        var markerEvents = markerEventSnapshot.screenMediaProbeEvents
+        for _ in 0..<8 where !markerEvents.contains(where: {
+            if case .markerEncoded = $0 { return true }
+            return false
+        }) {
+            capturer.capture(
+                pixelBuffer: markerBuffer,
+                timestampNanoseconds: Int64(
+                    clamping: DispatchTime.now().uptimeNanoseconds
+                )
+            )
+            try await Task.sleep(for: .milliseconds(1_050))
+            markerEventSnapshot = await recorder.snapshot()
+            markerEvents = markerEventSnapshot.screenMediaProbeEvents
+        }
+        // Keep the sender active until the exact Tm is presented: deactivation here could discard
+        // the marker in the pacer. The wrapper suppresses every later input during this bounded ACK.
+        try await Task.sleep(for: .milliseconds(1_100))
+        markerEventSnapshot = await recorder.snapshot()
+        markerEvents = markerEventSnapshot.screenMediaProbeEvents
+        let markerProofs = markerEvents.compactMap {
+            event -> ScreenVideoEncoderMarkerProof? in
+            if case .markerEncoded(let proof) = event { return proof }
+            return nil
+        }
+        let markerEncodingState = await host
+            .screenVideoEncodingActivityForTesting()
+        let encodedMarkerProof = try XCTUnwrap(
+            markerProofs.last,
+            "probeEvents=\(markerEvents) invalidations="
+                + "\(markerEventSnapshot.screenMediaInvalidations) "
+                + "encoding=\(String(describing: markerEncodingState)) "
+                + "authorizationValid=\(probeAuthorization.isValid)"
+        )
+        XCTAssertFalse(markerEvents.contains(where: {
+            if case .cancelled(let attemptID, _) = $0 {
+                return attemptID == markerAttemptID
+            }
+            return false
+        }))
+        XCTAssertEqual(encodedMarkerProof.attemptID, markerAttemptID)
+        XCTAssertEqual(encodedMarkerProof.boundaryRevision, 103)
+        let markerGeometry = WebRTCScreenMediaGeometry(
+            geometryRevision: 501,
+            captureWidth: 480,
+            captureHeight: 960
+        )
+        let markerReady = WebRTCScreenMediaMarkerReady(
+            attemptID: markerAttemptID,
+            screenRequestID: showID,
+            suspensionGeneration: suspension.suspensionGeneration,
+            encoderGeneration: encodedMarkerProof.encoderGeneration,
+            encoderMarkerRTPTimestamp: encodedMarkerProof.rtpTimestamp,
+            boundaryRevision: encodedMarkerProof.boundaryRevision,
+            geometry: markerGeometry
+        )
+        try await host.sendScreenMediaMarkerReady(
+            markerReady,
+            authorization: probeAuthorization
+        )
+        var markerReadySnapshot = await recorder.snapshot()
+        for _ in 0..<300
+            where markerReadySnapshot.screenMediaMarkerReadyValues.isEmpty {
+            try await Task.sleep(for: .milliseconds(10))
+            markerReadySnapshot = await recorder.snapshot()
+        }
+        XCTAssertEqual(
+            markerReadySnapshot.screenMediaMarkerReadyValues,
+            [markerReady]
+        )
+        // Libwebrtc applies a sender RTP offset after the encoder callback. Nominate receiver Tm
+        // only from a decoded frame that carries this exact attempt UUID nonce; a delayed ordinary
+        // frame cannot impersonate the marker merely by arriving first.
+        var decodedMarker = markerProbe.exactMarkerObservation(
+            matching: marker
+        )
+        for _ in 0..<800 where decodedMarker == nil {
+            try await Task.sleep(for: .milliseconds(10))
+            decodedMarker = markerProbe.exactMarkerObservation(
+                matching: marker
+            )
+        }
+        let exactDecodedMarker = try XCTUnwrap(
+            decodedMarker,
+            "decoded observations=\(markerProbe.snapshot())"
+        )
+        XCTAssertEqual(
+            exactDecodedMarker.markerClassification,
+            .exactMarker(ScreenVideoInBandMarkerNonce(attemptID: markerAttemptID))
+        )
+        XCTAssertTrue(
+            markerGeometry.isCompatiblePresentation(
+                width: exactDecodedMarker.width,
+                height: exactDecodedMarker.height
+            )
+        )
+        let receiverMarkerRTPTimestamp = exactDecodedMarker.rtpTimestamp
+        let markerSourceSnapshotValue = await viewer
+            .screenVideoReceiverSourceSnapshotForTesting()
+        let markerSourceSnapshot = try XCTUnwrap(markerSourceSnapshotValue)
+        XCTAssertEqual(markerSourceSnapshot.sourceIDs.count, 1)
+        XCTAssertTrue(
+            markerSourceSnapshot.rtpTimestamps.contains(
+                receiverMarkerRTPTimestamp
+            )
+        )
+        let markerSourceID = try XCTUnwrap(markerSourceSnapshot.sourceIDs.first)
+        let markerPresentation = WebRTCScreenMediaMarkerPresentation(
+            markerReady: markerReady,
+            receiverMarkerRTPTimestamp: receiverMarkerRTPTimestamp,
+            receiverID: markerSourceSnapshot.receiverID,
+            sourceID: markerSourceID,
+            presentedWidth: exactDecodedMarker.width,
+            presentedHeight: exactDecodedMarker.height
+        )
+        try await viewer.sendScreenMediaMarkerPresentation(
+            markerPresentation
+        )
+        var markerPresentationSnapshot = await recorder.snapshot()
+        for _ in 0..<300
+            where markerPresentationSnapshot
+                .screenMediaMarkerPresentations.isEmpty {
+            try await Task.sleep(for: .milliseconds(10))
+            markerPresentationSnapshot = await recorder.snapshot()
+        }
+        XCTAssertEqual(
+            markerPresentationSnapshot.screenMediaMarkerPresentations,
+            [markerPresentation]
+        )
+        try await host.beginScreenMediaRealFrameAdmission(
+            authorization: probeAuthorization
+        )
+
+        let realBuffer = try makePixelBuffer(width: 480, height: 960)
+        var realEventSnapshot = await recorder.snapshot()
+        var realEvents = realEventSnapshot.screenMediaProbeEvents
+        // The marker is a deliberately forced key frame at a 32 kbps floor. Native rate control
+        // may drop several following source frames before admitting Rr, so keep presenting the
+        // exact gated real surface at 1 fps while the proof remains live.
+        for _ in 0..<16 where !realEvents.contains(where: {
+            if case .realFrameEncoded = $0 { return true }
+            return false
+        }) {
+            capturer.capture(
+                pixelBuffer: realBuffer,
+                timestampNanoseconds: Int64(
+                    clamping: DispatchTime.now().uptimeNanoseconds
+                )
+            )
+            try await Task.sleep(for: .milliseconds(1_050))
+            realEventSnapshot = await recorder.snapshot()
+            realEvents = realEventSnapshot.screenMediaProbeEvents
+        }
+        for _ in 0..<200 where !realEvents.contains(where: {
+            if case .realFrameEncoded = $0 { return true }
+            return false
+        }) {
+            try await Task.sleep(for: .milliseconds(10))
+            realEventSnapshot = await recorder.snapshot()
+            realEvents = realEventSnapshot.screenMediaProbeEvents
+        }
+        let realProbeDebugSnapshot = await host
+            .screenVideoEncoderResumeProbeSnapshotForTesting()
+        let encodedRealProof = try XCTUnwrap(
+            realEvents.compactMap { event -> ScreenVideoEncoderRealFrameProof? in
+                if case .realFrameEncoded(let proof) = event { return proof }
+                return nil
+            }.last,
+            "probeEvents=\(realEvents) invalidations="
+                + "\(realEventSnapshot.screenMediaInvalidations) "
+                + "decoded=\(markerProbe.snapshot()) "
+                + "authorizationValid=\(probeAuthorization.isValid) "
+                + "probe=\(realProbeDebugSnapshot)"
+        )
+        XCTAssertFalse(realEvents.contains(where: {
+            if case .cancelled(let attemptID, _) = $0 {
+                return attemptID == markerAttemptID
+            }
+            return false
+        }))
+        let receiverRealFloor = receiverMarkerRTPTimestamp
+            &+ encodedRealProof.forwardDeltaFromMarker
+        let resumeReady = WebRTCScreenMediaResumeReady(
+            markerPresentation: markerPresentation,
+            encoderMarkerRTPTimestamp: encodedMarkerProof.rtpTimestamp,
+            encoderRealFrameRTPTimestamp: encodedRealProof.rtpTimestamp,
+            receiverMarkerRTPTimestamp: receiverMarkerRTPTimestamp,
+            receiverRealFrameFloorRTPTimestamp: receiverRealFloor,
+            geometry: markerGeometry
+        )
+        XCTAssertTrue(resumeReady.isValid)
+        try await host.sendScreenMediaResumeReady(
+            resumeReady,
+            authorization: probeAuthorization
+        )
+        var resumeReadySnapshot = await recorder.snapshot()
+        for _ in 0..<300
+            where resumeReadySnapshot.screenMediaResumeReadyValues.isEmpty {
+            try await Task.sleep(for: .milliseconds(10))
+            resumeReadySnapshot = await recorder.snapshot()
+        }
+        XCTAssertEqual(
+            resumeReadySnapshot.screenMediaResumeReadyValues,
+            [resumeReady]
+        )
+        var decodedReal = markerProbe.realObservation(
+            sameOrNewerThan: receiverRealFloor,
+            after: receiverMarkerRTPTimestamp
+        )
+        for _ in 0..<200 where decodedReal == nil {
+            try await Task.sleep(for: .milliseconds(10))
+            decodedReal = markerProbe.realObservation(
+                sameOrNewerThan: receiverRealFloor,
+                after: receiverMarkerRTPTimestamp
+            )
+        }
+        let exactDecodedReal = try XCTUnwrap(decodedReal)
+        XCTAssertTrue(
+            WebRTCRTPSerialComparator.isSameOrNewer(
+                exactDecodedReal.rtpTimestamp,
+                than: receiverRealFloor
+            ),
+            "Receiver RTP did not reach the affine real-frame floor."
+        )
+        XCTAssertEqual(exactDecodedReal.width, markerPresentation.presentedWidth)
+        XCTAssertEqual(exactDecodedReal.height, markerPresentation.presentedHeight)
+        XCTAssertTrue(
+            rtpTimestampIsNewer(
+                encodedRealProof.rtpTimestamp,
+                than: encodedMarkerProof.rtpTimestamp
+            )
+        )
+        let realSourceSnapshotValue = await viewer
+            .screenVideoReceiverSourceSnapshotForTesting()
+        let realSourceSnapshot = try XCTUnwrap(realSourceSnapshotValue)
+        XCTAssertEqual(realSourceSnapshot.receiverID, markerSourceSnapshot.receiverID)
+        XCTAssertEqual(realSourceSnapshot.sourceIDs, markerSourceSnapshot.sourceIDs)
+
+        let exactReceiverRealRTPTimestamp = exactDecodedReal.rtpTimestamp
+        XCTAssertTrue(
+            realSourceSnapshot.rtpTimestamps.contains(
+                exactReceiverRealRTPTimestamp
+            )
+        )
+        let realPresentation = WebRTCScreenMediaPresentation(
+            resumeReady: resumeReady,
+            presentedRTPTimestamp: exactReceiverRealRTPTimestamp,
+            receiverID: markerPresentation.receiverID,
+            sourceID: markerPresentation.sourceID,
+            presentedWidth: markerPresentation.presentedWidth,
+            presentedHeight: markerPresentation.presentedHeight
+        )
+        XCTAssertTrue(realPresentation.isValid)
+        let resumeRequestID = try await viewer.requestScreenMediaResume(
+            presentation: realPresentation
+        )
+        XCTAssertEqual(resumeRequestID, suspensionHideID + 1)
+        var resumeRequestSnapshot = await recorder.snapshot()
+        for _ in 0..<300
+            where resumeRequestSnapshot.screenMediaResumeRequests.isEmpty {
+            try await Task.sleep(for: .milliseconds(10))
+            resumeRequestSnapshot = await recorder.snapshot()
+        }
+        let resumeRequest = try XCTUnwrap(
+            resumeRequestSnapshot.screenMediaResumeRequests.last
+        )
+        XCTAssertEqual(resumeRequest.id, resumeRequestID)
+        XCTAssertEqual(resumeRequest.presentation, realPresentation)
+
+        let resumeAuthorization = try await host
+            .issueScreenMediaResumeAuthorization(
+                for: resumeRequestID,
+                authorization: probeAuthorization
+            )
+        try await host.acknowledgeScreenMediaResumedIfTransportHealthy(
+            requestID: resumeRequestID,
+            resumeAuthorization: resumeAuthorization,
+            probeAuthorization: probeAuthorization
+        )
+        var resumedSnapshot = await recorder.snapshot()
+        for _ in 0..<300
+            where resumedSnapshot.screenMediaResumedAcknowledgements.isEmpty {
+            try await Task.sleep(for: .milliseconds(10))
+            resumedSnapshot = await recorder.snapshot()
+        }
+        XCTAssertEqual(
+            resumedSnapshot.screenMediaResumedAcknowledgements,
+            [
+                WebRTCScreenMediaResumedAcknowledgement(
+                    request: resumeRequest
+                )
+            ]
+        )
+        XCTAssertFalse(probeAuthorization.isValid)
+        XCTAssertTrue(resumedSnapshot.screenMediaInvalidations.isEmpty)
+
+        let staleSuspension = WebRTCScreenMediaSuspensionNotice(
+            screenRequestID: suspension.screenRequestID,
+            suspensionGeneration: suspension.suspensionGeneration + 1
+        )
+        await host.cancelScreenMediaSuspension(
+            matching: staleSuspension,
+            reason: "Exercise delayed stale suspension cleanup."
+        )
+        try await Task.sleep(for: .milliseconds(100))
+        let afterStaleCancellation = await recorder.snapshot()
+        XCTAssertTrue(afterStaleCancellation.screenMediaInvalidations.isEmpty)
+
+        await host.cancelScreenMediaSuspension(
+            matching: suspension,
+            reason: "Exercise synchronized terminal cancellation."
+        )
+        var cancellationSnapshot = await recorder.snapshot()
+        for _ in 0..<300
+            where cancellationSnapshot.screenMediaInvalidations.count < 2 {
+            try await Task.sleep(for: .milliseconds(10))
+            cancellationSnapshot = await recorder.snapshot()
+        }
+        XCTAssertEqual(cancellationSnapshot.screenMediaInvalidations.count, 2)
+        let hostNegotiatedAfterCancellation =
+            await host.screenMediaSuspensionIsNegotiated()
+        let viewerNegotiatedAfterCancellation =
+            await viewer.screenMediaSuspensionIsNegotiated()
+        XCTAssertTrue(hostNegotiatedAfterCancellation)
+        XCTAssertTrue(viewerNegotiatedAfterCancellation)
 
         let hideID = try await viewer.setScreenVisible(false)
         do {
@@ -2701,7 +3439,7 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
         await fulfillment(of: [expectations.hideRequestReceived], timeout: 3)
         XCTAssertFalse(viewerInputAuthorization.isValid)
         XCTAssertFalse(hostInputAuthorization.isValid)
-        XCTAssertEqual(hideID, showID + 1)
+        XCTAssertEqual(hideID, showID + 3)
 
         do {
             try await host.acknowledgeControlRequest(id: showID, state: .active)
@@ -2712,6 +3450,9 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
 
         try await host.acknowledgeControlRequest(id: hideID, state: .inactive)
         await fulfillment(of: [expectations.hideAcknowledged], timeout: 3)
+        let inactiveVideoAfterHide = await host
+            .screenVideoEncodingActivityForTesting()
+        XCTAssertEqual(inactiveVideoAfterHide, [false])
         let hideSnapshot = await recorder.snapshot()
         XCTAssertEqual(hideSnapshot.controlRequests.last, .init(id: hideID, command: .hideScreen))
         XCTAssertEqual(
@@ -2728,9 +3469,12 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
         // Repeating an identical host acknowledgement is safe. The wire replay is suppressed at
         // the viewer, while a contradictory acknowledgement for the same ID fails closed.
         try await host.acknowledgeControlRequest(id: hideID, state: .inactive)
+        let inactiveVideoAfterDuplicateHide = await host
+            .screenVideoEncodingActivityForTesting()
+        XCTAssertEqual(inactiveVideoAfterDuplicateHide, [false])
         try await Task.sleep(for: .milliseconds(100))
         let duplicateSnapshot = await recorder.snapshot()
-        XCTAssertEqual(duplicateSnapshot.controlAcknowledgements.count, 2)
+        XCTAssertEqual(duplicateSnapshot.controlAcknowledgements.count, 3)
         do {
             try await host.acknowledgeControlRequest(id: hideID, state: .active)
             XCTFail("A contradictory acknowledgement must be rejected.")
@@ -3152,9 +3896,11 @@ private enum LoopbackMilestone: Hashable, Sendable {
     case inputRequestReceived
     case inputFeedbackReceived
     case showRequestReceived
+    case screenMediaHideRequestReceived
     case hideRequestReceived
     case keyFrameRequestReceived
     case showAcknowledged
+    case screenMediaHideAcknowledged
     case hideAcknowledged
     case keyFrameAcknowledged
     case secondOfferEmitted
@@ -3220,6 +3966,18 @@ private struct LoopbackSnapshot: Sendable {
     let viewerAnswers: [String]
     let hostCandidates: [RemoteICECandidate]
     let viewerCandidates: [RemoteICECandidate]
+    let screenMediaSuspensions: [WebRTCScreenMediaSuspensionNotice]
+    let screenMediaCoveredAcknowledgements:
+        [WebRTCScreenMediaCoveredAcknowledgement]
+    let screenMediaMarkerReadyValues: [WebRTCScreenMediaMarkerReady]
+    let screenMediaMarkerPresentations:
+        [WebRTCScreenMediaMarkerPresentation]
+    let screenMediaResumeReadyValues: [WebRTCScreenMediaResumeReady]
+    let screenMediaResumeRequests: [WebRTCScreenMediaResumeRequest]
+    let screenMediaResumedAcknowledgements:
+        [WebRTCScreenMediaResumedAcknowledgement]
+    let screenMediaProbeEvents: [ScreenVideoEncoderResumeProbeEvent]
+    let screenMediaInvalidations: [String]
 
     var hasAllConnectionMilestones: Bool {
         milestones.isSuperset(of: [
@@ -3260,6 +4018,23 @@ private actor LoopbackRecorder {
         [WebRTCMacHostedCallChallenge] = []
     private var receivedMacHostedCallEvidence:
         [WebRTCMacHostedCallEvidence] = []
+    private var screenMediaSuspensions:
+        [WebRTCScreenMediaSuspensionNotice] = []
+    private var screenMediaCoveredAcknowledgements:
+        [WebRTCScreenMediaCoveredAcknowledgement] = []
+    private var screenMediaMarkerReadyValues:
+        [WebRTCScreenMediaMarkerReady] = []
+    private var screenMediaMarkerPresentations:
+        [WebRTCScreenMediaMarkerPresentation] = []
+    private var screenMediaResumeReadyValues:
+        [WebRTCScreenMediaResumeReady] = []
+    private var screenMediaResumeRequests:
+        [WebRTCScreenMediaResumeRequest] = []
+    private var screenMediaResumedAcknowledgements:
+        [WebRTCScreenMediaResumedAcknowledgement] = []
+    private var screenMediaProbeEvents:
+        [ScreenVideoEncoderResumeProbeEvent] = []
+    private var screenMediaInvalidations: [String] = []
 
     func observe(
         _ event: WebRTCTransportEvent,
@@ -3300,11 +4075,13 @@ private actor LoopbackRecorder {
                         : .postRestartShowRequestReceived
                 )
             case .hideScreen:
-                observed.append(
-                    controlRequests.filter { $0.command == .hideScreen }.count == 1
-                        ? .hideRequestReceived
-                        : .recoveryProbeRequestReceived
-                )
+                switch controlRequests.filter({
+                    $0.command == .hideScreen
+                }).count {
+                case 1: observed.append(.screenMediaHideRequestReceived)
+                case 2: observed.append(.hideRequestReceived)
+                default: observed.append(.recoveryProbeRequestReceived)
+                }
             case .requestKeyFrame: observed.append(.keyFrameRequestReceived)
             }
         case .controlAcknowledgementReceived(
@@ -3324,12 +4101,15 @@ private actor LoopbackRecorder {
                     }.count == 1 ? .showAcknowledged : .postRestartShowAcknowledged
                 )
             case .hideScreen:
-                observed.append(
-                    controlAcknowledgements.filter { acknowledgement in
-                        controlRequests.first(where: { $0.id == acknowledgement.id })?.command
-                            == .hideScreen
-                    }.count == 1 ? .hideAcknowledged : .recoveryProbeAcknowledged
-                )
+                switch controlAcknowledgements.filter({ acknowledgement in
+                    controlRequests.first(where: {
+                        $0.id == acknowledgement.id
+                    })?.command == .hideScreen
+                }).count {
+                case 1: observed.append(.screenMediaHideAcknowledged)
+                case 2: observed.append(.hideAcknowledged)
+                default: observed.append(.recoveryProbeAcknowledged)
+                }
             case .requestKeyFrame: observed.append(.keyFrameAcknowledged)
             case nil: break
             }
@@ -3353,6 +4133,34 @@ private actor LoopbackRecorder {
             if evidence.state == .preflightArmed {
                 observed.append(.macHostedCallPreflightArmedReceived)
             }
+        case .screenMediaSuspensionReceived(let notice)
+            where side == .viewer:
+            screenMediaSuspensions.append(notice)
+        case .screenMediaCoveredAcknowledgementReceived(let acknowledgement)
+            where side == .host:
+            screenMediaCoveredAcknowledgements.append(acknowledgement)
+        case .screenMediaMarkerReadyReceived(let ready)
+            where side == .viewer:
+            screenMediaMarkerReadyValues.append(ready)
+        case .screenMediaMarkerPresentationReceived(let presentation)
+            where side == .host:
+            screenMediaMarkerPresentations.append(presentation)
+        case .screenMediaResumeReadyReceived(let ready)
+            where side == .viewer:
+            screenMediaResumeReadyValues.append(ready)
+        case .screenMediaResumeRequestReceived(let request)
+            where side == .host:
+            screenMediaResumeRequests.append(request)
+        case .screenMediaResumedAcknowledgementReceived(
+            let acknowledgement,
+            inputAuthorization: _
+        ) where side == .viewer:
+            screenMediaResumedAcknowledgements.append(acknowledgement)
+        case .screenMediaEncoderResumeProbeEvent(let event)
+            where side == .host:
+            screenMediaProbeEvents.append(event)
+        case .screenMediaSuspensionInvalidated(let reason):
+            screenMediaInvalidations.append(reason)
         default:
             break
         }
@@ -3443,7 +4251,18 @@ private actor LoopbackRecorder {
             hostOffers: hostOffers,
             viewerAnswers: viewerAnswers,
             hostCandidates: hostCandidates,
-            viewerCandidates: viewerCandidates
+            viewerCandidates: viewerCandidates,
+            screenMediaSuspensions: screenMediaSuspensions,
+            screenMediaCoveredAcknowledgements:
+                screenMediaCoveredAcknowledgements,
+            screenMediaMarkerReadyValues: screenMediaMarkerReadyValues,
+            screenMediaMarkerPresentations: screenMediaMarkerPresentations,
+            screenMediaResumeReadyValues: screenMediaResumeReadyValues,
+            screenMediaResumeRequests: screenMediaResumeRequests,
+            screenMediaResumedAcknowledgements:
+                screenMediaResumedAcknowledgements,
+            screenMediaProbeEvents: screenMediaProbeEvents,
+            screenMediaInvalidations: screenMediaInvalidations
         )
     }
 }
@@ -3465,9 +4284,15 @@ private final class LoopbackExpectations: @unchecked Sendable {
     let inputRequestReceived = XCTestExpectation(description: "host received remote input")
     let inputFeedbackReceived = XCTestExpectation(description: "viewer received input feedback")
     let showRequestReceived = XCTestExpectation(description: "host received Show request")
+    let screenMediaHideRequestReceived = XCTestExpectation(
+        description: "host received the covered suspension Hide request"
+    )
     let hideRequestReceived = XCTestExpectation(description: "host received Hide request")
     let keyFrameRequestReceived = XCTestExpectation(description: "host received key-frame request")
     let showAcknowledged = XCTestExpectation(description: "viewer received active acknowledgement")
+    let screenMediaHideAcknowledged = XCTestExpectation(
+        description: "viewer received the covered suspension Inactive acknowledgement"
+    )
     let hideAcknowledged = XCTestExpectation(description: "viewer received inactive acknowledgement")
     let keyFrameAcknowledged = XCTestExpectation(description: "viewer received key-frame acknowledgement")
     let secondOfferEmitted = XCTestExpectation(description: "host emitted a second ICE offer")
@@ -3509,9 +4334,13 @@ private final class LoopbackExpectations: @unchecked Sendable {
         case .inputRequestReceived: inputRequestReceived.fulfill()
         case .inputFeedbackReceived: inputFeedbackReceived.fulfill()
         case .showRequestReceived: showRequestReceived.fulfill()
+        case .screenMediaHideRequestReceived:
+            screenMediaHideRequestReceived.fulfill()
         case .hideRequestReceived: hideRequestReceived.fulfill()
         case .keyFrameRequestReceived: keyFrameRequestReceived.fulfill()
         case .showAcknowledged: showAcknowledged.fulfill()
+        case .screenMediaHideAcknowledged:
+            screenMediaHideAcknowledged.fulfill()
         case .hideAcknowledged: hideAcknowledged.fulfill()
         case .keyFrameAcknowledged: keyFrameAcknowledged.fulfill()
         case .secondOfferEmitted: secondOfferEmitted.fulfill()
@@ -3555,6 +4384,26 @@ private func makePixelBuffer(width: Int, height: Int) throws -> CVPixelBuffer {
     return pixelBuffer
 }
 
+private func makeResumeMarkerPixelBuffer(
+    width: Int,
+    height: Int,
+    marker: ScreenVideoInBandMarkerNonce
+) throws -> CVPixelBuffer {
+    try ScreenVideoInBandMarkerPixelBufferFactory.make(
+        width: width,
+        height: height,
+        marker: marker
+    )
+}
+
+private func rtpTimestampIsNewer(
+    _ candidate: UInt32,
+    than reference: UInt32
+) -> Bool {
+    let delta = candidate &- reference
+    return delta != 0 && delta < 0x8000_0000
+}
+
 private func mediaSection(kind: String, in sdp: String) -> String? {
     let lines = sdp
         .replacingOccurrences(of: "\r\n", with: "\n")
@@ -3577,6 +4426,76 @@ private func mediaSections(kind: String, in sdp: String) -> [String] {
     return starts.enumerated().map { index, start in
         let end = index + 1 < starts.count ? starts[index + 1] : lines.endIndex
         return lines[start..<end].joined(separator: "\n")
+    }
+}
+
+private func assertH264FeedbackAndRTX(
+    in videoSection: String,
+    file: StaticString = #filePath,
+    line: UInt = #line
+) {
+    let lines = videoSection
+        .replacingOccurrences(of: "\r\n", with: "\n")
+        .split(separator: "\n")
+        .map { String($0).lowercased() }
+    func payloads(for codec: String) -> [String] {
+        lines.compactMap { candidate in
+            guard candidate.hasPrefix("a=rtpmap:"),
+                  let separator = candidate.firstIndex(of: " "),
+                  candidate[candidate.index(after: separator)...]
+                    .hasPrefix(codec) else {
+                return nil
+            }
+            return String(candidate[candidate.index(candidate.startIndex, offsetBy: 9)..<separator])
+        }
+    }
+
+    let h264Payloads = payloads(for: "h264/90000")
+    let rtxPayloads = payloads(for: "rtx/90000")
+    XCTAssertFalse(
+        h264Payloads.isEmpty,
+        "The screen offer must contain H.264.\n\(videoSection)",
+        file: file,
+        line: line
+    )
+    for h264Payload in h264Payloads {
+        XCTAssertTrue(
+            lines.contains("a=rtcp-fb:\(h264Payload) nack"),
+            "H.264 payload \(h264Payload) must retain NACK.\n\(videoSection)",
+            file: file,
+            line: line
+        )
+        XCTAssertTrue(
+            lines.contains("a=rtcp-fb:\(h264Payload) nack pli"),
+            "H.264 payload \(h264Payload) must retain PLI.\n\(videoSection)",
+            file: file,
+            line: line
+        )
+        let hasRTXMapping = rtxPayloads.contains { rtxPayload in
+            lines.contains { candidate in
+                guard candidate.hasPrefix("a=fmtp:\(rtxPayload) ") else {
+                    return false
+                }
+                return candidate
+                    .split(separator: ";")
+                    .map {
+                        String($0).replacingOccurrences(of: " ", with: "")
+                    }
+                    .contains("a=fmtp:\(rtxPayload)apt=\(h264Payload)")
+                    || candidate
+                        .split(separator: ";")
+                        .map {
+                            String($0).replacingOccurrences(of: " ", with: "")
+                        }
+                        .contains("apt=\(h264Payload)")
+            }
+        }
+        XCTAssertTrue(
+            hasRTXMapping,
+            "H.264 payload \(h264Payload) must retain an RTX apt mapping.\n\(videoSection)",
+            file: file,
+            line: line
+        )
     }
 }
 

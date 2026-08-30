@@ -22,17 +22,59 @@ struct WorldwideScreenViewerView: View {
                     if allowsRemoteScreenRendering {
                         WebRTCRemoteScreenView(
                             track: viewModel.remoteVideoTrack,
+                            forcePresentationCover:
+                                screenMediaFence?.forceCover == true,
+                            minimumAcceptedRTPTimestamp:
+                                screenMediaFence?.minimumAcceptedRTPTimestamp,
+                            proofRTPTimestamps:
+                                screenMediaFence?.proofRTPTimestamps ?? [],
+                            markerProof: screenMediaFence?.markerProof,
+                            presentationCoverID:
+                                screenMediaFence?.forceCover == true
+                                    ? screenMediaFence?.coverID
+                                    : nil,
                             // Any decoded-size transition clears touch immediately. Size callbacks
                             // precede presentation and therefore cannot authorize the new mapping.
-                            onVideoSizeChanged: { _ in
+                            onVideoSizeChanged: { size in
                                 viewModel.discardPendingRemoteScrolls()
                                 videoRenderObservation = nil
+                                viewModel.screenVideoPresentationGeometryDidChange(
+                                    to: size,
+                                    for: lease
+                                )
                             },
                             onVideoFrameRendered: { observation in
                                 if videoRenderObservation.map({
                                     observation.frameCount > $0.frameCount
                                 }) != false {
                                     videoRenderObservation = observation
+                                }
+                                viewModel.screenVideoFrameDidRender(
+                                    observation,
+                                    for: lease
+                                )
+                            },
+                            onVideoFramePresentedForProof: { observation in
+                                viewModel.screenVideoFrameDidPresentForProof(
+                                    observation,
+                                    for: lease
+                                )
+                            },
+                            onVideoMarkerFramePresentedForProof: { observation in
+                                viewModel.screenVideoMarkerFrameDidPresentForProof(
+                                    observation,
+                                    for: lease
+                                )
+                            },
+                            onPresentationCoverInstalled: { coverID in
+                                // The UIKit bridge has synchronously placed its opaque cover. Hop
+                                // out of UIViewRepresentable reconciliation before publishing the
+                                // protocol-side acknowledgement task.
+                                Task { @MainActor in
+                                    viewModel.screenMediaPresentationCoverDidInstall(
+                                        coverID: coverID,
+                                        for: lease
+                                    )
                                 }
                             }
                         )
@@ -92,6 +134,23 @@ struct WorldwideScreenViewerView: View {
                                     .accessibilityLabel(viewModel.stateText)
                             }
                         }
+                        .overlay {
+                            if let statusText = screenMediaFence?.statusText,
+                               screenMediaFence?.forceCover == true {
+                                VStack(spacing: 10) {
+                                    ProgressView()
+                                        .tint(.white)
+                                    Text(statusText)
+                                        .font(.callout.weight(.semibold))
+                                        .foregroundStyle(.white)
+                                }
+                                .padding(18)
+                                .accessibilityElement(children: .combine)
+                                .accessibilityIdentifier(
+                                    "worldwideScreenMediaSuspensionStatus"
+                                )
+                            }
+                        }
                         .privacySensitive()
                     } else {
                         Color.black
@@ -147,6 +206,13 @@ struct WorldwideScreenViewerView: View {
         .onChange(of: remoteVideoTrackIdentity) {
             videoRendererID = UUID()
             videoRenderObservation = nil
+        }
+        .onChange(of: screenMediaFence?.proofRequestRevision) {
+            guard let videoRenderObservation else { return }
+            viewModel.screenVideoFrameDidRender(
+                videoRenderObservation,
+                for: lease
+            )
         }
     }
 
@@ -261,7 +327,12 @@ struct WorldwideScreenViewerView: View {
         viewModel.remoteInputIsAvailable(for: lease)
             && renderedVideoSize != nil
             && allowsRemoteInputPresentation
+            && screenMediaFence?.forceCover != true
             && scenePhase == .active
+    }
+
+    private var screenMediaFence: WorldwideScreenMediaViewerFence? {
+        viewModel.screenMediaViewerFence(for: lease)
     }
 
     private func remotePointerGestureConfiguration(

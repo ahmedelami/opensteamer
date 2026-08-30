@@ -1825,7 +1825,9 @@ final class WorldwideScreenInactiveTransitionTests: XCTestCase {
         let verifiedCallCount = hideBranch.components(
             separatedBy: "acknowledgeInactiveAfterVerifiedScreenStop("
         ).count - 1
-        if verifiedCallCount != 1 {
+        // Ordinary Hide and the negotiated weak-network suspension Hide are distinct branches;
+        // both must cross the same behavior-tested native-stop boundary before Inactive.
+        if verifiedCallCount != 2 {
             violations.append("verified-boundary-call-count")
         }
         if !hideBranch.contains("peer: peer,") {

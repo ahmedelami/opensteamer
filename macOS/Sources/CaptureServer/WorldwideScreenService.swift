@@ -60,6 +60,7 @@ actor WorldwideScreenService {
     private static let maximumDisplayModeStartupRetries = 3
     private static let maximumForwardingStartupProofPolls = 40
     private static let forwardingStartupProofPollInterval = Duration.milliseconds(25)
+    private static let automaticScreenMediaResumeTimeout = Duration.seconds(12)
     private static let maximumSharedClockEpochQuiescencePolls = 20
     private static let sharedClockEpochQuiescencePollInterval =
         Duration.milliseconds(50)
@@ -408,6 +409,64 @@ actor WorldwideScreenService {
     private var recoveryProofAcknowledgementInFlight: PendingRecoveryProofRequest?
     private var recoveryProofAuthorization: WebRTCControlAuthorization?
     private var screenVisibilityCommandEpoch: UInt64 = 0
+    private var screenMediaSuspension =
+        WorldwideScreenMediaSuspensionCoordinator()
+    private final class AutomaticScreenMediaResumeCommitLatch:
+        @unchecked Sendable {
+        private enum State {
+            case pending
+            case committed
+            case failureClaimed
+        }
+
+        private let lock = NSLock()
+        private var state = State.pending
+
+        /// Serializes the irreversible send against failure cleanup. If cleanup claims first,
+        /// the operation is never invoked; if this operation wins, cleanup observes committed.
+        func commit(_ operation: () throws -> Void) throws {
+            try lock.withLock {
+                guard case .pending = state else {
+                    throw WorldwideScreenServiceError.transportUnavailable
+                }
+                try operation()
+                state = .committed
+            }
+        }
+
+        func claimFailure() -> Bool {
+            lock.withLock {
+                guard case .pending = state else { return false }
+                state = .failureClaimed
+                return true
+            }
+        }
+
+        var isCommitted: Bool {
+            lock.withLock {
+                if case .committed = state { return true }
+                return false
+            }
+        }
+    }
+    private struct AutomaticScreenMediaResumeContext: Sendable {
+        let binding: WorldwideScreenMediaSuspensionCoordinator.Binding
+        let notice: WebRTCScreenMediaSuspensionNotice
+        let attemptID: UUID
+        let finalAcknowledgementCommit:
+            AutomaticScreenMediaResumeCommitLatch
+        var probeAuthorization: WebRTCControlAuthorization?
+        var forwardingAuthorization: WebRTCControlAuthorization?
+        var boundary: WorldwideScreenSampleSink.ResumeMarkerBoundary?
+        var markerReady: WebRTCScreenMediaMarkerReady?
+        var markerPresentation: WebRTCScreenMediaMarkerPresentation?
+    }
+    private var automaticScreenMediaResumeContext:
+        AutomaticScreenMediaResumeContext?
+    private var automaticScreenMediaResumeTimeoutTask: Task<Void, Never>?
+    /// Invalidates a timeout that has already awakened but has not yet re-entered this actor.
+    /// Task cancellation alone cannot fence that queued call across actor reentrancy.
+    private var automaticScreenMediaResumeTimeoutGeneration: UInt64 = 0
     private var captureSource: ScreenVideoCaptureSource?
     private var captureSink: WorldwideScreenSampleSink?
     private var screenFormatRenegotiation =
@@ -781,6 +840,7 @@ actor WorldwideScreenService {
         let coordinator = recoveryCoordinator
         recoveryCoordinator = nil
         peerGeneration &+= 1
+        resetAutomaticScreenMediaSuspensionState()
         peerIsConnected = false
         iceIsConnected = false
         controlChannelIsOpen = false
@@ -978,6 +1038,7 @@ actor WorldwideScreenService {
         safeOutputInvariantRetryPolicy.reset()
         peerGeneration &+= 1
         let generation = peerGeneration
+        resetAutomaticScreenMediaSuspensionState()
         screenVideoAdaptationPolicy.bind(toPeerGeneration: generation)
         appliedScreenVideoRecommendation = nil
         highestRestartRequestID = nil
@@ -1207,6 +1268,61 @@ actor WorldwideScreenService {
             // Only the iPhone viewer receives host-originated call evidence.
             break
 
+        case .screenMediaCoveredAcknowledgementReceived(let acknowledgement):
+            guard screenMediaSuspension.confirmCover(
+                acknowledgement,
+                binding: currentScreenMediaSuspensionBinding
+            ) else {
+                await sourcePeer.cancelScreenMediaSuspension(
+                    reason: "The viewer cover acknowledgement lost service ownership."
+                )
+                resetAutomaticScreenMediaSuspensionState()
+                break
+            }
+
+        case .screenMediaMarkerPresentationReceived(let presentation):
+            await handleAutomaticScreenMediaMarkerPresentation(
+                presentation,
+                peer: sourcePeer,
+                peerGeneration: sourcePeerGeneration
+            )
+
+        case .screenMediaResumeRequestReceived(let request):
+            await handleAutomaticScreenMediaResumeRequest(
+                request,
+                peer: sourcePeer,
+                peerGeneration: sourcePeerGeneration
+            )
+
+        case .screenMediaEncoderResumeProbeEvent(let probeEvent):
+            await handleAutomaticScreenMediaEncoderProbeEvent(
+                probeEvent,
+                peer: sourcePeer,
+                peerGeneration: sourcePeerGeneration
+            )
+
+        case .screenMediaSuspensionInvalidated(let reason):
+            if let context = automaticScreenMediaResumeContext {
+                await failAutomaticScreenMediaResume(
+                    peer: sourcePeer,
+                    attemptID: context.attemptID,
+                    reason: reason
+                )
+            } else if screenMediaSuspension.isAutomaticallySuspended
+                        || screenMediaSuspension.suspensionIsInFlight {
+                resetAutomaticScreenMediaSuspensionState()
+                _ = await stopScreenCaptureOrCloseSession(
+                    context: "screen-media suspension invalidation"
+                )
+            }
+
+        case .screenMediaSuspensionReceived,
+             .screenMediaMarkerReadyReceived,
+             .screenMediaResumeReadyReceived,
+             .screenMediaResumedAcknowledgementReceived:
+            // These phases are viewer-only.
+            break
+
         case .controlReceived:
             // Legacy signaling controls deliberately cannot start worldwide capture because they
             // do not provide the request ID and completion acknowledgement required by the v2 path.
@@ -1353,6 +1469,10 @@ actor WorldwideScreenService {
         sourcePeer: WebRTCPeer,
         sourcePeerGeneration: UInt64
     ) async {
+        // Marker and real-frame RTP deltas are valid only while the exact sender configuration
+        // remains frozen. The bounded probe owns its temporary ceiling; the first statistics
+        // sample after success or retry reapplies ordinary policy.
+        guard automaticScreenMediaResumeContext == nil else { return }
         let forwardingAuthorization = captureForwardingAuthorization
         let isCaptureActive = captureSource != nil
             && captureSink != nil
@@ -1366,6 +1486,8 @@ actor WorldwideScreenService {
         let changedRecommendation = proposedPolicy.update(
             peerGeneration: sourcePeerGeneration,
             isCaptureActive: isCaptureActive,
+            isAutomaticallySuspended:
+                screenMediaSuspension.isAutomaticallySuspended,
             availableOutgoingBitrateBps: snapshot.availableOutgoingBitrate,
             currentRoundTripTimeSeconds: snapshot.currentRoundTripTime,
             selectedRoute: snapshot.route,
@@ -1378,56 +1500,813 @@ actor WorldwideScreenService {
         guard isCaptureActive else {
             if peer === sourcePeer,
                peerGeneration == sourcePeerGeneration {
+                let decision = proposedPolicy.automaticSuspensionDecision(
+                    isCaptureActive: false,
+                    isAutomaticallySuspended:
+                        screenMediaSuspension.isAutomaticallySuspended
+                )
                 screenVideoAdaptationPolicy = proposedPolicy
+                if decision == .resume {
+                    await beginAutomaticScreenMediaResumeIfPossible(
+                        peer: sourcePeer,
+                        peerGeneration: sourcePeerGeneration
+                    )
+                }
             }
             return
         }
-        guard changedRecommendation != nil
-                || appliedScreenVideoRecommendation != recommendation else {
-            if peer === sourcePeer,
-               peerGeneration == sourcePeerGeneration {
-                screenVideoAdaptationPolicy = proposedPolicy
+        if changedRecommendation != nil
+            || appliedScreenVideoRecommendation != recommendation {
+            guard let source = captureSource,
+                  let sink = captureSink,
+                  let captureAuthorization,
+                  let forwardingAuthorization,
+                  let baseDimensions = captureVideoBaseDimensions,
+                  let capturer = sourcePeer.externalVideoCapturer else {
+                return
             }
+
+            do {
+                let senderUpdate = try await sourcePeer.applyScreenVideoEncodingLimits(
+                    recommendation.webRTCLimits
+                )
+                guard peer === sourcePeer,
+                      peerGeneration == sourcePeerGeneration,
+                      captureSource === source,
+                      captureSink === sink,
+                      self.captureAuthorization === captureAuthorization,
+                      self.captureForwardingAuthorization
+                        === forwardingAuthorization,
+                      captureAuthorization.isValid,
+                      forwardingAuthorization.isValid,
+                      sink.allowsActiveUse(
+                          authorizedBy: forwardingAuthorization
+                      ),
+                      captureVideoBaseDimensions == baseDimensions else {
+                    do {
+                        _ = try await sourcePeer
+                            .rollbackScreenVideoEncodingUpdateIfCurrent(
+                                senderUpdate
+                            )
+                    } catch {
+                        logger.error(
+                            "Worldwide screen video stale-update rollback failed: "
+                                + error.localizedDescription
+                        )
+                    }
+                    return
+                }
+                capturer.adaptOutput(
+                    width: Int32(baseDimensions.width),
+                    height: Int32(baseDimensions.height),
+                    framesPerSecond: Int32(
+                        recommendation.maximumFramesPerSecond
+                    )
+                )
+                appliedScreenVideoRecommendation = recommendation
+                logger.info(
+                    "Worldwide screen video tier=\(String(describing: recommendation.tier)) "
+                        + "maxKbps=\(recommendation.maximumBitrateBps / 1_000) "
+                        + "fps=\(recommendation.maximumFramesPerSecond) "
+                        + "scale=\(String(format: "%.2f", recommendation.scaleResolutionDownBy))"
+                )
+            } catch {
+                guard peer === sourcePeer,
+                      peerGeneration == sourcePeerGeneration else {
+                    return
+                }
+                logger.error(
+                    "Worldwide screen video adaptation held its previous tier: "
+                        + error.localizedDescription
+                )
+                return
+            }
+        }
+
+        let suspensionDecision = proposedPolicy.automaticSuspensionDecision(
+            isCaptureActive: true,
+            isAutomaticallySuspended: false
+        )
+        guard peer === sourcePeer,
+              peerGeneration == sourcePeerGeneration else {
             return
         }
-        guard isCaptureActive,
+        screenVideoAdaptationPolicy = proposedPolicy
+        if suspensionDecision == .suspend,
+           appliedScreenVideoRecommendation?.tier == .audioPriority {
+            await beginAutomaticScreenMediaSuspensionIfPossible(
+                peer: sourcePeer,
+                peerGeneration: sourcePeerGeneration
+            )
+        }
+    }
+
+    private func beginAutomaticScreenMediaSuspensionIfPossible(
+        peer sourcePeer: WebRTCPeer,
+        peerGeneration sourcePeerGeneration: UInt64
+    ) async {
+        guard peer === sourcePeer,
+              peerGeneration == sourcePeerGeneration,
+              !screenMediaSuspension.suspensionIsInFlight,
+              !screenMediaSuspension.isAutomaticallySuspended,
+              await sourcePeer.screenMediaSuspensionIsNegotiated() else {
+            return
+        }
+        let binding = currentScreenMediaSuspensionBinding
+        guard let notice = screenMediaSuspension.beginSuspensionIfNegotiated(
+            negotiated: true,
+            binding: binding
+        ) else {
+            return
+        }
+        do {
+            try await sourcePeer.sendScreenMediaSuspensionNotice(notice)
+            logger.info("Worldwide screen requested an audio-priority video pause")
+        } catch {
+            _ = screenMediaSuspension.abortSuspensionBeforeInactive(
+                binding: binding
+            )
+            logger.error(
+                "Worldwide screen could not begin its negotiated video pause: "
+                    + error.localizedDescription
+            )
+        }
+    }
+
+    private func beginAutomaticScreenMediaResumeIfPossible(
+        peer sourcePeer: WebRTCPeer,
+        peerGeneration sourcePeerGeneration: UInt64
+    ) async {
+        guard peer === sourcePeer,
+              peerGeneration == sourcePeerGeneration,
+              screenMediaSuspension.isAutomaticallySuspended,
+              !screenMediaSuspension.isResumeProbeInFlight,
+              automaticScreenMediaResumeContext == nil,
+              let notice = screenMediaSuspension.currentSuspensionNotice,
+              await sourcePeer.screenMediaSuspensionIsNegotiated() else {
+            return
+        }
+        let binding = currentScreenMediaSuspensionBinding
+        let attemptID = UUID()
+        guard screenMediaSuspension.beginResumeAttempt(
+            attemptID: attemptID,
+            binding: binding
+        ) else {
+            return
+        }
+        automaticScreenMediaResumeContext = AutomaticScreenMediaResumeContext(
+            binding: binding,
+            notice: notice,
+            attemptID: attemptID,
+            finalAcknowledgementCommit:
+                AutomaticScreenMediaResumeCommitLatch(),
+            probeAuthorization: nil,
+            forwardingAuthorization: nil,
+            boundary: nil,
+            markerReady: nil,
+            markerPresentation: nil
+        )
+
+        do {
+            let authorization = try await startScreenCaptureWithDisplayModeRetries()
+            guard peer === sourcePeer,
+                  peerGeneration == sourcePeerGeneration,
+                  screenMediaSuspension.owns(binding),
+                  var context = automaticScreenMediaResumeContext,
+                  context.attemptID == attemptID,
+                  let source = captureSource,
+                  let sink = captureSink,
+                  captureForwardingAuthorization === authorization,
+                  let baseDimensions = captureVideoBaseDimensions,
+                  let capturer = sourcePeer.externalVideoCapturer else {
+                throw WorldwideScreenServiceError.transportUnavailable
+            }
+            let probeAuthorization = WebRTCControlAuthorization()
+            context.probeAuthorization = probeAuthorization
+            context.forwardingAuthorization = authorization
+            automaticScreenMediaResumeContext = context
+
+            let recommendation = screenVideoAdaptationPolicy.currentRecommendation
+            // Ten encoder slots per second are enough to admit the one marker and the bounded
+            // one-Hz real recovery lane without restoring the ordinary 60 fps ceiling while the
+            // link is still congested.
+            let probeFramesPerSecond = 10
+            if recommendation.maximumFramesPerSecond < probeFramesPerSecond {
+                let probeUpdate = try await sourcePeer.applyScreenVideoEncodingLimits(
+                    WebRTCScreenVideoEncodingLimits(
+                        maximumBitrateBps: recommendation.maximumBitrateBps,
+                        maximumFramesPerSecond: probeFramesPerSecond,
+                        scaleResolutionDownBy:
+                            recommendation.scaleResolutionDownBy
+                    )
+                )
+                guard peer === sourcePeer,
+                      peerGeneration == sourcePeerGeneration,
+                      captureSource === source,
+                      captureSink === sink,
+                      captureForwardingAuthorization === authorization,
+                      authorization.isValid,
+                      captureVideoBaseDimensions == baseDimensions,
+                      screenMediaSuspension.owns(binding),
+                      let current = automaticScreenMediaResumeContext,
+                      current.attemptID == attemptID,
+                      current.binding == binding,
+                      current.probeAuthorization === probeAuthorization,
+                      current.forwardingAuthorization === authorization else {
+                    _ = try? await sourcePeer
+                        .rollbackScreenVideoEncodingUpdateIfCurrent(probeUpdate)
+                    throw WorldwideScreenServiceError.transportUnavailable
+                }
+                capturer.adaptOutput(
+                    width: Int32(baseDimensions.width),
+                    height: Int32(baseDimensions.height),
+                    framesPerSecond: Int32(probeFramesPerSecond)
+                )
+                // The probe ceiling is temporary and must be restored after final presentation.
+                appliedScreenVideoRecommendation = nil
+            }
+
+            let boundary = try await source.performSampleDeliveryBarrier {
+                sink.beginAutomaticResumeMarkerGate(
+                    authorizedBy: authorization
+                )
+            }
+            guard let boundary,
+                  peer === sourcePeer,
+                  peerGeneration == sourcePeerGeneration,
+                  captureSource === source,
+                  captureSink === sink,
+                  captureForwardingAuthorization === authorization,
+                  authorization.isValid,
+                  screenMediaSuspension.owns(binding),
+                  var current = automaticScreenMediaResumeContext,
+                  current.attemptID == attemptID else {
+                throw WorldwideScreenServiceError.transportUnavailable
+            }
+            current.boundary = boundary
+            automaticScreenMediaResumeContext = current
+
+            let nonceBytes = withUnsafeBytes(of: attemptID.uuid) { Array($0) }
+            guard let marker = ScreenVideoInBandMarkerNonce(bytes: nonceBytes) else {
+                throw WorldwideScreenServiceError.transportUnavailable
+            }
+            let markerBuffer = try ScreenVideoInBandMarkerPixelBufferFactory.make(
+                width: boundary.geometry.surfaceWidth,
+                height: boundary.geometry.surfaceHeight,
+                marker: marker
+            )
+            try await sourcePeer.beginScreenMediaResumeProbeIfTransportHealthy(
+                attemptID: attemptID,
+                marker: marker,
+                boundaryRevision: boundary.revision,
+                markerInputGateIsClosed: true,
+                authorization: probeAuthorization
+            )
+            guard peer === sourcePeer,
+                  peerGeneration == sourcePeerGeneration,
+                  captureSource === source,
+                  captureSink === sink,
+                  captureForwardingAuthorization === authorization,
+                  authorization.isValid,
+                  probeAuthorization.isValid,
+                  screenMediaSuspension.owns(binding),
+                  let current = automaticScreenMediaResumeContext,
+                  current.attemptID == attemptID,
+                  current.binding == binding,
+                  current.probeAuthorization === probeAuthorization,
+                  current.forwardingAuthorization === authorization,
+                  current.boundary == boundary else {
+                throw WorldwideScreenServiceError.transportUnavailable
+            }
+            capturer.capture(
+                pixelBuffer: markerBuffer,
+                timestamp: CMClockGetTime(CMClockGetHostTimeClock())
+            )
+            scheduleAutomaticScreenMediaResumeTimeout(
+                attemptID: attemptID,
+                peerGeneration: sourcePeerGeneration
+            )
+            logger.info("Worldwide screen video resume marker injected")
+        } catch {
+            await failAutomaticScreenMediaResume(
+                peer: sourcePeer,
+                attemptID: attemptID,
+                reason: "resume probe startup failed: \(error.localizedDescription)"
+            )
+        }
+    }
+
+    private func scheduleAutomaticScreenMediaResumeTimeout(
+        attemptID: UUID,
+        peerGeneration sourcePeerGeneration: UInt64
+    ) {
+        cancelAutomaticScreenMediaResumeTimeout()
+        automaticScreenMediaResumeTimeoutGeneration &+= 1
+        if automaticScreenMediaResumeTimeoutGeneration == 0 {
+            automaticScreenMediaResumeTimeoutGeneration = 1
+        }
+        let timeoutGeneration = automaticScreenMediaResumeTimeoutGeneration
+        automaticScreenMediaResumeTimeoutTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: Self.automaticScreenMediaResumeTimeout)
+            } catch {
+                return
+            }
+            await self?.automaticScreenMediaResumeTimedOut(
+                attemptID: attemptID,
+                peerGeneration: sourcePeerGeneration,
+                timeoutGeneration: timeoutGeneration
+            )
+        }
+    }
+
+    private func cancelAutomaticScreenMediaResumeTimeout() {
+        automaticScreenMediaResumeTimeoutGeneration &+= 1
+        if automaticScreenMediaResumeTimeoutGeneration == 0 {
+            automaticScreenMediaResumeTimeoutGeneration = 1
+        }
+        automaticScreenMediaResumeTimeoutTask?.cancel()
+        automaticScreenMediaResumeTimeoutTask = nil
+    }
+
+    private func automaticScreenMediaResumeTimedOut(
+        attemptID: UUID,
+        peerGeneration sourcePeerGeneration: UInt64,
+        timeoutGeneration: UInt64
+    ) async {
+        guard automaticScreenMediaResumeTimeoutGeneration == timeoutGeneration,
+              peerGeneration == sourcePeerGeneration,
+              let peer,
+              automaticScreenMediaResumeContext?.attemptID == attemptID else {
+            return
+        }
+        await failAutomaticScreenMediaResume(
+            peer: peer,
+            attemptID: attemptID,
+            reason: "resume proof timed out"
+        )
+    }
+
+    private func failAutomaticScreenMediaResume(
+        peer sourcePeer: WebRTCPeer,
+        attemptID: UUID,
+        reason: String
+    ) async {
+        guard let context = automaticScreenMediaResumeContext,
+              context.attemptID == attemptID else {
+            return
+        }
+        guard context.finalAcknowledgementCommit.claimFailure() else {
+            // The irreversible send won the same latch. The viewer can already uncover, so a
+            // concurrent display/route lifecycle owns any subsequent capture transition.
+            cancelAutomaticScreenMediaResumeTimeout()
+            automaticScreenMediaResumeContext = nil
+            return
+        }
+        let ownedSource = captureSource
+        let ownedSink = captureSink
+        let ownedForwardingAuthorization = context.forwardingAuthorization
+        let ownedCaptureIsCurrent = ownedSource != nil
+            && ownedSink != nil
+            && ownedForwardingAuthorization.map {
+                captureForwardingAuthorization === $0
+            } == true
+        // Claim and close the exact local attempt before the first suspension point. A timeout
+        // that loses this race can no longer resume later and stop a newer Show/capture owner.
+        cancelAutomaticScreenMediaResumeTimeout()
+        automaticScreenMediaResumeContext = nil
+        context.probeAuthorization?.revoke()
+        context.forwardingAuthorization?.revoke()
+        let logicalScreenIsStillRequested = peer === sourcePeer
+            && peerGeneration == context.binding.peerGeneration
+            && recoveryProofEpoch == context.binding.recoveryEpoch
+            && screenVisibilityCommandEpoch
+                == context.binding.visibilityCommandEpoch
+            && screenMediaSuspension.activeScreenRequestID
+                == context.notice.screenRequestID
+        _ = screenMediaSuspension.rollbackFinalizationBeforeAcknowledgement(
+            notice: context.notice,
+            binding: context.binding
+        )
+        screenMediaSuspension.cancelResume(
+            binding: context.binding,
+            logicalScreenIsStillRequested: logicalScreenIsStillRequested
+        )
+        screenVideoAdaptationPolicy.automaticResumeAttemptFailed()
+        await sourcePeer.cancelScreenMediaResumeProbe(
+            attemptID: attemptID,
+            reason: reason
+        )
+        guard ownedCaptureIsCurrent,
+              let ownedSource,
+              let ownedSink,
+              let ownedForwardingAuthorization,
+              captureSource === ownedSource,
+              captureSink === ownedSink,
+              captureForwardingAuthorization === ownedForwardingAuthorization else {
+            return
+        }
+        guard await stopScreenCaptureOrCloseSession(
+            context: "automatic screen-media resume failure"
+        ) else {
+            return
+        }
+        logger.info("Worldwide screen video remained paused: \(reason)")
+    }
+
+    private func handleAutomaticScreenMediaEncoderProbeEvent(
+        _ event: ScreenVideoEncoderResumeProbeEvent,
+        peer sourcePeer: WebRTCPeer,
+        peerGeneration sourcePeerGeneration: UInt64
+    ) async {
+        guard peer === sourcePeer,
+              peerGeneration == sourcePeerGeneration,
+              let context = automaticScreenMediaResumeContext else {
+            return
+        }
+        switch event {
+        case .markerEncoded(let proof):
+            guard proof.attemptID == context.attemptID,
+                  let boundary = context.boundary,
+                  proof.boundaryRevision == boundary.revision,
+                  let probeAuthorization = context.probeAuthorization else {
+                await failAutomaticScreenMediaResume(
+                    peer: sourcePeer,
+                    attemptID: context.attemptID,
+                    reason: "marker proof did not match its capture boundary"
+                )
+                return
+            }
+            let geometry = WebRTCScreenMediaGeometry(
+                geometryRevision: boundary.revision,
+                captureWidth: boundary.geometry.surfaceWidth,
+                captureHeight: boundary.geometry.surfaceHeight
+            )
+            let ready = WebRTCScreenMediaMarkerReady(
+                attemptID: proof.attemptID,
+                screenRequestID: context.notice.screenRequestID,
+                suspensionGeneration:
+                    context.notice.suspensionGeneration,
+                encoderGeneration: proof.encoderGeneration,
+                encoderMarkerRTPTimestamp: proof.rtpTimestamp,
+                boundaryRevision: proof.boundaryRevision,
+                geometry: geometry
+            )
+            guard screenMediaSuspension.acceptMarkerReady(
+                ready,
+                binding: context.binding
+            ) else {
+                await failAutomaticScreenMediaResume(
+                    peer: sourcePeer,
+                    attemptID: context.attemptID,
+                    reason: "marker-ready state was stale"
+                )
+                return
+            }
+            do {
+                try await sourcePeer.sendScreenMediaMarkerReady(
+                    ready,
+                    authorization: probeAuthorization
+                )
+                guard peer === sourcePeer,
+                      peerGeneration == sourcePeerGeneration,
+                      screenMediaSuspension.owns(context.binding),
+                      let forwardingAuthorization = context.forwardingAuthorization,
+                      captureForwardingAuthorization === forwardingAuthorization,
+                      forwardingAuthorization.isValid,
+                      probeAuthorization.isValid,
+                      var current = automaticScreenMediaResumeContext,
+                      current.attemptID == context.attemptID,
+                      current.binding == context.binding,
+                      current.boundary == boundary,
+                      current.markerReady == nil,
+                      current.probeAuthorization === probeAuthorization,
+                      current.forwardingAuthorization === forwardingAuthorization else {
+                    throw WorldwideScreenServiceError.transportUnavailable
+                }
+                current.markerReady = ready
+                automaticScreenMediaResumeContext = current
+                // Treat the timeout as a no-progress deadline. A 32 kbps key frame may spend most
+                // of one window reaching the viewer; real-frame recovery still needs its own
+                // bounded window instead of inheriting only the marker's leftover time.
+                scheduleAutomaticScreenMediaResumeTimeout(
+                    attemptID: context.attemptID,
+                    peerGeneration: sourcePeerGeneration
+                )
+            } catch {
+                await failAutomaticScreenMediaResume(
+                    peer: sourcePeer,
+                    attemptID: context.attemptID,
+                    reason: "marker-ready send failed: \(error.localizedDescription)"
+                )
+            }
+
+        case .realFrameEncoded(let proof):
+            guard proof.attemptID == context.attemptID,
+                  let presentation = context.markerPresentation,
+                  let probeAuthorization = context.probeAuthorization,
+                  let receiverFloor = WebRTCScreenMediaResumeReady
+                    .predictedReceiverRealFrameFloorRTPTimestamp(
+                        markerPresentation: presentation,
+                        encoderRealFrameRTPTimestamp: proof.rtpTimestamp
+                    ) else {
+                await failAutomaticScreenMediaResume(
+                    peer: sourcePeer,
+                    attemptID: context.attemptID,
+                    reason: "real-frame proof could not translate its RTP floor"
+                )
+                return
+            }
+            let ready = WebRTCScreenMediaResumeReady(
+                markerPresentation: presentation,
+                encoderMarkerRTPTimestamp:
+                    presentation.markerReady.encoderMarkerRTPTimestamp,
+                encoderRealFrameRTPTimestamp: proof.rtpTimestamp,
+                receiverMarkerRTPTimestamp:
+                    presentation.receiverMarkerRTPTimestamp,
+                receiverRealFrameFloorRTPTimestamp: receiverFloor,
+                geometry: presentation.markerReady.geometry
+            )
+            guard proof.encoderGeneration == ready.encoderGeneration,
+                  screenMediaSuspension.acceptResumeReady(
+                    ready,
+                    binding: context.binding
+                  ) else {
+                await failAutomaticScreenMediaResume(
+                    peer: sourcePeer,
+                    attemptID: context.attemptID,
+                    reason: "resume-ready state was stale"
+                )
+                return
+            }
+            do {
+                try await sourcePeer.sendScreenMediaResumeReady(
+                    ready,
+                    authorization: probeAuthorization
+                )
+                guard peer === sourcePeer,
+                      peerGeneration == sourcePeerGeneration,
+                      screenMediaSuspension.owns(context.binding),
+                      let forwardingAuthorization = context.forwardingAuthorization,
+                      captureForwardingAuthorization === forwardingAuthorization,
+                      forwardingAuthorization.isValid,
+                      probeAuthorization.isValid,
+                      let current = automaticScreenMediaResumeContext,
+                      current.attemptID == context.attemptID,
+                      current.binding == context.binding,
+                      current.markerPresentation == presentation,
+                      current.probeAuthorization === probeAuthorization,
+                      current.forwardingAuthorization === forwardingAuthorization else {
+                    throw WorldwideScreenServiceError.transportUnavailable
+                }
+                scheduleAutomaticScreenMediaResumeTimeout(
+                    attemptID: context.attemptID,
+                    peerGeneration: sourcePeerGeneration
+                )
+            } catch {
+                await failAutomaticScreenMediaResume(
+                    peer: sourcePeer,
+                    attemptID: context.attemptID,
+                    reason: "resume-ready send failed: \(error.localizedDescription)"
+                )
+            }
+
+        case .cancelled(let attemptID, let reason):
+            guard attemptID == context.attemptID else { return }
+            await failAutomaticScreenMediaResume(
+                peer: sourcePeer,
+                attemptID: attemptID,
+                reason: reason
+            )
+        }
+    }
+
+    private func handleAutomaticScreenMediaMarkerPresentation(
+        _ presentation: WebRTCScreenMediaMarkerPresentation,
+        peer sourcePeer: WebRTCPeer,
+        peerGeneration sourcePeerGeneration: UInt64
+    ) async {
+        guard peer === sourcePeer,
+              peerGeneration == sourcePeerGeneration,
+              let context = automaticScreenMediaResumeContext,
+              presentation.markerReady == context.markerReady,
               let source = captureSource,
               let sink = captureSink,
-              let captureAuthorization,
-              let forwardingAuthorization,
-              let baseDimensions = captureVideoBaseDimensions,
-              let capturer = sourcePeer.externalVideoCapturer else {
+              let boundary = context.boundary,
+              let probeAuthorization = context.probeAuthorization,
+              let forwardingAuthorization = context.forwardingAuthorization,
+              captureForwardingAuthorization === forwardingAuthorization,
+              screenMediaSuspension.acceptMarkerPresentation(
+                presentation,
+                binding: context.binding
+              ) else {
+            if let context = automaticScreenMediaResumeContext {
+                await failAutomaticScreenMediaResume(
+                    peer: sourcePeer,
+                    attemptID: context.attemptID,
+                    reason: "marker presentation lost capture ownership"
+                )
+            }
+            return
+        }
+        do {
+            try await sourcePeer.beginScreenMediaRealFrameAdmission(
+                authorization: probeAuthorization
+            )
+            guard peer === sourcePeer,
+                  peerGeneration == sourcePeerGeneration,
+                  captureSource === source,
+                  captureSink === sink,
+                  captureForwardingAuthorization === forwardingAuthorization,
+                  forwardingAuthorization.isValid,
+                  probeAuthorization.isValid,
+                  screenMediaSuspension.owns(context.binding),
+                  let admittedContext = automaticScreenMediaResumeContext,
+                  admittedContext.attemptID == context.attemptID,
+                  admittedContext.binding == context.binding,
+                  admittedContext.boundary == boundary,
+                  admittedContext.markerReady == presentation.markerReady,
+                  admittedContext.probeAuthorization === probeAuthorization,
+                  admittedContext.forwardingAuthorization === forwardingAuthorization else {
+                throw WorldwideScreenServiceError.transportUnavailable
+            }
+            let didArm = try await source.performSampleDeliveryBarrier {
+                sink.armAutomaticResumeRealFrame(
+                    boundary: boundary,
+                    authorizedBy: forwardingAuthorization
+                )
+            }
+            guard didArm,
+                  peer === sourcePeer,
+                  peerGeneration == sourcePeerGeneration,
+                  captureSource === source,
+                  captureSink === sink,
+                  captureForwardingAuthorization === forwardingAuthorization,
+                  forwardingAuthorization.isValid,
+                  probeAuthorization.isValid,
+                  screenMediaSuspension.owns(context.binding),
+                  let current = automaticScreenMediaResumeContext,
+                  current.attemptID == context.attemptID,
+                  current.binding == context.binding,
+                  current.boundary == boundary,
+                  current.markerReady == presentation.markerReady,
+                  current.probeAuthorization === probeAuthorization,
+                  current.forwardingAuthorization === forwardingAuthorization else {
+                throw WorldwideScreenServiceError.transportUnavailable
+            }
+            var updatedContext = current
+            updatedContext.markerPresentation = presentation
+            automaticScreenMediaResumeContext = updatedContext
+            scheduleAutomaticScreenMediaResumeTimeout(
+                attemptID: context.attemptID,
+                peerGeneration: sourcePeerGeneration
+            )
+        } catch {
+            await failAutomaticScreenMediaResume(
+                peer: sourcePeer,
+                attemptID: context.attemptID,
+                reason: "real-frame gate failed: \(error.localizedDescription)"
+            )
+        }
+    }
+
+    private func handleAutomaticScreenMediaResumeRequest(
+        _ request: WebRTCScreenMediaResumeRequest,
+        peer sourcePeer: WebRTCPeer,
+        peerGeneration sourcePeerGeneration: UInt64
+    ) async {
+        guard peer === sourcePeer,
+              peerGeneration == sourcePeerGeneration,
+              let context = automaticScreenMediaResumeContext,
+              let sink = captureSink,
+              let boundary = context.boundary,
+              let probeAuthorization = context.probeAuthorization,
+              let forwardingAuthorization = context.forwardingAuthorization,
+              captureForwardingAuthorization === forwardingAuthorization,
+              screenMediaSuspension.acceptResumeRequest(
+                request,
+                binding: context.binding
+              ) else {
+            if let context = automaticScreenMediaResumeContext {
+                await failAutomaticScreenMediaResume(
+                    peer: sourcePeer,
+                    attemptID: context.attemptID,
+                    reason: "resume request lost capture ownership"
+                )
+            }
             return
         }
 
+        do {
+            let resumeAuthorization = try await sourcePeer
+                .issueScreenMediaResumeAuthorization(
+                    for: request.id,
+                    authorization: probeAuthorization
+                )
+            guard peer === sourcePeer,
+                  peerGeneration == sourcePeerGeneration,
+                  captureSink === sink,
+                  captureForwardingAuthorization === forwardingAuthorization,
+                  forwardingAuthorization.isValid,
+                  probeAuthorization.isValid,
+                  screenMediaSuspension.authorizesFinalization(
+                    of: request,
+                    binding: context.binding
+                  ),
+                  let current = automaticScreenMediaResumeContext,
+                  current.attemptID == context.attemptID,
+                  current.binding == context.binding,
+                  current.boundary == boundary,
+                  current.markerPresentation == context.markerPresentation,
+                  current.probeAuthorization === probeAuthorization,
+                  current.forwardingAuthorization === forwardingAuthorization else {
+                throw WorldwideScreenServiceError.transportUnavailable
+            }
+            let inputSession = armRemoteInputIfAvailable(
+                screenRequestID: context.notice.screenRequestID
+            )
+            // Retire the queued deadline before entering the atomic forwarding/ACK critical
+            // section. Its generation fence also makes an already-awakened timeout a no-op.
+            cancelAutomaticScreenMediaResumeTimeout()
+            guard peer === sourcePeer,
+                  peerGeneration == sourcePeerGeneration,
+                  captureSink === sink,
+                  captureForwardingAuthorization === forwardingAuthorization,
+                  forwardingAuthorization.isValid,
+                  probeAuthorization.isValid,
+                  automaticScreenMediaResumeContext?.attemptID == context.attemptID,
+                  screenMediaSuspension.commitFinalization(
+                    of: request,
+                    binding: context.binding
+                  ) else {
+                throw WorldwideScreenServiceError.transportUnavailable
+            }
+            try await sourcePeer.acknowledgeScreenMediaResumedIfTransportHealthy(
+                requestID: request.id,
+                resumeAuthorization: resumeAuthorization,
+                probeAuthorization: probeAuthorization,
+                inputCapability: inputSession?.capability,
+                inputAuthorization: inputSession?.authorization,
+                withFinalAuthorizationCommit: { operation in
+                    try sink.withAutomaticResumeCommitAuthorization(
+                        boundary: boundary,
+                        authorizedBy: forwardingAuthorization
+                    ) {
+                        try context.finalAcknowledgementCommit.commit(operation)
+                    }
+                }
+            )
+        } catch {
+            await failAutomaticScreenMediaResume(
+                peer: sourcePeer,
+                attemptID: context.attemptID,
+                reason: "resume finalization failed: \(error.localizedDescription)"
+            )
+            return
+        }
+
+        // The ACK is irreversible and already atomically bound to this sink generation. A newer
+        // lifecycle may nevertheless have taken ownership immediately afterward; in that case its
+        // cleanup remains authoritative and this completed older task must not mutate it.
+        guard peer === sourcePeer,
+              peerGeneration == sourcePeerGeneration,
+              captureSink === sink,
+              captureForwardingAuthorization === forwardingAuthorization,
+              let completed = automaticScreenMediaResumeContext,
+              completed.attemptID == context.attemptID,
+              completed.binding == context.binding,
+              screenMediaSuspension.owns(context.binding) else {
+            return
+        }
+        automaticScreenMediaResumeContext = nil
+
+        let recommendation = screenVideoAdaptationPolicy.currentRecommendation
+        guard let source = captureSource,
+              let captureAuthorization,
+              let capturer = sourcePeer.externalVideoCapturer,
+              let baseDimensions = captureVideoBaseDimensions else {
+            appliedScreenVideoRecommendation = nil
+            logger.info("Worldwide screen video resumed after exact receiver presentation")
+            return
+        }
         do {
             let senderUpdate = try await sourcePeer.applyScreenVideoEncodingLimits(
                 recommendation.webRTCLimits
             )
             guard peer === sourcePeer,
                   peerGeneration == sourcePeerGeneration,
+                  automaticScreenMediaResumeContext == nil,
                   captureSource === source,
                   captureSink === sink,
                   self.captureAuthorization === captureAuthorization,
-                  self.captureForwardingAuthorization
-                    === forwardingAuthorization,
+                  captureForwardingAuthorization === forwardingAuthorization,
                   captureAuthorization.isValid,
                   forwardingAuthorization.isValid,
-                  sink.allowsActiveUse(
-                      authorizedBy: forwardingAuthorization
-                  ),
-                  captureVideoBaseDimensions == baseDimensions else {
-                do {
-                    _ = try await sourcePeer
-                        .rollbackScreenVideoEncodingUpdateIfCurrent(
-                            senderUpdate
-                        )
-                } catch {
-                    logger.error(
-                        "Worldwide screen video stale-update rollback failed: "
-                            + error.localizedDescription
-                    )
-                }
+                  sink.allowsActiveUse(authorizedBy: forwardingAuthorization),
+                  captureVideoBaseDimensions == baseDimensions,
+                  screenMediaSuspension.owns(context.binding) else {
+                _ = try? await sourcePeer
+                    .rollbackScreenVideoEncodingUpdateIfCurrent(senderUpdate)
                 return
             }
             capturer.adaptOutput(
@@ -1437,27 +2316,46 @@ actor WorldwideScreenService {
                     recommendation.maximumFramesPerSecond
                 )
             )
-            screenVideoAdaptationPolicy = proposedPolicy
             appliedScreenVideoRecommendation = recommendation
-            logger.info(
-                "Worldwide screen video tier=\(String(describing: recommendation.tier)) "
-                    + "maxKbps=\(recommendation.maximumBitrateBps / 1_000) "
-                    + "fps=\(recommendation.maximumFramesPerSecond) "
-                    + "scale=\(String(format: "%.2f", recommendation.scaleResolutionDownBy))"
-            )
         } catch {
-            guard peer === sourcePeer,
-                  peerGeneration == sourcePeerGeneration else {
-                return
-            }
+            // The typed resume already committed. Keep the safe probe ceiling and let the next
+            // statistics sample retry ordinary adaptation without hiding the screen.
+            appliedScreenVideoRecommendation = nil
             logger.error(
-                "Worldwide screen video adaptation held its previous tier: "
+                "Worldwide screen resumed with its probe ceiling: "
                     + error.localizedDescription
             )
         }
+        logger.info("Worldwide screen video resumed after exact receiver presentation")
     }
 
     // MARK: - Screen control protocol
+
+    private var currentScreenMediaSuspensionBinding:
+        WorldwideScreenMediaSuspensionCoordinator.Binding {
+        WorldwideScreenMediaSuspensionCoordinator.Binding(
+            peerGeneration: peerGeneration,
+            visibilityCommandEpoch: screenVisibilityCommandEpoch,
+            recoveryEpoch: recoveryProofEpoch
+        )
+    }
+
+    private func resetAutomaticScreenMediaSuspensionState() {
+        cancelAutomaticScreenMediaResumeTimeout()
+        automaticScreenMediaResumeContext?.probeAuthorization?.revoke()
+        automaticScreenMediaResumeContext?.forwardingAuthorization?.revoke()
+        automaticScreenMediaResumeContext = nil
+        screenMediaSuspension.retire()
+    }
+
+    private func activateAutomaticScreenMediaSuspensionOwnership(
+        screenRequestID: UInt64
+    ) {
+        _ = screenMediaSuspension.activate(
+            screenRequestID: screenRequestID,
+            binding: currentScreenMediaSuspensionBinding
+        )
+    }
 
     /// Linearizes Show, Hide, and key-frame requests with native capture state.
     ///
@@ -1480,6 +2378,19 @@ actor WorldwideScreenService {
             // acknowledgement must yield before Hide stops capture or Show starts a new generation.
             keyFrameControlTask?.cancel()
             keyFrameControlTask = nil
+        }
+
+        if request.command == .showScreen,
+           screenMediaSuspension.activeScreenRequestID != nil {
+            await peer.cancelScreenMediaSuspension(
+                reason: "A newer ordinary Show replaced automatic screen suspension."
+            )
+            resetAutomaticScreenMediaSuspensionState()
+            guard await stopScreenCaptureOrCloseSession(
+                context: "a newer ordinary Show replaced automatic screen suspension"
+            ) else {
+                return
+            }
         }
 
         if recoveryProofRequired,
@@ -1551,7 +2462,11 @@ actor WorldwideScreenService {
                     logger.error("Worldwide screen authorization changed during Active acknowledgement")
                     return
                 }
+                activateAutomaticScreenMediaSuspensionOwnership(
+                    screenRequestID: request.id
+                )
             } catch {
+                screenMediaSuspension.retire()
                 if isNativeScreenStopFailure(error) {
                     logger.error(
                         "Worldwide screen Show could not verify native capture shutdown: " +
@@ -1589,6 +2504,41 @@ actor WorldwideScreenService {
                 return
             }
 
+            if screenMediaSuspension.suspensionIsInFlight,
+               let notice = screenMediaSuspension.currentSuspensionNotice {
+                let didStop = await acknowledgeInactiveAfterVerifiedScreenStop(
+                    peer: peer,
+                    requestID: request.id,
+                    context: "automatic weak-network screen suspension"
+                )
+                guard didStop else {
+                    await peer.cancelScreenMediaSuspension(
+                        reason: "Automatic screen suspension could not prove Inactive."
+                    )
+                    resetAutomaticScreenMediaSuspensionState()
+                    return
+                }
+                guard screenMediaSuspension.confirmInactive(
+                    for: notice,
+                    binding: currentScreenMediaSuspensionBinding
+                ) else {
+                    await peer.cancelScreenMediaSuspension(
+                        reason: "Automatic screen suspension lost its Hide ownership."
+                    )
+                    resetAutomaticScreenMediaSuspensionState()
+                    return
+                }
+                logger.info("Worldwide screen video paused to preserve audio latency")
+                return
+            }
+
+            if screenMediaSuspension.activeScreenRequestID != nil {
+                await peer.cancelScreenMediaSuspension(
+                    reason: "An ordinary Hide retired automatic screen suspension."
+                )
+                resetAutomaticScreenMediaSuspensionState()
+            }
+
             _ = await acknowledgeInactiveAfterVerifiedScreenStop(
                 peer: peer,
                 requestID: request.id,
@@ -1596,6 +2546,13 @@ actor WorldwideScreenService {
             )
 
         case .requestKeyFrame:
+            if let context = automaticScreenMediaResumeContext {
+                await failAutomaticScreenMediaResume(
+                    peer: peer,
+                    attemptID: context.attemptID,
+                    reason: "an ordinary key-frame request interrupted the resume proof"
+                )
+            }
             // RTP feedback remains WebRTC-owned; acknowledge the screen state without reusing a
             // VideoToolbox frame from the legacy path. This retry must not occupy the sole serial
             // peer-event consumer: a later Hide, Show, or transport failure has to run immediately.
@@ -2181,6 +3138,10 @@ actor WorldwideScreenService {
                 )
         )
         iPhoneMicrophoneForwarding.invalidateTransport()
+        // This path is also used when a local ICE restart is armed before native state reports a
+        // disconnect. Retire the screen probe and RTP encoding locally on every uncertainty
+        // boundary, not only on peer/ICE callbacks that happen to call `enterRecovery` first.
+        await peer?.suspendScreenMediaForTransportUncertainty()
         await peer?.suspendSystemAudioForTransportUncertainty()
         await stopScreenCaptureForTransportUncertainty(reason)
         await stopSystemAudioForTransportUncertainty(reason)
@@ -2216,6 +3177,7 @@ actor WorldwideScreenService {
     /// Enters fail-closed recovery and invalidates any pre-uncertainty authorization.
     private func enterRecovery(reason: String) async {
         isRecovering = true
+        resetAutomaticScreenMediaSuspensionState()
         revokeCaptureAuthorization()
         pauseSystemAudioForTransportUncertainty()
         recordBlackHoleDefaultInputOutcome(
@@ -2239,6 +3201,7 @@ actor WorldwideScreenService {
     /// Creates a fresh epoch that requires answer installation plus a Hide/Inactive proof.
     @discardableResult
     private func installRecoveryProofBoundary(awaitingAnswer: Bool) -> UInt64 {
+        resetAutomaticScreenMediaSuspensionState()
         revokeCaptureAuthorization()
         pauseSystemAudioForTransportUncertainty()
         recordBlackHoleDefaultInputOutcome(
@@ -4366,6 +5329,29 @@ actor WorldwideScreenService {
     private func renegotiateScreenCaptureFormat(
         for sink: WorldwideScreenSampleSink
     ) async {
+        if let context = automaticScreenMediaResumeContext {
+            if context.finalAcknowledgementCommit.isCommitted {
+                // The exact resumed ACK won under the old sink lock. Treat this callback as an
+                // ordinary post-resume display rebuild even if the service continuation has not
+                // yet cleared its bookkeeping context.
+                cancelAutomaticScreenMediaResumeTimeout()
+                automaticScreenMediaResumeContext = nil
+            } else {
+                if let peer {
+                    await failAutomaticScreenMediaResume(
+                        peer: peer,
+                        attemptID: context.attemptID,
+                        reason: "capture geometry changed during the resume proof"
+                    )
+                } else {
+                    resetAutomaticScreenMediaSuspensionState()
+                    _ = await stopScreenCaptureOrCloseSession(
+                        context: "capture geometry changed without a resume-proof peer"
+                    )
+                }
+                return
+            }
+        }
         guard screenFormatRenegotiation.admit(
             sink,
             isCurrent: captureSink === sink,
@@ -5146,11 +6132,20 @@ final class WorldwideScreenSampleSink: ScreenVideoSampleConsumer, @unchecked Sen
 
     static let formatRenegotiationFallbackDelay =
         ScreenVideoFormatRenegotiationDetector.fallbackDelay
+    /// While the viewer is covered, a lossy 32 kbps path needs later source frames so RTX/PLI can
+    /// recover from a dropped first real key frame. Keep that recovery lane strictly bounded and
+    /// far below ordinary capture rate; the service's independent 12-second proof timeout is the
+    /// terminal fence.
+    private static let automaticResumeRealFrameRetryIntervalSeconds = 1.0
+    private static let maximumAutomaticResumeRealFrameCount = 12
 
     private enum ForwardingPhase: Equatable {
         case ready
         case starting
         case active
+        case resumeMarkerBlocked
+        case resumeRealArmed
+        case resumeAwaitingPresentation
         case renegotiating
         case stopped
 
@@ -5159,10 +6154,18 @@ final class WorldwideScreenSampleSink: ScreenVideoSampleConsumer, @unchecked Sen
             case .ready: "ready"
             case .starting: "starting"
             case .active: "active"
+            case .resumeMarkerBlocked: "resumeMarkerBlocked"
+            case .resumeRealArmed: "resumeRealArmed"
+            case .resumeAwaitingPresentation: "resumeAwaitingPresentation"
             case .renegotiating: "renegotiating"
             case .stopped: "stopped"
             }
         }
+    }
+
+    struct ResumeMarkerBoundary: Equatable, Sendable {
+        let revision: UInt64
+        let geometry: ScreenVideoFrameGeometry
     }
 
     enum ForwardingStartupProofState: Equatable {
@@ -5197,6 +6200,10 @@ final class WorldwideScreenSampleSink: ScreenVideoSampleConsumer, @unchecked Sen
     private var lastFrameSurfaceWidth: Int?
     private var lastFrameSurfaceHeight: Int?
     private var forwardingAuthorization: WebRTCControlAuthorization?
+    private var resumeBoundaryRevision: UInt64 = 0
+    private var resumeBoundaryGeometry: ScreenVideoFrameGeometry?
+    private var automaticResumeRealFrameCount = 0
+    private var lastAutomaticResumeRealFrameTimestampSeconds: Double?
     private var formatRenegotiationDetector = ScreenVideoFormatRenegotiationDetector()
     private var nextFormatRenegotiationFallbackToken: UInt64 = 0
     private var scheduledFormatRenegotiationFallbackToken: UInt64?
@@ -5257,6 +6264,8 @@ final class WorldwideScreenSampleSink: ScreenVideoSampleConsumer, @unchecked Sen
             lastFrameMetadataState = .none
             lastFrameSurfaceWidth = nil
             lastFrameSurfaceHeight = nil
+            automaticResumeRealFrameCount = 0
+            lastAutomaticResumeRealFrameTimestampSeconds = nil
             formatIsProven = expectedFrameDimensions == nil
             return (true, retiredAuthorization)
         }
@@ -5376,6 +6385,132 @@ final class WorldwideScreenSampleSink: ScreenVideoSampleConsumer, @unchecked Sen
         }
     }
 
+    /// Closes the ScreenCaptureKit-to-WebRTC callback gate on the source's exact sample queue.
+    /// The returned revision and geometry are the only capture generation a later marker/real
+    /// proof may reopen. Remote input is cleared before this method returns.
+    func beginAutomaticResumeMarkerGate(
+        authorizedBy authorization: WebRTCControlAuthorization
+    ) -> ResumeMarkerBoundary? {
+        let boundary: ResumeMarkerBoundary?
+        do {
+            boundary = try authorization.withValidAuthorization {
+                lock.withLock { () -> ResumeMarkerBoundary? in
+                    guard forwardingPhase == .active,
+                          formatIsProven,
+                          forwardingAuthorization === authorization,
+                          callbackGateAllowsEntry,
+                          let geometry = lastProvenFrameGeometry else {
+                        return nil
+                    }
+                    resumeBoundaryRevision &+= 1
+                    if resumeBoundaryRevision == 0 { resumeBoundaryRevision = 1 }
+                    resumeBoundaryGeometry = geometry
+                    automaticResumeRealFrameCount = 0
+                    lastAutomaticResumeRealFrameTimestampSeconds = nil
+                    forwardingPhase = .resumeMarkerBlocked
+                    return ResumeMarkerBoundary(
+                        revision: resumeBoundaryRevision,
+                        geometry: geometry
+                    )
+                }
+            }
+        } catch {
+            return nil
+        }
+        guard let boundary else { return nil }
+        remoteInputController.updateScreenVideoFrameGeometry(nil)
+        return boundary
+    }
+
+    /// Opens exactly one current-generation real frame after the marker was presented. This is
+    /// invoked behind a second source sample-queue barrier, so no callback queued before the
+    /// viewer's proof can acquire the newly opened gate.
+    func armAutomaticResumeRealFrame(
+        boundary: ResumeMarkerBoundary,
+        authorizedBy authorization: WebRTCControlAuthorization
+    ) -> Bool {
+        do {
+            return try authorization.withValidAuthorization {
+                lock.withLock {
+                    guard forwardingPhase == .resumeMarkerBlocked,
+                          formatIsProven,
+                          forwardingAuthorization === authorization,
+                          resumeBoundaryRevision == boundary.revision,
+                          resumeBoundaryGeometry == boundary.geometry,
+                          lastProvenFrameGeometry == boundary.geometry,
+                          callbackGateAllowsEntry else {
+                        return false
+                    }
+                    forwardingPhase = .resumeRealArmed
+                    automaticResumeRealFrameCount = 0
+                    lastAutomaticResumeRealFrameTimestampSeconds = nil
+                    return true
+                }
+            }
+        } catch {
+            return false
+        }
+    }
+
+    /// Reopens ordinary delivery only after the receiver proves a current real frame. Geometry is
+    /// republished for the fresh input capability after the proof wins the authorization race.
+    func commitAutomaticResume(
+        boundary: ResumeMarkerBoundary,
+        authorizedBy authorization: WebRTCControlAuthorization
+    ) -> Bool {
+        do {
+            try withAutomaticResumeCommitAuthorization(
+                boundary: boundary,
+                authorizedBy: authorization
+            ) {
+                // Deterministic tests and non-wire callers need only the atomic local commit.
+            }
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// Holds the forwarding capability and sink generation across the irreversible final ACK.
+    /// Display callbacks detach under this lock and revoke after unlocking, so either they win
+    /// before this guard or the exact resumed acknowledgement wins before they can retire it.
+    func withAutomaticResumeCommitAuthorization<Result>(
+        boundary: ResumeMarkerBoundary,
+        authorizedBy authorization: WebRTCControlAuthorization,
+        operation: () throws -> Result
+    ) throws -> Result {
+        try authorization.withValidAuthorization {
+            try lock.withLock {
+                guard forwardingPhase == .resumeAwaitingPresentation,
+                      formatIsProven,
+                      forwardingAuthorization === authorization,
+                      resumeBoundaryRevision == boundary.revision,
+                      resumeBoundaryGeometry == boundary.geometry,
+                      lastProvenFrameGeometry == boundary.geometry,
+                      callbackGateAllowsEntry else {
+                    throw WebRTCTransportError.transportNotHealthy
+                }
+                forwardingPhase = .active
+                resumeBoundaryGeometry = nil
+                automaticResumeRealFrameCount = 0
+                lastAutomaticResumeRealFrameTimestampSeconds = nil
+                remoteInputController.updateScreenVideoFrameGeometry(
+                    boundary.geometry
+                )
+                do {
+                    return try operation()
+                } catch {
+                    // The viewer was not told to uncover. Restore the covered proof phase and
+                    // remove geometry before releasing either lock so input cannot leak through.
+                    forwardingPhase = .resumeAwaitingPresentation
+                    resumeBoundaryGeometry = boundary.geometry
+                    remoteInputController.updateScreenVideoFrameGeometry(nil)
+                    throw error
+                }
+            }
+        }
+    }
+
     /// Closes the callback gate synchronously.
     func stopForwarding() {
         let retiredAuthorization = lock.withLock { () -> WebRTCControlAuthorization? in
@@ -5389,6 +6524,9 @@ final class WorldwideScreenSampleSink: ScreenVideoSampleConsumer, @unchecked Sen
             lastFrameMetadataState = .none
             lastFrameSurfaceWidth = nil
             lastFrameSurfaceHeight = nil
+            resumeBoundaryGeometry = nil
+            automaticResumeRealFrameCount = 0
+            lastAutomaticResumeRealFrameTimestampSeconds = nil
             invalidateFormatRenegotiationFallbackLocked()
             let authorization = forwardingAuthorization
             forwardingAuthorization = nil
@@ -5434,7 +6572,11 @@ final class WorldwideScreenSampleSink: ScreenVideoSampleConsumer, @unchecked Sen
             retiredAuthorization: WebRTCControlAuthorization?,
             fallbackToken: UInt64?
         ) in
-            guard forwardingPhase == .starting || forwardingPhase == .active,
+            guard forwardingPhase == .starting
+                    || forwardingPhase == .active
+                    || forwardingPhase == .resumeMarkerBlocked
+                    || forwardingPhase == .resumeRealArmed
+                    || forwardingPhase == .resumeAwaitingPresentation,
                   callbackGateAllowsEntry else {
                 return (false, nil, nil)
             }
@@ -5446,6 +6588,76 @@ final class WorldwideScreenSampleSink: ScreenVideoSampleConsumer, @unchecked Sen
             lastFrameSurfaceWidth = surfaceWidth
             lastFrameSurfaceHeight = surfaceHeight
             guard !displayConfigurationInProgress else {
+                return (false, nil, nil)
+            }
+            if forwardingPhase == .resumeMarkerBlocked
+                || forwardingPhase == .resumeRealArmed
+                || forwardingPhase == .resumeAwaitingPresentation {
+                let geometryRemainsExact: Bool
+                if let resumeBoundaryGeometry,
+                   surfaceWidth == resumeBoundaryGeometry.surfaceWidth,
+                   surfaceHeight == resumeBoundaryGeometry.surfaceHeight {
+                    switch frameGeometryObservation {
+                    case .valid(let frameGeometry):
+                        geometryRemainsExact = frameGeometry == resumeBoundaryGeometry
+                            && !frameGeometry.requiresCaptureFormatRenegotiation
+                    case .absent:
+                        // Optional ScreenCaptureKit attachments may disappear without a surface
+                        // transition. The exact retained geometry remains authoritative while the
+                        // pixel surface and display callbacks are unchanged.
+                        geometryRemainsExact = lastProvenFrameGeometry
+                            == resumeBoundaryGeometry
+                    case .invalid:
+                        geometryRemainsExact = false
+                    }
+                } else {
+                    geometryRemainsExact = false
+                }
+                guard geometryRemainsExact else {
+                    let suspension = suspendForFormatRenegotiationLocked()
+                    return (
+                        suspension.requiresRenegotiation,
+                        suspension.retiredAuthorization,
+                        nil
+                    )
+                }
+                switch forwardingPhase {
+                case .resumeRealArmed:
+                    // Admit the first exact real surface immediately. The encoder wrapper forces
+                    // this boundary to a key frame and admits one matching callback.
+                    forwardingPhase = .resumeAwaitingPresentation
+                    automaticResumeRealFrameCount = 1
+                    lastAutomaticResumeRealFrameTimestampSeconds =
+                        CMTimeGetSeconds(timestamp)
+                    capturer.captureScreenFrame(
+                        pixelBuffer: pixelBuffer,
+                        timestamp: timestamp
+                    )
+                case .resumeAwaitingPresentation:
+                    // A covered 1 fps trickle gives native NACK/PLI recovery a bounded later
+                    // frame without reopening ordinary capture or input. Every frame still uses
+                    // the exact retained surface/geometry checked above.
+                    let timestampSeconds = CMTimeGetSeconds(timestamp)
+                    if automaticResumeRealFrameCount
+                            < Self.maximumAutomaticResumeRealFrameCount,
+                       timestampSeconds.isFinite,
+                       let lastTimestampSeconds =
+                            lastAutomaticResumeRealFrameTimestampSeconds,
+                       timestampSeconds - lastTimestampSeconds
+                            >= Self.automaticResumeRealFrameRetryIntervalSeconds {
+                        automaticResumeRealFrameCount += 1
+                        lastAutomaticResumeRealFrameTimestampSeconds =
+                            timestampSeconds
+                        capturer.captureScreenFrame(
+                            pixelBuffer: pixelBuffer,
+                            timestamp: timestamp
+                        )
+                    }
+                case .resumeMarkerBlocked:
+                    break
+                default:
+                    break
+                }
                 return (false, nil, nil)
             }
             if frameGeometry == nil,
@@ -5555,7 +6767,11 @@ final class WorldwideScreenSampleSink: ScreenVideoSampleConsumer, @unchecked Sen
             retiredAuthorization: WebRTCControlAuthorization?
         ) in
             guard !displayConfigurationInProgress,
-                  forwardingPhase == .starting || forwardingPhase == .active else {
+                  forwardingPhase == .starting
+                    || forwardingPhase == .active
+                    || forwardingPhase == .resumeMarkerBlocked
+                    || forwardingPhase == .resumeRealArmed
+                    || forwardingPhase == .resumeAwaitingPresentation else {
                 return (false, nil)
             }
             displayConfigurationInProgress = true
@@ -5580,11 +6796,18 @@ final class WorldwideScreenSampleSink: ScreenVideoSampleConsumer, @unchecked Sen
         ) in
             invalidateFormatRenegotiationFallbackLocked()
             displayConfigurationInProgress = false
-            if forwardingPhase == .starting || forwardingPhase == .active {
+            if forwardingPhase == .starting
+                || forwardingPhase == .active
+                || forwardingPhase == .resumeMarkerBlocked
+                || forwardingPhase == .resumeRealArmed
+                || forwardingPhase == .resumeAwaitingPresentation {
                 // Core Graphics can invoke this callback from inside its reconfiguration
                 // transaction. Remote input acquires the control token before this sink lock, so
                 // detach here and revoke only after unlock to preserve the global lock order.
-                let shouldNotify = forwardingPhase == .active
+                // Every already-published resume phase owns a live capture generation. A settled
+                // display mutation must notify its actor immediately; otherwise `.renegotiating`
+                // drops every later sample and the covered probe can linger until its timeout.
+                let shouldNotify = forwardingPhase != .starting
                 forwardingPhase = .renegotiating
                 formatIsProven = false
                 lastProvenFrameGeometry = nil
@@ -5675,15 +6898,22 @@ final class WorldwideScreenSampleSink: ScreenVideoSampleConsumer, @unchecked Sen
         requiresRenegotiation: Bool,
         retiredAuthorization: WebRTCControlAuthorization?
     ) {
-        guard forwardingPhase == .starting || forwardingPhase == .active else {
+        guard forwardingPhase == .starting
+                || forwardingPhase == .active
+                || forwardingPhase == .resumeMarkerBlocked
+                || forwardingPhase == .resumeRealArmed
+                || forwardingPhase == .resumeAwaitingPresentation else {
             return (false, nil)
         }
         invalidateFormatRenegotiationFallbackLocked()
-        let shouldNotify = forwardingPhase == .active
+        let shouldNotify = forwardingPhase != .starting
         forwardingPhase = .renegotiating
         formatIsProven = false
         displayConfigurationInProgress = false
         lastProvenFrameGeometry = nil
+        resumeBoundaryGeometry = nil
+        automaticResumeRealFrameCount = 0
+        lastAutomaticResumeRealFrameTimestampSeconds = nil
         let authorization = forwardingAuthorization
         forwardingAuthorization = nil
         return (shouldNotify, authorization)

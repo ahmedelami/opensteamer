@@ -788,6 +788,190 @@ final class WorldwideScreenSampleSinkTests: XCTestCase {
         XCTAssertEqual(renegotiations.value, 0)
         XCTAssertEqual(capturer.captureCount, 2)
     }
+
+    func testAutomaticResumeGateAdmitsBoundedOneFPSRealRecoveryUntilPresentation() throws {
+        let capturer = RecordingScreenFrameCapturer()
+        let geometryUpdater = RecordingRemoteInputGeometryUpdater()
+        let sink = WorldwideScreenSampleSink(
+            capturer: capturer,
+            remoteInputController: geometryUpdater,
+            didRequireCaptureFormatRenegotiation: { _ in },
+            didStop: { _, _ in }
+        )
+        let authorization = try XCTUnwrap(sink.beginForwarding())
+        XCTAssertTrue(sink.commitForwardingStartup(authorizedBy: authorization))
+        let geometry = try makeFullFrameGeometry()
+        let sample = try makeImageSample()
+        sink.consumeScreenVideoSample(sample, frameGeometry: geometry)
+        XCTAssertEqual(capturer.captureCount, 1)
+
+        let boundary = try XCTUnwrap(
+            sink.beginAutomaticResumeMarkerGate(authorizedBy: authorization)
+        )
+        XCTAssertEqual(boundary.geometry, geometry)
+        XCTAssertGreaterThan(boundary.revision, 0)
+        XCTAssertFalse(sink.allowsActiveUse(authorizedBy: authorization))
+        XCTAssertNil(geometryUpdater.updates.last ?? geometry)
+
+        for _ in 0..<3 {
+            sink.consumeScreenVideoSample(sample, frameGeometry: geometry)
+        }
+        XCTAssertEqual(capturer.captureCount, 1)
+
+        XCTAssertTrue(
+            sink.armAutomaticResumeRealFrame(
+                boundary: boundary,
+                authorizedBy: authorization
+            )
+        )
+        sink.consumeScreenVideoSample(sample, frameGeometry: geometry)
+        sink.consumeScreenVideoSample(sample, frameGeometry: geometry)
+        XCTAssertEqual(capturer.captureCount, 2)
+        XCTAssertFalse(sink.allowsActiveUse(authorizedBy: authorization))
+
+        // Later exact-geometry frames may enter only once per second, and the covered recovery
+        // lane stops after twelve total real frames even if the final presentation is lost.
+        for second in 1...20 {
+            sink.consumeScreenVideoSample(
+                try makeImageSample(
+                    presentationTimeStamp: CMTime(
+                        value: CMTimeValue(1 + second * 60),
+                        timescale: 60
+                    )
+                ),
+                frameGeometry: geometry
+            )
+        }
+        XCTAssertEqual(capturer.captureCount, 13)
+        XCTAssertFalse(sink.allowsActiveUse(authorizedBy: authorization))
+
+        XCTAssertThrowsError(
+            try sink.withAutomaticResumeCommitAuthorization(
+                boundary: boundary,
+                authorizedBy: authorization
+            ) {
+                throw NSError(
+                    domain: "WorldwideScreenSampleSinkTests.finalCommit",
+                    code: 1
+                )
+            }
+        )
+        XCTAssertTrue(authorization.isValid)
+        XCTAssertFalse(sink.allowsActiveUse(authorizedBy: authorization))
+        XCTAssertNil(geometryUpdater.updates.last ?? geometry)
+
+        XCTAssertTrue(
+            sink.commitAutomaticResume(
+                boundary: boundary,
+                authorizedBy: authorization
+            )
+        )
+        XCTAssertTrue(sink.allowsActiveUse(authorizedBy: authorization))
+        XCTAssertEqual(geometryUpdater.updates.last ?? nil, geometry)
+        sink.consumeScreenVideoSample(sample, frameGeometry: geometry)
+        XCTAssertEqual(capturer.captureCount, 14)
+
+        XCTAssertFalse(
+            sink.armAutomaticResumeRealFrame(
+                boundary: boundary,
+                authorizedBy: authorization
+            )
+        )
+    }
+
+    func testAutomaticResumeGateFailsClosedOnGeometryMutation() throws {
+        let renegotiations = LockedCount()
+        let capturer = RecordingScreenFrameCapturer()
+        let sink = WorldwideScreenSampleSink(
+            capturer: capturer,
+            remoteInputController: MacRemoteInputController(allowRemoteControl: false),
+            didRequireCaptureFormatRenegotiation: { _ in
+                renegotiations.increment()
+            },
+            didStop: { _, _ in }
+        )
+        let authorization = try XCTUnwrap(sink.beginForwarding())
+        XCTAssertTrue(sink.commitForwardingStartup(authorizedBy: authorization))
+        let geometry = try makeFullFrameGeometry()
+        sink.consumeScreenVideoSample(try makeImageSample(), frameGeometry: geometry)
+        let boundary = try XCTUnwrap(
+            sink.beginAutomaticResumeMarkerGate(authorizedBy: authorization)
+        )
+
+        let changedGeometry = try XCTUnwrap(
+            ScreenVideoFrameGeometry(
+                surfaceWidth: 720,
+                surfaceHeight: 1_280,
+                contentRect: CGRect(x: 0, y: 0, width: 360, height: 640),
+                contentScale: 1,
+                scaleFactor: 2
+            )
+        )
+        sink.consumeScreenVideoSample(
+            try makeImageSample(width: 720, height: 1_280),
+            frameGeometry: changedGeometry
+        )
+
+        XCTAssertFalse(authorization.isValid)
+        XCTAssertTrue(sink.isAwaitingFormatRenegotiation)
+        XCTAssertEqual(renegotiations.value, 1)
+        XCTAssertFalse(
+            sink.armAutomaticResumeRealFrame(
+                boundary: boundary,
+                authorizedBy: authorization
+            )
+        )
+        XCTAssertEqual(capturer.captureCount, 1)
+    }
+
+    func testSettledDisplayMutationNotifiesDuringEveryAutomaticResumePhase() throws {
+        for phaseIndex in 0..<3 {
+            let renegotiations = LockedCount()
+            let sink = WorldwideScreenSampleSink(
+                capturer: RecordingScreenFrameCapturer(),
+                remoteInputController: MacRemoteInputController(
+                    allowRemoteControl: false
+                ),
+                didRequireCaptureFormatRenegotiation: { _ in
+                    renegotiations.increment()
+                },
+                didStop: { _, _ in }
+            )
+            let authorization = try XCTUnwrap(sink.beginForwarding())
+            XCTAssertTrue(
+                sink.commitForwardingStartup(authorizedBy: authorization)
+            )
+            let geometry = try makeFullFrameGeometry()
+            let sample = try makeImageSample()
+            sink.consumeScreenVideoSample(sample, frameGeometry: geometry)
+            let boundary = try XCTUnwrap(
+                sink.beginAutomaticResumeMarkerGate(
+                    authorizedBy: authorization
+                )
+            )
+            if phaseIndex >= 1 {
+                XCTAssertTrue(
+                    sink.armAutomaticResumeRealFrame(
+                        boundary: boundary,
+                        authorizedBy: authorization
+                    )
+                )
+            }
+            if phaseIndex >= 2 {
+                sink.consumeScreenVideoSample(sample, frameGeometry: geometry)
+            }
+
+            sink.displayConfigurationWillChange()
+            sink.displayModeDidChange()
+
+            XCTAssertFalse(authorization.isValid, "phase index \(phaseIndex)")
+            XCTAssertTrue(
+                sink.isAwaitingFormatRenegotiation,
+                "phase index \(phaseIndex)"
+            )
+            XCTAssertEqual(renegotiations.value, 1, "phase index \(phaseIndex)")
+        }
+    }
 }
 
 final class ScreenFormatRenegotiationCoordinatorTests: XCTestCase {
@@ -919,7 +1103,8 @@ private func makeInsetFrameGeometry() throws -> ScreenVideoFrameGeometry {
 
 private func makeImageSample(
     width: Int = 640,
-    height: Int = 360
+    height: Int = 360,
+    presentationTimeStamp: CMTime = CMTime(value: 1, timescale: 60)
 ) throws -> CMSampleBuffer {
     var pixelBuffer: CVPixelBuffer?
     var status = CVPixelBufferCreate(
@@ -946,7 +1131,7 @@ private func makeImageSample(
 
     var timing = CMSampleTimingInfo(
         duration: CMTime(value: 1, timescale: 60),
-        presentationTimeStamp: CMTime(value: 1, timescale: 60),
+        presentationTimeStamp: presentationTimeStamp,
         decodeTimeStamp: .invalid
     )
     var sampleBuffer: CMSampleBuffer?

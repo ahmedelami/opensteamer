@@ -155,6 +155,33 @@ public enum WebRTCTransportEvent: Sendable {
     case macHostedCallChallengeReceived(WebRTCMacHostedCallChallenge)
     /// Current-peer Mac-hosted call proof, or nil when any evidence boundary is uncertain.
     case macHostedCallEvidenceChanged(WebRTCMacHostedCallEvidence?)
+    /// Host notice that the currently shown screen entered a negotiated suspension generation.
+    case screenMediaSuspensionReceived(WebRTCScreenMediaSuspensionNotice)
+    /// Viewer proof that its forced presentation cover is installed for the exact suspension.
+    case screenMediaCoveredAcknowledgementReceived(
+        WebRTCScreenMediaCoveredAcknowledgement
+    )
+    /// Exact encoder-domain marker boundary that the viewer must present under its cover.
+    case screenMediaMarkerReadyReceived(WebRTCScreenMediaMarkerReady)
+    /// Exact receiver-domain marker presentation returned to the host.
+    case screenMediaMarkerPresentationReceived(
+        WebRTCScreenMediaMarkerPresentation
+    )
+    /// Affine encoder-to-receiver RTP boundary for the first admissible real frame.
+    case screenMediaResumeReadyReceived(WebRTCScreenMediaResumeReady)
+    /// Viewer request to commit one exact presented real-frame proof.
+    case screenMediaResumeRequestReceived(WebRTCScreenMediaResumeRequest)
+    /// Host commit for the exact resume request. Input is installed only at this event.
+    case screenMediaResumedAcknowledgementReceived(
+        WebRTCScreenMediaResumedAcknowledgement,
+        inputAuthorization: WebRTCInputAuthorization?
+    )
+    /// Immediate post-aligner encoder observation for the active negotiated resume probe.
+    case screenMediaEncoderResumeProbeEvent(
+        ScreenVideoEncoderResumeProbeEvent
+    )
+    /// The transient negotiated resume state was fail-closed. A cover must remain installed.
+    case screenMediaSuspensionInvalidated(String)
     /// Legacy signaling control event. Worldwide data-channel control uses the typed request/ack events above.
     case controlReceived(RemoteControlCommand)
     case identityReceived(RemotePeerIdentity)

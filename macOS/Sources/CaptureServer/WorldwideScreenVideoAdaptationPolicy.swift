@@ -73,10 +73,20 @@ struct WorldwideScreenVideoEncodingRecommendation: Equatable, Sendable {
     }
 }
 
+enum WorldwideScreenVideoAutomaticSuspensionDecision: Equatable, Sendable {
+    case suspend
+    case resume
+}
+
 /// Converts transport capacity into a stable, single-layer screen-video encoding ceiling.
 struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
     static let requiredHealthyUpgradeSampleCount = 8
-    static let unavailableBandwidthDowngradeSampleCount = 3
+    static let requiredSuspensionPressureSampleCount = 3
+    /// A paused sender cannot produce a useful outbound bitrate estimate. Even when the last
+    /// estimate remains positive-but-low, a long latency-stable window permits one bounded probe;
+    /// a failed probe resets this counter and therefore supplies the same full cooldown again.
+    static let requiredStableSuspensionResumeProbeSampleCount = 16
+    static let requiredMaximumSuspensionResumeProbeSampleCount = 64
 
     private static let minimumVideoBitrateBps = 32_000
     private static let audioAndControlReserveBps = 320_000.0
@@ -96,6 +106,12 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
     private(set) var currentTier: WorldwideScreenVideoAdaptationTier
     private(set) var healthyUpgradeSampleCount = 0
     private(set) var unavailableBandwidthSampleCount = 0
+    private(set) var automaticSuspensionPressureSampleCount = 0
+    private(set) var stableSuspensionResumeProbeSampleCount = 0
+    private(set) var maximumSuspensionResumeProbeSampleCount = 0
+    private(set) var bandwidthEstimateIsUnavailable = false
+    private(set) var lastSampleHasLatencyPressure = false
+    private(set) var lastSampleHasPositiveSuspensionPressure = false
     private(set) var roundTripTimeBaselineSeconds: Double?
     private var roundTripTimeBootstrapSamples: [Double] = []
     private(set) var selectedRoute: WebRTCICERouteDiagnostics?
@@ -157,6 +173,7 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
         )
         healthyUpgradeSampleCount = 0
         unavailableBandwidthSampleCount = 0
+        resetAutomaticSuspensionMeasurements()
         roundTripTimeBaselineSeconds = nil
         roundTripTimeBootstrapSamples = []
         selectedRoute = nil
@@ -176,6 +193,7 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
     mutating func update(
         peerGeneration generation: UInt64,
         isCaptureActive: Bool,
+        isAutomaticallySuspended: Bool = false,
         availableOutgoingBitrateBps: Double?,
         currentRoundTripTimeSeconds: Double?,
         selectedRoute: WebRTCICERouteDiagnostics? = nil,
@@ -187,6 +205,20 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
            selectedRoute != self.selectedRoute {
             self.selectedRoute = selectedRoute
             resetPathMeasurements()
+        }
+
+        // Pre-Show and manually hidden sessions have no outbound video with which to interpret
+        // WebRTC's optional bandwidth estimate or packet-send delay. V27 treated those absent
+        // samples as congestion and could walk all the way to audioPriority before the first Show.
+        // Reset to the configured conservative start tier and consume path samples only for an
+        // active sender or an explicit automatic-pause recovery probe.
+        guard isCaptureActive || isAutomaticallySuspended else {
+            currentTier = Self.initialTier(
+                configuredTotalRTPBitrateBps: configuredTotalRTPBitrateBps
+            )
+            resetPathMeasurements()
+            resetAutomaticSuspensionMeasurements()
+            return nil
         }
 
         let currentRoundTripTimeSeconds = validRoundTripTime(
@@ -208,30 +240,33 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
             $0 > Self.maximumAveragePacketSendDelaySeconds
         } ?? false
         let latencyPressure = roundTripTimeIsInflated || packetQueueIsInflated
+        lastSampleHasLatencyPressure = latencyPressure
 
         guard let availableOutgoingBitrateBps,
               availableOutgoingBitrateBps.isFinite,
               availableOutgoingBitrateBps > 0 else {
+            bandwidthEstimateIsUnavailable = true
             healthyUpgradeSampleCount = 0
-            unavailableBandwidthSampleCount = min(
-                Self.unavailableBandwidthDowngradeSampleCount,
-                unavailableBandwidthSampleCount + 1
-            )
-            let unavailableTooLong = unavailableBandwidthSampleCount
-                >= Self.unavailableBandwidthDowngradeSampleCount
-            guard latencyPressure || unavailableTooLong,
+            if unavailableBandwidthSampleCount < Int.max {
+                unavailableBandwidthSampleCount += 1
+            }
+            // Missing BWE is telemetry, not proof of congestion. A stable RTT and send queue hold
+            // the current tier indefinitely; only positive latency pressure can lower quality.
+            lastSampleHasPositiveSuspensionPressure = latencyPressure
+            guard latencyPressure,
                   let lowerTier = currentTier.nextLowerQuality else {
                 return isCaptureActive && didResetForNewPeer
                     ? currentRecommendation
                     : nil
             }
             currentTier = lowerTier
-            if unavailableTooLong {
-                unavailableBandwidthSampleCount = 0
-            }
             return isCaptureActive ? currentRecommendation : nil
         }
+        bandwidthEstimateIsUnavailable = false
         unavailableBandwidthSampleCount = 0
+        lastSampleHasPositiveSuspensionPressure = latencyPressure
+            || availableOutgoingBitrateBps
+                < requiredOutgoingBitrateBps(for: .audioPriority)
 
         var sustainableTier = sustainableTier(
             for: availableOutgoingBitrateBps
@@ -286,6 +321,83 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
         currentTier = upgradeTier
         healthyUpgradeSampleCount = 0
         return isCaptureActive ? currentRecommendation : nil
+    }
+
+    /// Converts already-classified path evidence into one bounded capture transition. The caller
+    /// must invoke this at most once for each `update` sample and owns the actual media lifecycle.
+    mutating func automaticSuspensionDecision(
+        isCaptureActive: Bool,
+        isAutomaticallySuspended: Bool
+    ) -> WorldwideScreenVideoAutomaticSuspensionDecision? {
+        if isAutomaticallySuspended {
+            automaticSuspensionPressureSampleCount = 0
+            if maximumSuspensionResumeProbeSampleCount
+                < Self.requiredMaximumSuspensionResumeProbeSampleCount {
+                maximumSuspensionResumeProbeSampleCount += 1
+            }
+            if currentTier != .audioPriority {
+                stableSuspensionResumeProbeSampleCount = 0
+                maximumSuspensionResumeProbeSampleCount = 0
+                return .resume
+            }
+            // Relative RTT pressure can remain permanently elevated after a path settles at a new
+            // stable latency. Never turn that stale baseline into a permanent pause: permit one
+            // bounded probe after a much longer maximum-pause window. A failed probe resets both
+            // counters and therefore enforces the complete cooldown before another attempt.
+            if maximumSuspensionResumeProbeSampleCount
+                >= Self.requiredMaximumSuspensionResumeProbeSampleCount {
+                stableSuspensionResumeProbeSampleCount = 0
+                maximumSuspensionResumeProbeSampleCount = 0
+                return .resume
+            }
+            guard !lastSampleHasLatencyPressure else {
+                stableSuspensionResumeProbeSampleCount = 0
+                return nil
+            }
+            if stableSuspensionResumeProbeSampleCount
+                < Self.requiredStableSuspensionResumeProbeSampleCount {
+                stableSuspensionResumeProbeSampleCount += 1
+            }
+            guard stableSuspensionResumeProbeSampleCount
+                    >= Self.requiredStableSuspensionResumeProbeSampleCount else {
+                return nil
+            }
+            stableSuspensionResumeProbeSampleCount = 0
+            return .resume
+        }
+
+        stableSuspensionResumeProbeSampleCount = 0
+        maximumSuspensionResumeProbeSampleCount = 0
+        guard isCaptureActive,
+              currentTier == .audioPriority,
+              lastSampleHasPositiveSuspensionPressure else {
+            automaticSuspensionPressureSampleCount = 0
+            return nil
+        }
+        automaticSuspensionPressureSampleCount = min(
+            Self.requiredSuspensionPressureSampleCount,
+            automaticSuspensionPressureSampleCount + 1
+        )
+        guard automaticSuspensionPressureSampleCount
+                >= Self.requiredSuspensionPressureSampleCount else {
+            return nil
+        }
+        automaticSuspensionPressureSampleCount = 0
+        return .suspend
+    }
+
+    mutating func automaticResumeAttemptFailed() {
+        currentTier = .audioPriority
+        healthyUpgradeSampleCount = 0
+        resetAutomaticSuspensionMeasurements()
+    }
+
+    mutating func resetForInactiveCapture() {
+        currentTier = Self.initialTier(
+            configuredTotalRTPBitrateBps: configuredTotalRTPBitrateBps
+        )
+        resetPathMeasurements()
+        resetAutomaticSuspensionMeasurements()
     }
 
     private func sustainableTier(
@@ -351,6 +463,15 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
         roundTripTimeBootstrapSamples = []
         lastOutboundVideoPacketsSent = nil
         lastOutboundVideoTotalPacketSendDelaySeconds = nil
+        bandwidthEstimateIsUnavailable = false
+        lastSampleHasLatencyPressure = false
+        lastSampleHasPositiveSuspensionPressure = false
+    }
+
+    private mutating func resetAutomaticSuspensionMeasurements() {
+        automaticSuspensionPressureSampleCount = 0
+        stableSuspensionResumeProbeSampleCount = 0
+        maximumSuspensionResumeProbeSampleCount = 0
     }
 
     private func validRoundTripTime(_ value: Double?) -> Double? {

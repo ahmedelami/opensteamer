@@ -28,6 +28,13 @@ struct WebRTCInputRequestBinding: Equatable, Sendable {
 struct WebRTCAudioSenderEncodingParameters: Equatable, Sendable {
     let maximumBitrateBps: Int?
     let minimumBitrateBps: Int?
+    let bitratePriority: Double
+    let networkPriorityRawValue: Int
+}
+
+struct WebRTCScreenVideoPrioritySnapshot: Equatable, Sendable {
+    let bitratePriorities: [Double]
+    let networkPriorityRawValues: [Int]
 }
 
 /// Requested and native activation state for one audio-processing component.
@@ -2116,10 +2123,13 @@ enum WebRTCIPhoneMicrophoneTrackCreationPolicy {
 public actor WebRTCPeer {
     private static let controlHistoryLimit = 256
     private static let inputHistoryLimit = 256
+    private static let retiredScreenMediaAttemptLimit = 64
     private static let maximumPendingRemoteCandidateCount = 256
     private static let maximumCandidateBytes = 8_192
     private static let maximumCandidateMIDBytes = 128
     private static let maximumCandidateUsernameFragmentBytes = 256
+    private static let systemAudioBitratePriority = 4.0
+    private static let screenVideoBitratePriority = 0.5
     #if os(iOS)
     private static let iPhoneMicrophoneOutputOnlyTarget =
         WebRTCIOSOutputOnlyMicrophoneTarget(
@@ -2148,6 +2158,8 @@ public actor WebRTCPeer {
     private let localAudioTrack: LKRTCAudioTrack?
     private let localVideoTrack: LKRTCVideoTrack?
     private let localVideoSender: LKRTCRtpSender?
+    private nonisolated let screenVideoEncoderResumeProbe:
+        ScreenVideoEncoderResumeProbe
     private var screenVideoEncodingUpdateGeneration: UInt64 = 0
     private let localIPhoneMicrophoneTrack: LKRTCAudioTrack?
     private let iPhoneMicrophoneReceiverID: String?
@@ -2206,7 +2218,12 @@ public actor WebRTCPeer {
     #endif
 
     private var delegateEventTask: Task<Void, Never>?
+    private var screenVideoEncoderProbeEventTask: Task<Void, Never>?
     private var statisticsTask: Task<Void, Never>?
+    private nonisolated let screenVideoEncoderProbeEvents:
+        AsyncStream<ScreenVideoEncoderResumeProbeEvent>
+    private nonisolated let screenVideoEncoderProbeEventContinuation:
+        AsyncStream<ScreenVideoEncoderResumeProbeEvent>.Continuation
     // Trickle candidates can beat SDP through signaling; native WebRTC rejects them until SDP lands.
     private var pendingRemoteCandidates: [RemoteICECandidate] = []
     private var pendingLocalCandidates: [RemoteICECandidate] = []
@@ -2271,6 +2288,55 @@ public actor WebRTCPeer {
     private var highestReceivedMacHostedCallEvidenceSequence: UInt64?
     private var currentReceivedMacHostedCallEvidence:
         WebRTCMacHostedCallEvidence?
+    // Screen-video suspension is a separately negotiated strict-v1 state machine carried on the
+    // existing ordered v2 data channel. Every retained object is an exact replay key; a lifecycle
+    // boundary clears the whole chain before a later generation can be admitted.
+    private var screenMediaSuspensionNegotiationEpoch: UInt64?
+    private var pendingScreenMediaHostOfferSDP: String?
+    private var sentScreenMediaSuspension:
+        WebRTCScreenMediaSuspensionNotice?
+    private var receivedScreenMediaSuspension:
+        WebRTCScreenMediaSuspensionNotice?
+    private var sentScreenMediaCoveredAcknowledgement:
+        WebRTCScreenMediaCoveredAcknowledgement?
+    private var receivedScreenMediaCoveredAcknowledgement:
+        WebRTCScreenMediaCoveredAcknowledgement?
+    private var sentScreenMediaMarkerReady:
+        WebRTCScreenMediaMarkerReady?
+    private var receivedScreenMediaMarkerReady:
+        WebRTCScreenMediaMarkerReady?
+    private var sentScreenMediaMarkerPresentation:
+        WebRTCScreenMediaMarkerPresentation?
+    private var receivedScreenMediaMarkerPresentation:
+        WebRTCScreenMediaMarkerPresentation?
+    private var sentScreenMediaResumeReady:
+        WebRTCScreenMediaResumeReady?
+    private var receivedScreenMediaResumeReady:
+        WebRTCScreenMediaResumeReady?
+    private var sentScreenMediaResumeRequest:
+        WebRTCScreenMediaResumeRequest?
+    private var receivedScreenMediaResumeRequest:
+        WebRTCScreenMediaResumeRequest?
+    private var sentScreenMediaResumedAcknowledgement:
+        WebRTCScreenMediaResumedAcknowledgement?
+    private var receivedScreenMediaResumedAcknowledgement:
+        WebRTCScreenMediaResumedAcknowledgement?
+    private var screenMediaResumeProbeAuthorization:
+        WebRTCControlAuthorization?
+    private var observedScreenVideoEncoderMarkerProof:
+        ScreenVideoEncoderMarkerProof?
+    private var observedScreenVideoEncoderRealFrameProof:
+        ScreenVideoEncoderRealFrameProof?
+    private var armedScreenMediaResumeAttemptID: UUID?
+    private var screenMediaSuspensionHideRequestID: UInt64?
+    private var highestSentScreenMediaSuspensionGeneration: UInt64?
+    private var highestReceivedScreenMediaSuspensionGeneration: UInt64?
+    private var retiredScreenMediaResumeAttemptIDs: Set<UUID> = []
+    private var retiredScreenMediaResumeAttemptOrder: [UUID] = []
+    private var lastSentScreenMediaCancellation:
+        WebRTCScreenMediaCancellation?
+    private var lastReceivedScreenMediaCancellation:
+        WebRTCScreenMediaCancellation?
 
     /// Builds the native factory, role-appropriate audio device, media tracks, and control lane.
     public init(configuration: WebRTCTransportConfiguration) throws {
@@ -2287,15 +2353,27 @@ public actor WebRTCPeer {
         )
         events = eventPair.stream
         eventContinuation = eventPair.continuation
+        let probeEventPair = AsyncStream<ScreenVideoEncoderResumeProbeEvent>
+            .makeStream(bufferingPolicy: .bufferingNewest(32))
+        screenVideoEncoderProbeEvents = probeEventPair.stream
+        screenVideoEncoderProbeEventContinuation =
+            probeEventPair.continuation
+        let probeEventContinuation = probeEventPair.continuation
         role = configuration.role
         configuredMaximumVideoBitrate = configuration.maximumVideoBitrate
 
-        let encoderFactory = LKRTCDefaultVideoEncoderFactory()
+        let defaultEncoderFactory = LKRTCDefaultVideoEncoderFactory()
         if let h264 = LKRTCDefaultVideoEncoderFactory.supportedCodecs().first(where: {
             ($0.name as String).caseInsensitiveCompare(kLKRTCVideoCodecH264Name as String) == .orderedSame
         }) {
-            encoderFactory.preferredCodec = h264
+            defaultEncoderFactory.preferredCodec = h264
         }
+        let screenVideoEncoderResumeProbe = ScreenVideoEncoderResumeProbe()
+        self.screenVideoEncoderResumeProbe = screenVideoEncoderResumeProbe
+        let encoderFactory = ScreenVideoObservingEncoderFactory(
+            downstream: defaultEncoderFactory,
+            probe: screenVideoEncoderResumeProbe
+        )
         let decoderFactory = LKRTCDefaultVideoDecoderFactory()
         let nativeFactory: LKRTCPeerConnectionFactory
         #if os(macOS)
@@ -2438,6 +2516,9 @@ public actor WebRTCPeer {
         nativeConfiguration.enableIceGatheringOnAnyAddressPorts = true
         nativeConfiguration.enableDscp = true
         nativeConfiguration.iceCandidatePoolSize = 2
+        // Preserve the jitter buffer's loss tolerance while allowing NetEq to drain excess
+        // accumulated delay more aggressively after a weak-network jitter burst.
+        nativeConfiguration.audioJitterBufferFastAccelerate = true
 
         let constraints = LKRTCMediaConstraints(
             mandatoryConstraints: nil,
@@ -2582,6 +2663,9 @@ public actor WebRTCPeer {
                     forKind: kLKRTCMediaStreamTrackKindVideo
                 )
             )
+            try Self.applyScreenVideoPriorityParameters(
+                to: videoTransceiver.sender
+            )
             localVideoTrack = videoTrack
             localVideoSender = videoTransceiver.sender
             externalVideoCapturer = MacExternalVideoCapturer(source: videoSource)
@@ -2620,11 +2704,20 @@ public actor WebRTCPeer {
                 )
             }
         }
+        guard screenVideoEncoderResumeProbe.installEventHandler({ event in
+            probeEventContinuation.yield(event)
+        }) else {
+            throw WebRTCTransportError.nativeFailure(
+                "The screen-video encoder event bridge was already installed."
+            )
+        }
     }
 
     deinit {
         statisticsTask?.cancel()
         delegateEventTask?.cancel()
+        screenVideoEncoderProbeEventTask?.cancel()
+        screenVideoEncoderProbeEventContinuation.finish()
         delegateProxy.close()
         peerConnection.close()
         eventContinuation.finish()
@@ -2645,6 +2738,7 @@ public actor WebRTCPeer {
 
         let offerEpoch = nextNegotiationEpoch()
         resetMacHostedCallEvidenceNegotiation()
+        resetScreenMediaSuspensionNegotiation()
         outstandingLocalOfferEpoch = offerEpoch
         hasStarted = true
         localDescriptionIsAnnounced = false
@@ -2659,6 +2753,7 @@ public actor WebRTCPeer {
             guard outstandingLocalOfferEpoch == offerEpoch else {
                 throw WebRTCTransportError.unexpectedSignal
             }
+            pendingScreenMediaHostOfferSDP = sdp
             let payload = RemoteSignalPayload.offer(sdp: sdp)
             try announceLocalDescription(payload)
         } catch {
@@ -2689,6 +2784,7 @@ public actor WebRTCPeer {
             let isRestartOffer = hasStarted
             let offerEpoch = nextNegotiationEpoch()
             resetMacHostedCallEvidenceNegotiation()
+            resetScreenMediaSuspensionNegotiation()
             applyingRemoteOfferEpoch = offerEpoch
             defer {
                 if applyingRemoteOfferEpoch == offerEpoch {
@@ -2737,6 +2833,12 @@ public actor WebRTCPeer {
                 && MacHostedCallEvidenceSDP.peerSupportsEvidence(
                     in: answerSDP
                 )
+            if ScreenMediaSuspensionSDP.wasNegotiated(
+                hostOfferSDP: sdp,
+                viewerAnswerSDP: answerSDP
+            ) {
+                screenMediaSuspensionNegotiationEpoch = offerEpoch
+            }
             // `outboundSignal(.answer)` is the ordered post-capability event consumed by the
             // viewer. The application may retry its current challenge only after forwarding this
             // answer; the peer-side transport/capability check remains authoritative.
@@ -2771,6 +2873,15 @@ public actor WebRTCPeer {
             try requestRawSystemAudioProcessing()
             macHostedCallEvidenceIsNegotiated =
                 MacHostedCallEvidenceSDP.peerSupportsEvidence(in: sdp)
+            if let hostOfferSDP = pendingScreenMediaHostOfferSDP,
+               ScreenMediaSuspensionSDP.wasNegotiated(
+                hostOfferSDP: hostOfferSDP,
+                viewerAnswerSDP: sdp
+               ) {
+                screenMediaSuspensionNegotiationEpoch = offerEpoch
+            } else {
+                screenMediaSuspensionNegotiationEpoch = nil
+            }
             try installRemoteICEUsernameFragments(from: sdp)
             remoteDescriptionIsSet = true
             try await flushRemoteCandidates(expectedEpoch: offerEpoch)
@@ -2780,6 +2891,7 @@ public actor WebRTCPeer {
                 throw WebRTCTransportError.unexpectedSignal
             }
             outstandingLocalOfferEpoch = nil
+            pendingScreenMediaHostOfferSDP = nil
 
         case .candidate(let candidate):
             guard Self.isValidCandidateEnvelope(candidate) else {
@@ -2830,6 +2942,7 @@ public actor WebRTCPeer {
 
         let offerEpoch = nextNegotiationEpoch()
         resetMacHostedCallEvidenceNegotiation()
+        resetScreenMediaSuspensionNegotiation()
         outstandingLocalOfferEpoch = offerEpoch
         localDescriptionIsAnnounced = false
         remoteDescriptionIsSet = false
@@ -2848,6 +2961,7 @@ public actor WebRTCPeer {
             guard outstandingLocalOfferEpoch == offerEpoch else {
                 throw WebRTCTransportError.unexpectedSignal
             }
+            pendingScreenMediaHostOfferSDP = sdp
             try announceLocalDescription(.offer(sdp: sdp))
             // The generation remains outstanding until its answer and candidates are applied.
         } catch {
@@ -2874,8 +2988,22 @@ public actor WebRTCPeer {
 
         let request = WebRTCControlRequest(id: nextControlRequestID, command: command)
         let data = try JSONEncoder().encode(ControlChannelMessage.command(request))
+        let isCoveredSuspensionHide = command == .hideScreen
+            && receivedScreenMediaSuspension != nil
+            && sentScreenMediaCoveredAcknowledgement != nil
+            && screenMediaSuspensionHideRequestID == nil
+            && sentScreenMediaMarkerPresentation == nil
+            && sentScreenMediaResumeRequest == nil
 
         if command == .showScreen || command == .hideScreen {
+            if !isCoveredSuspensionHide,
+               receivedScreenMediaSuspension != nil {
+                clearScreenMediaSuspensionState(
+                    disableHostVideo: false,
+                    emitInvalidation: true,
+                    reason: "An ordinary viewer visibility transition retired the covered suspension."
+                )
+            }
             // Starting any visibility transition makes the old input generation stale locally.
             // Revoke before the native send so a failed Hide/Show cannot leave input authorized.
             // Privacy is monotone: a fresh Show/Active ACK is required to restore input.
@@ -2888,6 +3016,9 @@ public actor WebRTCPeer {
         highestSentControlRequestID = request.id
         sentControlRequests[request.id] = request
         sentControlRequestOrder.append(request.id)
+        if isCoveredSuspensionHide {
+            screenMediaSuspensionHideRequestID = request.id
+        }
         return request.id
     }
 
@@ -2960,7 +3091,11 @@ public actor WebRTCPeer {
 
         let data = try JSONEncoder().encode(ControlChannelMessage.acknowledgement(acknowledgement))
         if state == .inactive {
+            invalidateScreenVideoEncodingTransactions()
             localVideoTrack?.isEnabled = false
+            // Track disable alone can keep producing black/zero-Hz video. The RTP encoding bit is
+            // the authoritative zero-video floor and must read back before Inactive is claimed.
+            _ = try setScreenVideoEncodingActive(false)
             // Input is revoked synchronously even if the Inactive ACK cannot be delivered.
             replaceHostInputSession(capability: nil, authorization: nil)
         } else if enablesScreenTrack,
@@ -2968,6 +3103,11 @@ public actor WebRTCPeer {
                     || activeHostInputAuthorization !== inputAuthorization) {
             // Never retain an older generation while a replacement Active ACK is in flight.
             replaceHostInputSession(capability: nil, authorization: nil)
+        }
+        if enablesScreenTrack {
+            // Reactivate the encoding while the track remains disabled. Only a successfully sent
+            // Active acknowledgement may expose the already-proven capture generation below.
+            _ = try setScreenVideoEncodingActive(true)
         }
         if enablesScreenTrack, let inputAuthorization {
             // Install at the native callback boundary before sending the capability. A native
@@ -3008,6 +3148,12 @@ public actor WebRTCPeer {
             // An Active acknowledgement is not true if it cannot reach the viewer.
             if enablesScreenTrack {
                 localVideoTrack?.isEnabled = false
+                do {
+                    _ = try setScreenVideoEncodingActive(false)
+                } catch {
+                    // The application owner will close the session after this failure. Keeping
+                    // the track disabled is the last synchronous fail-closed media boundary.
+                }
                 replaceHostInputSession(capability: nil, authorization: nil)
                 inputAuthorization?.revoke()
             }
@@ -3409,7 +3555,10 @@ public actor WebRTCPeer {
                 transceiver.sender.parameters.encodings.map { encoding in
                     WebRTCAudioSenderEncodingParameters(
                         maximumBitrateBps: encoding.maxBitrateBps?.intValue,
-                        minimumBitrateBps: encoding.minBitrateBps?.intValue
+                        minimumBitrateBps: encoding.minBitrateBps?.intValue,
+                        bitratePriority: encoding.bitratePriority,
+                        networkPriorityRawValue:
+                            encoding.networkPriority.rawValue
                     )
                 }
             }
@@ -3640,13 +3789,19 @@ public actor WebRTCPeer {
     }
 #endif
 
-    /// Immediately disables screen media after an application-owned authorization changes.
-    /// It deliberately preserves ordered request history: a newer recovery Hide may already be
-    /// queued while the host crosses actors. Native failure/restart boundaries use the stronger
-    /// `failCloseScreenMedia()` reset from within this actor's event order.
+    /// Immediately fail-closes screen media after an application-owned authorization or transport
+    /// proof changes. This is the local-only recovery primitive: it preserves ordered control
+    /// request history, clears any optional negotiated suspension transcript without attempting a
+    /// wire send on an already-uncertain route, and proves the RTP zero-video floor by readback.
     public func suspendScreenMediaForTransportUncertainty() {
-        localVideoTrack?.isEnabled = false
-        invalidateInputSession(reason: "Screen media authorization became uncertain.")
+        if screenMediaResumeProbeAttemptIsActive {
+            screenVideoEncoderResumeProbe.cancelForMutation(.transportChanged)
+        }
+        clearScreenMediaSuspensionState(
+            disableHostVideo: true,
+            emitInvalidation: true,
+            reason: "Screen media authorization became uncertain."
+        )
     }
 
     /// Enables host system audio only while the same actor turn can prove the native transport
@@ -3727,6 +3882,553 @@ public actor WebRTCPeer {
         if pendingAuthorization !== authorization {
             pendingAuthorization?.revoke()
         }
+    }
+
+    /// True only for the exact current host offer and viewer answer that both carried suspension
+    /// v1. This is intentionally read-only; no application flag can opt an older peer in.
+    public func screenMediaSuspensionIsNegotiated() -> Bool {
+        screenMediaSuspensionNegotiationEpoch == negotiationEpoch
+    }
+
+    /// Announces one negotiated suspension while the original Show is still Active. The viewer
+    /// must cover and acknowledge this notice before either peer begins the ordinary Hide path.
+    public func sendScreenMediaSuspensionNotice(
+        _ notice: WebRTCScreenMediaSuspensionNotice
+    ) throws {
+        try ensureOpen()
+        guard role == .host else { throw WebRTCTransportError.invalidRole }
+        guard screenMediaSuspensionIsNegotiated(),
+              notice.isValid,
+              screenMediaShowWasAcknowledgedActive(notice.screenRequestID),
+              isTransportHealthyForCapture(),
+              localVideoTrack?.isEnabled == true,
+              screenVideoEncodingsAreActive(true) else {
+            throw WebRTCTransportError.transportNotHealthy
+        }
+
+        if let existing = sentScreenMediaSuspension {
+            if existing == notice {
+                try sendScreenMediaMessage(.screenMediaSuspension(notice))
+                return
+            }
+            guard sentScreenMediaResumedAcknowledgement != nil,
+                  notice.suspensionGeneration > existing.suspensionGeneration else {
+                failCloseScreenMediaSuspension(
+                    "Conflicting or non-monotonic screen-media suspension notice."
+                )
+                throw WebRTCTransportError.transportNotHealthy
+            }
+            clearScreenMediaSuspensionState(
+                disableHostVideo: false,
+                emitInvalidation: false,
+                reason: "A newer screen-media suspension generation began."
+            )
+        }
+
+        if let highestSentScreenMediaSuspensionGeneration,
+           notice.suspensionGeneration <= highestSentScreenMediaSuspensionGeneration {
+            failCloseScreenMediaSuspension(
+                "A stale screen-media suspension generation was rejected."
+            )
+            throw WebRTCTransportError.transportNotHealthy
+        }
+
+        try sendScreenMediaMessage(.screenMediaSuspension(notice))
+        sentScreenMediaSuspension = notice
+        lastSentScreenMediaCancellation = nil
+        lastReceivedScreenMediaCancellation = nil
+        highestSentScreenMediaSuspensionGeneration =
+            notice.suspensionGeneration
+        // Host-side input closes at the same ordered boundary as the notice. The viewer closes
+        // its independently held token before yielding the corresponding application event.
+        replaceHostInputSession(capability: nil, authorization: nil)
+    }
+
+    /// Viewer ACK sent only after its forced cover is installed for the exact received notice.
+    public func sendScreenMediaCoveredAcknowledgement(
+        _ acknowledgement: WebRTCScreenMediaCoveredAcknowledgement
+    ) throws {
+        try ensureOpen()
+        guard role == .viewer else { throw WebRTCTransportError.invalidRole }
+        guard screenMediaSuspensionIsNegotiated(),
+              let notice = receivedScreenMediaSuspension,
+              acknowledgement.isExactEcho(of: notice),
+              isTransportHealthyForMedia() else {
+            failCloseScreenMediaSuspension(
+                "Out-of-order or mismatched screen-media cover acknowledgement."
+            )
+            throw WebRTCTransportError.transportNotHealthy
+        }
+        if let existing = sentScreenMediaCoveredAcknowledgement,
+           existing != acknowledgement {
+            failCloseScreenMediaSuspension(
+                "Conflicting screen-media cover acknowledgement."
+            )
+            throw WebRTCTransportError.transportNotHealthy
+        }
+        try sendScreenMediaMessage(
+            .screenMediaCoveredAcknowledgement(acknowledgement)
+        )
+        sentScreenMediaCoveredAcknowledgement = acknowledgement
+    }
+
+    /// Reopens only the physical video lane for a covered negotiated probe. Logical visibility
+    /// and input remain suspended until the typed resumed acknowledgement completes.
+    public func beginScreenMediaResumeProbeIfTransportHealthy(
+        attemptID: UUID,
+        marker: ScreenVideoInBandMarkerNonce,
+        boundaryRevision: UInt64,
+        markerInputGateIsClosed: Bool,
+        authorization: WebRTCControlAuthorization
+    ) throws {
+        try ensureOpen()
+        guard role == .host else { throw WebRTCTransportError.invalidRole }
+        let expectedMarkerBytes = withUnsafeBytes(of: attemptID.uuid) {
+            Array($0)
+        }
+        guard screenMediaSuspensionIsNegotiated(),
+              let notice = sentScreenMediaSuspension,
+              let covered = receivedScreenMediaCoveredAcknowledgement,
+              covered.isExactEcho(of: notice),
+              screenMediaHideWasAcknowledgedInactive(),
+              screenMediaResumeProbeAuthorization == nil,
+              armedScreenMediaResumeAttemptID == nil,
+              sentScreenMediaMarkerReady == nil,
+              boundaryRevision > 0,
+              marker.bytes == expectedMarkerBytes,
+              markerInputGateIsClosed,
+              localVideoTrack?.isEnabled == false,
+              screenVideoEncodingsAreActive(false) else {
+            throw WebRTCTransportError.transportNotHealthy
+        }
+
+        do {
+            try authorization.withValidAuthorization {
+                guard isTransportHealthyForCapture(),
+                      screenVideoEncoderResumeProbe.armMarker(
+                        attemptID: attemptID,
+                        marker: marker,
+                        boundaryRevision: boundaryRevision,
+                        permitsNextActivationEncoderRestart: true,
+                        markerInputGateIsClosed: markerInputGateIsClosed
+                      ) else {
+                    throw WebRTCTransportError.transportNotHealthy
+                }
+                screenMediaResumeProbeAuthorization = authorization
+                armedScreenMediaResumeAttemptID = attemptID
+                // This is the sole activity mutation allowed to preserve an armed proof: the
+                // wrapper already owns marker phase with the source gate closed and permits one
+                // activation-driven encoder-generation rebind.
+                _ = try setScreenVideoEncodingActivePreservingResumeProbe(true)
+                localVideoTrack?.isEnabled = true
+                guard screenVideoEncodingsAreActive(true),
+                      localVideoTrack?.isEnabled == true else {
+                    throw WebRTCTransportError.transportNotHealthy
+                }
+            }
+        } catch {
+            failCloseScreenMediaResumeProbe(
+                "The negotiated screen-media resume probe could not be opened."
+            )
+            throw error
+        }
+    }
+
+    /// Publishes the exact marker encoder callback only after the immediate probe event reached
+    /// this actor and remained bound to the active suspension generation.
+    public func sendScreenMediaMarkerReady(
+        _ ready: WebRTCScreenMediaMarkerReady,
+        authorization: WebRTCControlAuthorization
+    ) throws {
+        try ensureOpen()
+        guard role == .host else { throw WebRTCTransportError.invalidRole }
+        guard screenMediaSuspensionIsNegotiated(),
+              screenMediaResumeProbeAuthorization === authorization,
+              authorization.isValid,
+              let notice = sentScreenMediaSuspension,
+              ready.belongs(to: notice),
+              let proof = observedScreenVideoEncoderMarkerProof,
+              armedScreenMediaResumeAttemptID == ready.attemptID,
+              !retiredScreenMediaResumeAttemptIDs.contains(ready.attemptID),
+              ready.attemptID == proof.attemptID,
+              ready.encoderGeneration == proof.encoderGeneration,
+              ready.encoderMarkerRTPTimestamp == proof.rtpTimestamp,
+              ready.boundaryRevision == proof.boundaryRevision else {
+            failCloseScreenMediaResumeProbe(
+                "The marker-ready payload did not match the current encoder proof."
+            )
+            throw WebRTCTransportError.transportNotHealthy
+        }
+        if let existing = sentScreenMediaMarkerReady,
+           existing != ready {
+            failCloseScreenMediaResumeProbe(
+                "Conflicting screen-media marker-ready payload."
+            )
+            throw WebRTCTransportError.transportNotHealthy
+        }
+        try sendScreenMediaMessage(.screenMediaMarkerReady(ready))
+        sentScreenMediaMarkerReady = ready
+    }
+
+    /// Returns the exact receiver-domain marker timestamp and identity after actual presentation.
+    public func sendScreenMediaMarkerPresentation(
+        _ presentation: WebRTCScreenMediaMarkerPresentation
+    ) throws {
+        try ensureOpen()
+        guard role == .viewer else { throw WebRTCTransportError.invalidRole }
+        guard screenMediaSuspensionIsNegotiated(),
+              let ready = receivedScreenMediaMarkerReady,
+              presentation.isExactEcho(of: ready),
+              screenMediaHideWasAcknowledgedInactive(),
+              isTransportHealthyForMedia() else {
+            failCloseScreenMediaResumeProbe(
+                "Out-of-order or mismatched marker presentation."
+            )
+            throw WebRTCTransportError.transportNotHealthy
+        }
+        if let existing = sentScreenMediaMarkerPresentation,
+           existing != presentation {
+            failCloseScreenMediaResumeProbe(
+                "Conflicting screen-media marker presentation."
+            )
+            throw WebRTCTransportError.transportNotHealthy
+        }
+        try sendScreenMediaMessage(
+            .screenMediaMarkerPresentation(presentation)
+        )
+        sentScreenMediaMarkerPresentation = presentation
+    }
+
+    /// Opens admission for the first real frame using the exact encoder Tm and receiver Tm pair.
+    public func beginScreenMediaRealFrameAdmission(
+        authorization: WebRTCControlAuthorization
+    ) throws {
+        try ensureOpen()
+        guard role == .host else { throw WebRTCTransportError.invalidRole }
+        guard screenMediaSuspensionIsNegotiated(),
+              screenMediaResumeProbeAuthorization === authorization,
+              authorization.isValid,
+              let presentation = receivedScreenMediaMarkerPresentation,
+              let ready = sentScreenMediaMarkerReady,
+              presentation.isExactEcho(of: ready),
+              observedScreenVideoEncoderRealFrameProof == nil,
+              screenVideoEncoderResumeProbe.beginRealFrameAdmission(
+                attemptID: ready.attemptID,
+                markerRTPTimestamp: ready.encoderMarkerRTPTimestamp,
+                boundaryRevision: ready.boundaryRevision,
+                receiverMarkerRTPTimestamp:
+                    presentation.receiverMarkerRTPTimestamp
+              ) else {
+            failCloseScreenMediaResumeProbe(
+                "The real-frame admission boundary was stale or mismatched."
+            )
+            throw WebRTCTransportError.transportNotHealthy
+        }
+    }
+
+    /// Sends the affine receiver floor only after the current real encoder callback is observed.
+    public func sendScreenMediaResumeReady(
+        _ ready: WebRTCScreenMediaResumeReady,
+        authorization: WebRTCControlAuthorization
+    ) throws {
+        try ensureOpen()
+        guard role == .host else { throw WebRTCTransportError.invalidRole }
+        guard screenMediaSuspensionIsNegotiated(),
+              screenMediaResumeProbeAuthorization === authorization,
+              authorization.isValid,
+              let markerPresentation = receivedScreenMediaMarkerPresentation,
+              ready.markerPresentation == markerPresentation,
+              let proof = observedScreenVideoEncoderRealFrameProof,
+              ready.attemptID == proof.attemptID,
+              ready.encoderGeneration == proof.encoderGeneration,
+              ready.encoderRealFrameRTPTimestamp == proof.rtpTimestamp,
+              WebRTCRTPSerialComparator.strictlyNewerForwardDistance(
+                from: ready.encoderMarkerRTPTimestamp,
+                to: ready.encoderRealFrameRTPTimestamp
+              ) == proof.forwardDeltaFromMarker,
+              ready.isValid else {
+            failCloseScreenMediaResumeProbe(
+                "The resume-ready payload did not match the current affine RTP proof."
+            )
+            throw WebRTCTransportError.transportNotHealthy
+        }
+        if let existing = sentScreenMediaResumeReady,
+           existing != ready {
+            failCloseScreenMediaResumeProbe(
+                "Conflicting screen-media resume-ready payload."
+            )
+            throw WebRTCTransportError.transportNotHealthy
+        }
+        try sendScreenMediaMessage(.screenMediaResumeReady(ready))
+        sentScreenMediaResumeReady = ready
+    }
+
+    /// Sends the viewer's exact real-frame presentation in the shared monotonic control-ID lane.
+    @discardableResult
+    public func requestScreenMediaResume(
+        presentation: WebRTCScreenMediaPresentation
+    ) throws -> UInt64 {
+        try ensureOpen()
+        guard role == .viewer else { throw WebRTCTransportError.invalidRole }
+        guard screenMediaSuspensionIsNegotiated(),
+              let ready = receivedScreenMediaResumeReady,
+              presentation.resumeReady == ready,
+              presentation.isValid,
+              sentScreenMediaResumeRequest == nil,
+              screenMediaHideWasAcknowledgedInactive(),
+              nextControlRequestID < UInt64.max,
+              isTransportHealthyForMedia() else {
+            failCloseScreenMediaResumeProbe(
+                "The screen-media resume request was stale or out of order."
+            )
+            throw WebRTCTransportError.transportNotHealthy
+        }
+        let request = WebRTCScreenMediaResumeRequest(
+            id: nextControlRequestID,
+            presentation: presentation
+        )
+        guard request.isValid else {
+            throw WebRTCTransportError.transportNotHealthy
+        }
+        try sendScreenMediaMessage(.screenMediaResumeRequest(request))
+        nextControlRequestID &+= 1
+        highestSentControlRequestID = request.id
+        sentScreenMediaResumeRequest = request
+        return request.id
+    }
+
+    /// Mints the wrapper's one-shot resume capability from the exact received presentation.
+    public func issueScreenMediaResumeAuthorization(
+        for requestID: UInt64,
+        authorization: WebRTCControlAuthorization
+    ) throws -> ScreenVideoEncoderResumeAuthorization {
+        try ensureOpen()
+        guard role == .host else { throw WebRTCTransportError.invalidRole }
+        guard screenMediaSuspensionIsNegotiated(),
+              screenMediaResumeProbeAuthorization === authorization,
+              authorization.isValid,
+              let request = receivedScreenMediaResumeRequest,
+              request.id == requestID,
+              request.id == highestReceivedControlRequestID,
+              let ready = sentScreenMediaResumeReady,
+              request.presentation.resumeReady == ready,
+              let proof = observedScreenVideoEncoderRealFrameProof,
+              let resumeAuthorization = screenVideoEncoderResumeProbe
+                .issueResumeAuthorization(
+                    attemptID: ready.attemptID,
+                    encoderGeneration: ready.encoderGeneration,
+                    realEncoderRTPTimestamp: proof.rtpTimestamp,
+                    receiverRealRTPTimestamp:
+                        request.presentation.presentedRTPTimestamp
+                ) else {
+            failCloseScreenMediaResumeProbe(
+                "The exact screen-media presentation could not mint resume authority."
+            )
+            throw WebRTCTransportError.transportNotHealthy
+        }
+        return resumeAuthorization
+    }
+
+    /// Commits one exact request. The one-shot encoder authorization is consumed immediately
+    /// before the ordered send; input is installed only after that same send succeeds.
+    public func acknowledgeScreenMediaResumedIfTransportHealthy(
+        requestID: UInt64,
+        resumeAuthorization: ScreenVideoEncoderResumeAuthorization,
+        probeAuthorization: WebRTCControlAuthorization,
+        inputCapability: WebRTCInputCapability? = nil,
+        inputAuthorization: WebRTCInputAuthorization? = nil,
+        withFinalAuthorizationCommit: @Sendable (
+            _ operation: () throws -> Void
+        ) throws -> Void = { operation in try operation() }
+    ) throws {
+        try ensureOpen()
+        guard role == .host else { throw WebRTCTransportError.invalidRole }
+        guard screenMediaSuspensionIsNegotiated(),
+              screenMediaResumeProbeAuthorization === probeAuthorization,
+              let request = receivedScreenMediaResumeRequest,
+              request.id == requestID,
+              request.id == highestReceivedControlRequestID,
+              sentScreenMediaResumedAcknowledgement == nil,
+              let ready = sentScreenMediaResumeReady,
+              request.presentation.resumeReady == ready,
+              resumeAuthorization.attemptID == ready.attemptID,
+              resumeAuthorization.encoderGeneration == ready.encoderGeneration,
+              resumeAuthorization.markerEncoderRTPTimestamp
+                == ready.encoderMarkerRTPTimestamp,
+              resumeAuthorization.realEncoderRTPTimestamp
+                == ready.encoderRealFrameRTPTimestamp,
+              resumeAuthorization.markerReceiverRTPTimestamp
+                == ready.receiverMarkerRTPTimestamp,
+              resumeAuthorization.realReceiverRTPTimestamp
+                == request.presentation.presentedRTPTimestamp,
+              inputCapability == nil || (
+                inputCapability?.isValid == true
+                    && inputCapability?.screenRequestID == ready.screenRequestID
+              ),
+              (inputCapability == nil) == (inputAuthorization == nil) else {
+            failCloseScreenMediaResumeProbe(
+                "The screen-media resumed acknowledgement was stale or unauthorized."
+            )
+            throw WebRTCTransportError.transportNotHealthy
+        }
+
+        let acknowledgement = WebRTCScreenMediaResumedAcknowledgement(
+            request: request,
+            inputCapability: inputCapability
+        )
+        guard acknowledgement.isValid else {
+            throw WebRTCTransportError.invalidInputCapability
+        }
+        let data = try JSONEncoder().encode(
+            ControlChannelMessage.screenMediaResumedAcknowledgement(
+                acknowledgement
+            )
+        )
+
+        do {
+            try withFinalAuthorizationCommit {
+                try probeAuthorization.withValidAuthorization {
+                    guard isTransportHealthyForCapture(),
+                          localVideoTrack?.isEnabled == true,
+                          screenVideoEncodingsAreActive(true),
+                          screenVideoEncoderResumeProbe
+                            .consumeResumeAuthorization(
+                                resumeAuthorization
+                            ) else {
+                        throw WebRTCTransportError.transportNotHealthy
+                    }
+                    if let inputAuthorization {
+                        guard delegateProxy.installInputAuthorization(
+                            inputAuthorization
+                        ) else {
+                            throw WebRTCTransportError.transportNotHealthy
+                        }
+                        try inputAuthorization.withValidAuthorization {
+                            try delegateProxy.sendControlData(data)
+                        }
+                    } else {
+                        try delegateProxy.sendControlData(data)
+                    }
+                }
+            }
+            sentScreenMediaResumedAcknowledgement = acknowledgement
+            armedScreenMediaResumeAttemptID = nil
+            if let inputCapability, let inputAuthorization {
+                replaceHostInputSession(
+                    capability: inputCapability,
+                    authorization: inputAuthorization
+                )
+            } else {
+                replaceHostInputSession(capability: nil, authorization: nil)
+            }
+            screenMediaResumeProbeAuthorization = nil
+            probeAuthorization.revoke()
+        } catch {
+            inputAuthorization?.revoke()
+            failCloseScreenMediaResumeProbe(
+                "The exact screen-media resumed acknowledgement could not commit."
+            )
+            throw error
+        }
+    }
+
+    /// Explicitly retires a covered/probing resume generation and restores the zero-video floor.
+    public func cancelScreenMediaSuspension(
+        reason: String = "Screen-media suspension was cancelled."
+    ) {
+        guard !isClosed else { return }
+        let notice = role == .host
+            ? sentScreenMediaSuspension
+            : receivedScreenMediaSuspension
+        guard let notice else {
+            clearScreenMediaSuspensionState(
+                disableHostVideo: true,
+                emitInvalidation: true,
+                reason: reason
+            )
+            return
+        }
+        cancelScreenMediaSuspension(matching: notice, reason: reason)
+    }
+
+    /// Cancels only one exact negotiated suspension. Delayed cleanup from an older UI or service
+    /// generation is a no-op and can never retire a newer suspension accepted by the same peer.
+    public func cancelScreenMediaSuspension(
+        matching expectedNotice: WebRTCScreenMediaSuspensionNotice,
+        reason: String = "Screen-media suspension was cancelled."
+    ) {
+        guard !isClosed else { return }
+        let notice = role == .host
+            ? sentScreenMediaSuspension
+            : receivedScreenMediaSuspension
+        guard notice == expectedNotice else { return }
+        let cancellation = WebRTCScreenMediaCancellation(
+            suspension: expectedNotice
+        )
+        guard cancellation.isValid else {
+            closeTransport()
+            return
+        }
+        let controlTransportWasHealthy = screenMediaSuspensionIsNegotiated()
+            && isTransportHealthyForMedia()
+        do {
+            try sendScreenMediaMessage(
+                .screenMediaCancellation(cancellation)
+            )
+            lastSentScreenMediaCancellation = cancellation
+            clearScreenMediaSuspensionState(
+                disableHostVideo: true,
+                emitInvalidation: true,
+                reason: reason
+            )
+        } catch {
+            clearScreenMediaSuspensionState(
+                disableHostVideo: true,
+                emitInvalidation: true,
+                reason: reason
+            )
+            // A local-only terminal clear would leave the covered peer in a permanently
+            // divergent lifecycle while its ordered lane is otherwise healthy. An already-
+            // uncertain route uses the local recovery clear above and lets ICE/lifecycle reset
+            // retire the remote transcript instead of forcing an additional close.
+            if controlTransportWasHealthy {
+                closeTransport()
+            }
+        }
+    }
+
+    /// Retires only the current marker/real-frame attempt. The negotiated suspension, viewer
+    /// cover, and completed ordinary Hide remain current so policy may retry after a cooldown.
+    public func cancelScreenMediaResumeProbe(
+        attemptID: UUID,
+        reason: String = "The covered screen-media resume probe was cancelled."
+    ) {
+        guard role == .host,
+              sentScreenMediaSuspension != nil,
+              receivedScreenMediaCoveredAcknowledgement != nil,
+              sentScreenMediaResumedAcknowledgement == nil else {
+            return
+        }
+        let currentAttemptIDs = Set([
+            armedScreenMediaResumeAttemptID,
+            sentScreenMediaMarkerReady?.attemptID,
+            receivedScreenMediaMarkerPresentation?.markerReady.attemptID,
+            sentScreenMediaResumeReady?.attemptID,
+            receivedScreenMediaResumeRequest?.presentation.resumeReady.attemptID,
+        ].compactMap { $0 })
+        guard currentAttemptIDs.count <= 1 else {
+            failCloseScreenMediaResumeProbe(
+                "Conflicting local screen-media resume attempts were retired."
+            )
+            return
+        }
+        // A delayed timeout/failure from an older attempt must never retire its newer retry.
+        guard currentAttemptIDs.contains(attemptID) else { return }
+        clearScreenMediaResumeProbeAttempt(
+            disableHostVideo: true,
+            emitInvalidation: false,
+            reason: reason
+        )
     }
 
     /// Sends one privacy-minimal challenge from the viewer after its local CallKit epoch rotated.
@@ -4611,8 +5313,11 @@ public actor WebRTCPeer {
                 "Invalid screen-video encoding limits."
             )
         }
+        try rejectScreenVideoEncodingMutationDuringResumeProbe(
+            .encodingParametersChanged
+        )
 
-        guard let previousState = Self.screenVideoEncodingState(
+        guard let previousState = Self.singleScreenVideoEncodingState(
             from: localVideoSender
         ) else {
             throw WebRTCTransportError.nativeFailure(
@@ -4623,7 +5328,10 @@ public actor WebRTCPeer {
             maximumBitrateBps: limits.maximumBitrateBps,
             minimumBitrateBps: nil,
             maximumFramesPerSecond: limits.maximumFramesPerSecond,
-            scaleResolutionDownBy: limits.scaleResolutionDownBy
+            scaleResolutionDownBy: limits.scaleResolutionDownBy,
+            isActive: previousState.isActive,
+            bitratePriority: previousState.bitratePriority,
+            networkPriority: previousState.networkPriority
         )
         guard Self.setScreenVideoEncodingState(
             requestedState,
@@ -4649,6 +5357,8 @@ public actor WebRTCPeer {
                 previousState.maximumFramesPerSecond,
             previousScaleResolutionDownBy:
                 previousState.scaleResolutionDownBy,
+            previousIsActive: previousState.isActive,
+            appliedIsActive: requestedState.isActive,
             appliedLimits: limits
         )
     }
@@ -4665,26 +5375,41 @@ public actor WebRTCPeer {
         guard update.generation == screenVideoEncodingUpdateGeneration else {
             return false
         }
+        guard let currentState = Self.singleScreenVideoEncodingState(
+            from: localVideoSender
+        ) else {
+            return false
+        }
         let appliedState = ScreenVideoNativeEncodingState(
             maximumBitrateBps: update.appliedLimits.maximumBitrateBps,
             minimumBitrateBps: nil,
             maximumFramesPerSecond:
                 update.appliedLimits.maximumFramesPerSecond,
             scaleResolutionDownBy:
-                update.appliedLimits.scaleResolutionDownBy
+                update.appliedLimits.scaleResolutionDownBy,
+            isActive: update.appliedIsActive,
+            bitratePriority: currentState.bitratePriority,
+            networkPriority: currentState.networkPriority
         )
-        guard let currentState = Self.screenVideoEncodingState(
-            from: localVideoSender
-        ), Self.screenVideoEncodingStatesMatch(currentState, appliedState) else {
+        guard Self.screenVideoEncodingStatesMatch(
+            currentState,
+            appliedState
+        ) else {
             return false
         }
+        try rejectScreenVideoEncodingMutationDuringResumeProbe(
+            .encodingParametersChanged
+        )
         let previousState = ScreenVideoNativeEncodingState(
             maximumBitrateBps: update.previousMaximumBitrateBps,
             minimumBitrateBps: update.previousMinimumBitrateBps,
             maximumFramesPerSecond:
                 update.previousMaximumFramesPerSecond,
             scaleResolutionDownBy:
-                update.previousScaleResolutionDownBy
+                update.previousScaleResolutionDownBy,
+            isActive: update.previousIsActive,
+            bitratePriority: currentState.bitratePriority,
+            networkPriority: currentState.networkPriority
         )
         guard Self.setScreenVideoEncodingState(
             previousState,
@@ -4698,17 +5423,262 @@ public actor WebRTCPeer {
         return true
     }
 
+    /// Atomically changes every RTP encoding's activity bit, reads the native state back, and
+    /// restores the exact prior state if WebRTC rejects any part of the transaction.
+    public func setScreenVideoEncodingActive(
+        _ isActive: Bool
+    ) throws -> WebRTCScreenVideoEncodingActivityUpdate {
+        try rejectScreenVideoEncodingMutationDuringResumeProbe(
+            .senderActivityChanged
+        )
+        return try setScreenVideoEncodingActivePreservingResumeProbe(isActive)
+    }
+
+    /// Internal transaction used only after the caller has either proved there is no active
+    /// marker/real-frame transcript or is performing the single atomic probe activation.
+    private func setScreenVideoEncodingActivePreservingResumeProbe(
+        _ isActive: Bool
+    ) throws -> WebRTCScreenVideoEncodingActivityUpdate {
+        try ensureOpen()
+        guard role == .host, let localVideoSender else {
+            throw WebRTCTransportError.invalidRole
+        }
+        guard let previousState = Self.screenVideoEncodingState(
+            from: localVideoSender
+        ) else {
+            throw WebRTCTransportError.nativeFailure(
+                "The screen-video sender did not expose an RTP encoding."
+            )
+        }
+        let requestedState = ScreenVideoNativeEncodingState(
+            maximumBitrateBps: previousState.maximumBitrateBps,
+            minimumBitrateBps: previousState.minimumBitrateBps,
+            maximumFramesPerSecond: previousState.maximumFramesPerSecond,
+            scaleResolutionDownBy: previousState.scaleResolutionDownBy,
+            isActive: Array(
+                repeating: isActive,
+                count: previousState.isActive.count
+            ),
+            bitratePriority: previousState.bitratePriority,
+            networkPriority: previousState.networkPriority
+        )
+        guard Self.setScreenVideoEncodingState(
+            requestedState,
+            on: localVideoSender
+        ) else {
+            let restored = Self.setScreenVideoEncodingState(
+                previousState,
+                on: localVideoSender
+            )
+            throw WebRTCTransportError.nativeFailure(
+                restored
+                    ? "WebRTC rejected the screen-video encoding activity."
+                    : "WebRTC rejected the screen-video encoding activity and its rollback."
+            )
+        }
+        screenVideoEncodingUpdateGeneration &+= 1
+        return WebRTCScreenVideoEncodingActivityUpdate(
+            generation: screenVideoEncodingUpdateGeneration,
+            previousMaximumBitrateBps: previousState.maximumBitrateBps,
+            previousMinimumBitrateBps: previousState.minimumBitrateBps,
+            previousMaximumFramesPerSecond:
+                previousState.maximumFramesPerSecond,
+            previousScaleResolutionDownBy:
+                previousState.scaleResolutionDownBy,
+            previousIsActive: previousState.isActive,
+            appliedIsActive: requestedState.isActive
+        )
+    }
+
+    /// Reverts an activity mutation only if no newer activity or quality transaction has won.
+    @discardableResult
+    public func rollbackScreenVideoEncodingActivityUpdateIfCurrent(
+        _ update: WebRTCScreenVideoEncodingActivityUpdate
+    ) throws -> Bool {
+        try ensureOpen()
+        guard role == .host, let localVideoSender else {
+            throw WebRTCTransportError.invalidRole
+        }
+        guard update.generation == screenVideoEncodingUpdateGeneration,
+              let currentState = Self.screenVideoEncodingState(
+                from: localVideoSender
+              ),
+              currentState.isActive == update.appliedIsActive else {
+            return false
+        }
+        try rejectScreenVideoEncodingMutationDuringResumeProbe(
+            .senderActivityChanged
+        )
+        let previousState = ScreenVideoNativeEncodingState(
+            maximumBitrateBps: update.previousMaximumBitrateBps,
+            minimumBitrateBps: update.previousMinimumBitrateBps,
+            maximumFramesPerSecond:
+                update.previousMaximumFramesPerSecond,
+            scaleResolutionDownBy:
+                update.previousScaleResolutionDownBy,
+            isActive: update.previousIsActive,
+            bitratePriority: currentState.bitratePriority,
+            networkPriority: currentState.networkPriority
+        )
+        guard Self.setScreenVideoEncodingState(
+            previousState,
+            on: localVideoSender
+        ) else {
+            throw WebRTCTransportError.nativeFailure(
+                "WebRTC rejected a stale screen-video activity rollback."
+            )
+        }
+        screenVideoEncodingUpdateGeneration &+= 1
+        return true
+    }
+
+    /// Makes every previously returned quality/activity rollback token stale. Screen lifecycle
+    /// owners call this synchronously when a source/display generation retires, even if the native
+    /// sender already happens to be inactive.
+    public func invalidateScreenVideoEncodingTransactionsForLifecycleChange() {
+        if screenMediaResumeProbeAttemptIsActive {
+            screenVideoEncoderResumeProbe.cancelForMutation(
+                .captureSourceChanged
+            )
+            failCloseScreenMediaResumeProbe(
+                "The active screen-media resume proof was retired by a capture lifecycle change."
+            )
+        }
+        invalidateScreenVideoEncodingTransactions()
+    }
+
+    private var screenMediaResumeProbeAttemptIsActive: Bool {
+        screenMediaResumeProbeAuthorization != nil
+            || armedScreenMediaResumeAttemptID != nil
+            || observedScreenVideoEncoderMarkerProof != nil
+            || observedScreenVideoEncoderRealFrameProof != nil
+            || sentScreenMediaMarkerReady != nil
+            || receivedScreenMediaMarkerReady != nil
+            || sentScreenMediaMarkerPresentation != nil
+            || receivedScreenMediaMarkerPresentation != nil
+            || sentScreenMediaResumeReady != nil
+            || receivedScreenMediaResumeReady != nil
+            || sentScreenMediaResumeRequest != nil
+            || receivedScreenMediaResumeRequest != nil
+    }
+
+    private func rejectScreenVideoEncodingMutationDuringResumeProbe(
+        _ mutation: ScreenVideoEncoderResumeMutation
+    ) throws {
+        guard screenMediaResumeProbeAttemptIsActive else { return }
+        screenVideoEncoderResumeProbe.cancelForMutation(mutation)
+        failCloseScreenMediaResumeProbe(
+            "The active screen-media resume proof was retired by a \(mutation.rawValue) mutation."
+        )
+        throw WebRTCTransportError.transportNotHealthy
+    }
+
+    private func invalidateScreenVideoEncodingTransactions() {
+        screenVideoEncodingUpdateGeneration &+= 1
+    }
+
     #if DEBUG
     func screenVideoEncodingLimitsForTesting()
         -> WebRTCScreenVideoEncodingLimits? {
         localVideoSender.flatMap(Self.screenVideoEncodingLimits)
+    }
+
+    func screenVideoEncodingActivityForTesting() -> [Bool]? {
+        localVideoSender.flatMap(Self.screenVideoEncodingState)?.isActive
+    }
+
+    func screenVideoPriorityForTesting()
+        -> WebRTCScreenVideoPrioritySnapshot? {
+        guard let state = localVideoSender.flatMap(
+            Self.screenVideoEncodingState
+        ) else {
+            return nil
+        }
+        return WebRTCScreenVideoPrioritySnapshot(
+            bitratePriorities: state.bitratePriority,
+            networkPriorityRawValues: state.networkPriority.map(\.rawValue)
+        )
+    }
+
+    func armScreenVideoEncoderMarkerForTesting(
+        attemptID: UUID,
+        marker: ScreenVideoInBandMarkerNonce,
+        boundaryRevision: UInt64 = 1,
+        markerInputGateIsClosed: Bool
+    ) -> Bool {
+        screenVideoEncoderResumeProbe.armMarker(
+            attemptID: attemptID,
+            marker: marker,
+            boundaryRevision: boundaryRevision,
+            markerInputGateIsClosed: markerInputGateIsClosed
+        )
+    }
+
+    func beginScreenVideoEncoderRealFrameForTesting(
+        attemptID: UUID,
+        markerRTPTimestamp: UInt32,
+        boundaryRevision: UInt64,
+        receiverMarkerRTPTimestamp: UInt32? = nil
+    ) -> Bool {
+        if let receiverMarkerRTPTimestamp {
+            return screenVideoEncoderResumeProbe.beginRealFrameAdmission(
+                attemptID: attemptID,
+                markerRTPTimestamp: markerRTPTimestamp,
+                boundaryRevision: boundaryRevision,
+                receiverMarkerRTPTimestamp: receiverMarkerRTPTimestamp
+            )
+        }
+        return screenVideoEncoderResumeProbe.beginRealFrameAdmission(
+            attemptID: attemptID,
+            markerRTPTimestamp: markerRTPTimestamp,
+            boundaryRevision: boundaryRevision
+        )
+    }
+
+    func screenVideoEncoderResumeProbeEventsForTesting()
+        -> [ScreenVideoEncoderResumeProbeEvent] {
+        screenVideoEncoderResumeProbe.drainEventsForTesting()
+    }
+
+    func screenVideoEncoderResumeProbeSnapshotForTesting()
+        -> ScreenVideoEncoderResumeProbeDebugSnapshot {
+        screenVideoEncoderResumeProbe.debugSnapshot()
+    }
+
+    struct ScreenVideoReceiverSourceSnapshot: Equatable, Sendable {
+        let receiverID: String
+        let sourceIDs: [UInt32]
+        let rtpTimestamps: [UInt32]
+    }
+
+    func screenVideoReceiverSourceSnapshotForTesting()
+        -> ScreenVideoReceiverSourceSnapshot? {
+        guard role == .viewer,
+              let currentRemoteVideoTrack,
+              let receiver = peerConnection.transceivers
+                .map(\.receiver)
+                .first(where: {
+                    ($0.track as? LKRTCVideoTrack)?.trackId as String?
+                        == currentRemoteVideoTrack.trackID
+                }) else {
+            return nil
+        }
+        let primarySources = receiver.sources.filter {
+            $0.sourceType.rawValue == 0
+        }
+        return ScreenVideoReceiverSourceSnapshot(
+            receiverID: receiver.receiverId as String,
+            sourceIDs: primarySources.map(\.sourceId),
+            rtpTimestamps: primarySources.map(\.rtpTimestamp)
+        )
     }
     #endif
 
     private static func screenVideoEncodingLimits(
         from sender: LKRTCRtpSender
     ) -> WebRTCScreenVideoEncodingLimits? {
-        guard let state = screenVideoEncodingState(from: sender),
+        guard sender.parameters.encodings.count == 1,
+              let state = singleScreenVideoEncodingState(from: sender),
               state.minimumBitrateBps == nil,
               let maximumBitrateBps = state.maximumBitrateBps,
               let maximumFramesPerSecond = state.maximumFramesPerSecond,
@@ -4727,13 +5697,23 @@ public actor WebRTCPeer {
         let minimumBitrateBps: Int?
         let maximumFramesPerSecond: Int?
         let scaleResolutionDownBy: Double?
+        let isActive: [Bool]
+        let bitratePriority: [Double]
+        let networkPriority: [LKRTCPriority]
+    }
+
+    private static func singleScreenVideoEncodingState(
+        from sender: LKRTCRtpSender
+    ) -> ScreenVideoNativeEncodingState? {
+        guard sender.parameters.encodings.count == 1 else { return nil }
+        return screenVideoEncodingState(from: sender)
     }
 
     private static func screenVideoEncodingState(
         from sender: LKRTCRtpSender
     ) -> ScreenVideoNativeEncodingState? {
         let encodings = sender.parameters.encodings
-        guard encodings.count == 1,
+        guard !encodings.isEmpty,
               let encoding = encodings.first else {
             return nil
         }
@@ -4742,7 +5722,10 @@ public actor WebRTCPeer {
             minimumBitrateBps: encoding.minBitrateBps?.intValue,
             maximumFramesPerSecond: encoding.maxFramerate?.intValue,
             scaleResolutionDownBy:
-                encoding.scaleResolutionDownBy?.doubleValue
+                encoding.scaleResolutionDownBy?.doubleValue,
+            isActive: encodings.map(\.isActive),
+            bitratePriority: encodings.map(\.bitratePriority),
+            networkPriority: encodings.map(\.networkPriority)
         )
     }
 
@@ -4751,7 +5734,10 @@ public actor WebRTCPeer {
         on sender: LKRTCRtpSender
     ) -> Bool {
         let parameters = sender.parameters
-        guard parameters.encodings.count == 1,
+        guard !parameters.encodings.isEmpty,
+              parameters.encodings.count == state.isActive.count,
+              parameters.encodings.count == state.bitratePriority.count,
+              parameters.encodings.count == state.networkPriority.count,
               let encoding = parameters.encodings.first else {
             return false
         }
@@ -4760,6 +5746,11 @@ public actor WebRTCPeer {
         encoding.maxFramerate = state.maximumFramesPerSecond.map(NSNumber.init)
         encoding.scaleResolutionDownBy =
             state.scaleResolutionDownBy.map(NSNumber.init)
+        for (index, encoding) in parameters.encodings.enumerated() {
+            encoding.isActive = state.isActive[index]
+            encoding.bitratePriority = state.bitratePriority[index]
+            encoding.networkPriority = state.networkPriority[index]
+        }
         sender.parameters = parameters
         guard let applied = screenVideoEncodingState(from: sender) else {
             return false
@@ -4774,6 +5765,12 @@ public actor WebRTCPeer {
         lhs.maximumBitrateBps == rhs.maximumBitrateBps
             && lhs.minimumBitrateBps == rhs.minimumBitrateBps
             && lhs.maximumFramesPerSecond == rhs.maximumFramesPerSecond
+            && lhs.isActive == rhs.isActive
+            && lhs.bitratePriority.elementsEqual(
+                rhs.bitratePriority,
+                by: { abs($0 - $1) <= 0.000_001 }
+            )
+            && lhs.networkPriority == rhs.networkPriority
             && optionalEncodingScaleMatches(
                 lhs.scaleResolutionDownBy,
                 rhs.scaleResolutionDownBy
@@ -5407,15 +6404,25 @@ public actor WebRTCPeer {
     }
 
     private func ensureDelegateEventLoop() {
-        guard delegateEventTask == nil else { return }
-        let nativeEvents = delegateProxy.events
-        delegateEventTask = Task { [weak self] in
-            for await event in nativeEvents {
-                guard let self else { return }
-                await self.consume(event)
+        if delegateEventTask == nil {
+            let nativeEvents = delegateProxy.events
+            delegateEventTask = Task { [weak self] in
+                for await event in nativeEvents {
+                    guard let self else { return }
+                    await self.consume(event)
+                }
+                guard !Task.isCancelled, let self else { return }
+                await self.nativeEventStreamTerminatedUnexpectedly()
             }
-            guard !Task.isCancelled, let self else { return }
-            await self.nativeEventStreamTerminatedUnexpectedly()
+        }
+        if screenVideoEncoderProbeEventTask == nil {
+            let probeEvents = screenVideoEncoderProbeEvents
+            screenVideoEncoderProbeEventTask = Task { [weak self] in
+                for await event in probeEvents {
+                    guard let self else { return }
+                    await self.consumeScreenVideoEncoderResumeProbeEvent(event)
+                }
+            }
         }
     }
 
@@ -5568,6 +6575,12 @@ public actor WebRTCPeer {
         #endif
         disableRemoteAudioPlayback()
         isClosed = true
+        clearScreenMediaSuspensionState(
+            disableHostVideo: true,
+            emitInvalidation: false,
+            reason: "WebRTC event delivery failed."
+        )
+        invalidateScreenVideoEncodingTransactions()
         localVideoTrack?.isEnabled = false
         let hostAuthorization = activeHostInputAuthorization
         let viewerAuthorization = activeViewerInputAuthorization
@@ -5582,6 +6595,9 @@ public actor WebRTCPeer {
         statisticsTask = nil
         delegateEventTask?.cancel()
         delegateEventTask = nil
+        screenVideoEncoderProbeEventTask?.cancel()
+        screenVideoEncoderProbeEventTask = nil
+        screenVideoEncoderProbeEventContinuation.finish()
         negotiationEpoch &+= 1
         outstandingLocalOfferEpoch = nil
         applyingRemoteAnswerEpoch = nil
@@ -5634,10 +6650,29 @@ public actor WebRTCPeer {
                 receiveMacHostedCallChallenge(challenge)
             case .macHostedCallEvidence(let evidence):
                 receiveMacHostedCallEvidence(evidence)
+            case .screenMediaSuspension(let notice):
+                receiveScreenMediaSuspension(notice)
+            case .screenMediaCoveredAcknowledgement(let acknowledgement):
+                receiveScreenMediaCoveredAcknowledgement(acknowledgement)
+            case .screenMediaMarkerReady(let ready):
+                receiveScreenMediaMarkerReady(ready)
+            case .screenMediaMarkerPresentation(let presentation):
+                receiveScreenMediaMarkerPresentation(presentation)
+            case .screenMediaResumeReady(let ready):
+                receiveScreenMediaResumeReady(ready)
+            case .screenMediaResumeRequest(let request):
+                receiveScreenMediaResumeRequest(request)
+            case .screenMediaResumedAcknowledgement(let acknowledgement):
+                receiveScreenMediaResumedAcknowledgement(acknowledgement)
+            case .screenMediaCancellation(let cancellation):
+                receiveScreenMediaCancellation(cancellation)
             }
         } catch {
             invalidateInputSession(reason: "Invalid control-channel message.")
             resetMacHostedCallEvidenceTransportState()
+            failCloseScreenMediaSuspension(
+                "Invalid ordered screen-media/control message."
+            )
             emit(.diagnosticFailure("Invalid control-channel message."))
         }
     }
@@ -5733,6 +6768,565 @@ public actor WebRTCPeer {
         highestSentMacHostedCallObservationSequence = 0
     }
 
+    private func resetScreenMediaSuspensionNegotiation() {
+        clearScreenMediaSuspensionState(
+            disableHostVideo: true,
+            emitInvalidation: false,
+            reason: "Screen-media suspension negotiation changed."
+        )
+        screenMediaSuspensionNegotiationEpoch = nil
+        pendingScreenMediaHostOfferSDP = nil
+        highestSentScreenMediaSuspensionGeneration = nil
+        highestReceivedScreenMediaSuspensionGeneration = nil
+        lastSentScreenMediaCancellation = nil
+        lastReceivedScreenMediaCancellation = nil
+        retiredScreenMediaResumeAttemptIDs.removeAll(keepingCapacity: true)
+        retiredScreenMediaResumeAttemptOrder.removeAll(keepingCapacity: true)
+    }
+
+    private func screenMediaShowWasAcknowledgedActive(
+        _ requestID: UInt64
+    ) -> Bool {
+        guard requestID > 0 else { return false }
+        switch role {
+        case .host:
+            return receivedControlRequests[requestID]?.command == .showScreen
+                && sentControlAcknowledgements[requestID]?.state == .active
+        case .viewer:
+            return sentControlRequests[requestID]?.command == .showScreen
+                && receivedControlAcknowledgements[requestID]?.state == .active
+        }
+    }
+
+    private func screenMediaHideWasAcknowledgedInactive() -> Bool {
+        guard let requestID = screenMediaSuspensionHideRequestID else {
+            return false
+        }
+        switch role {
+        case .host:
+            return receivedControlRequests[requestID]?.command == .hideScreen
+                && sentControlAcknowledgements[requestID]?.state == .inactive
+        case .viewer:
+            return sentControlRequests[requestID]?.command == .hideScreen
+                && receivedControlAcknowledgements[requestID]?.state == .inactive
+        }
+    }
+
+    private func screenVideoEncodingsAreActive(_ expected: Bool) -> Bool {
+        guard let state = localVideoSender.flatMap(
+            Self.screenVideoEncodingState
+        ), !state.isActive.isEmpty else {
+            return false
+        }
+        return state.isActive.allSatisfy { $0 == expected }
+    }
+
+    private func sendScreenMediaMessage(
+        _ message: ControlChannelMessage
+    ) throws {
+        guard screenMediaSuspensionIsNegotiated(),
+              isTransportHealthyForMedia() else {
+            throw WebRTCTransportError.transportNotHealthy
+        }
+        try delegateProxy.sendControlData(try JSONEncoder().encode(message))
+    }
+
+    private func retireScreenMediaResumeAttemptID(_ attemptID: UUID) {
+        guard retiredScreenMediaResumeAttemptIDs.insert(attemptID).inserted else {
+            return
+        }
+        retiredScreenMediaResumeAttemptOrder.append(attemptID)
+        while retiredScreenMediaResumeAttemptOrder.count
+                > Self.retiredScreenMediaAttemptLimit,
+              let retired = retiredScreenMediaResumeAttemptOrder.first {
+            retiredScreenMediaResumeAttemptOrder.removeFirst()
+            retiredScreenMediaResumeAttemptIDs.remove(retired)
+        }
+    }
+
+    private func clearScreenMediaResumeProbeAttempt(
+        disableHostVideo: Bool,
+        emitInvalidation: Bool,
+        reason: String
+    ) {
+        let attemptIDs = [
+            armedScreenMediaResumeAttemptID,
+            sentScreenMediaMarkerReady?.attemptID,
+            receivedScreenMediaMarkerReady?.attemptID,
+            sentScreenMediaResumeReady?.attemptID,
+            receivedScreenMediaResumeReady?.attemptID,
+        ].compactMap { $0 }
+        let hadAttempt = !attemptIDs.isEmpty
+            || screenMediaResumeProbeAuthorization != nil
+            || sentScreenMediaMarkerPresentation != nil
+            || receivedScreenMediaMarkerPresentation != nil
+            || sentScreenMediaResumeRequest != nil
+            || receivedScreenMediaResumeRequest != nil
+            || sentScreenMediaResumedAcknowledgement != nil
+            || receivedScreenMediaResumedAcknowledgement != nil
+            || observedScreenVideoEncoderMarkerProof != nil
+            || observedScreenVideoEncoderRealFrameProof != nil
+
+        if let attemptID = armedScreenMediaResumeAttemptID {
+            screenVideoEncoderResumeProbe.cancelAttempt(
+                attemptID: attemptID,
+                reason: reason
+            )
+        }
+        for attemptID in attemptIDs {
+            retireScreenMediaResumeAttemptID(attemptID)
+        }
+        let probeAuthorization = screenMediaResumeProbeAuthorization
+        screenMediaResumeProbeAuthorization = nil
+        armedScreenMediaResumeAttemptID = nil
+        observedScreenVideoEncoderMarkerProof = nil
+        observedScreenVideoEncoderRealFrameProof = nil
+        sentScreenMediaMarkerReady = nil
+        receivedScreenMediaMarkerReady = nil
+        sentScreenMediaMarkerPresentation = nil
+        receivedScreenMediaMarkerPresentation = nil
+        sentScreenMediaResumeReady = nil
+        receivedScreenMediaResumeReady = nil
+        sentScreenMediaResumeRequest = nil
+        receivedScreenMediaResumeRequest = nil
+        sentScreenMediaResumedAcknowledgement = nil
+        receivedScreenMediaResumedAcknowledgement = nil
+        probeAuthorization?.revoke()
+
+        if disableHostVideo, role == .host {
+            invalidateScreenVideoEncodingTransactions()
+            localVideoTrack?.isEnabled = false
+            do {
+                _ = try setScreenVideoEncodingActivePreservingResumeProbe(false)
+            } catch {
+                emit(
+                    .diagnosticFailure(
+                        "The screen-video RTP encoding could not be disabled while retiring a resume probe."
+                    )
+                )
+            }
+        }
+        if emitInvalidation, hadAttempt {
+            emit(.screenMediaSuspensionInvalidated(reason))
+        }
+    }
+
+    private func clearScreenMediaSuspensionState(
+        disableHostVideo: Bool,
+        emitInvalidation: Bool,
+        reason: String
+    ) {
+        let hadState = sentScreenMediaSuspension != nil
+            || receivedScreenMediaSuspension != nil
+            || sentScreenMediaCoveredAcknowledgement != nil
+            || receivedScreenMediaCoveredAcknowledgement != nil
+            || screenMediaSuspensionHideRequestID != nil
+            || screenMediaResumeProbeAuthorization != nil
+            || sentScreenMediaMarkerReady != nil
+            || receivedScreenMediaMarkerReady != nil
+            || sentScreenMediaResumeReady != nil
+            || receivedScreenMediaResumeReady != nil
+        clearScreenMediaResumeProbeAttempt(
+            disableHostVideo: disableHostVideo,
+            emitInvalidation: false,
+            reason: reason
+        )
+        sentScreenMediaSuspension = nil
+        receivedScreenMediaSuspension = nil
+        sentScreenMediaCoveredAcknowledgement = nil
+        receivedScreenMediaCoveredAcknowledgement = nil
+        screenMediaSuspensionHideRequestID = nil
+        invalidateInputSession(reason: reason)
+        if emitInvalidation, hadState {
+            emit(.screenMediaSuspensionInvalidated(reason))
+        }
+    }
+
+    private func failCloseScreenMediaSuspension(_ reason: String) {
+        clearScreenMediaSuspensionState(
+            disableHostVideo: true,
+            emitInvalidation: true,
+            reason: reason
+        )
+        emit(.diagnosticFailure(reason))
+    }
+
+    private func failCloseScreenMediaResumeProbe(_ reason: String) {
+        clearScreenMediaResumeProbeAttempt(
+            disableHostVideo: true,
+            emitInvalidation: false,
+            reason: reason
+        )
+        emit(.diagnosticFailure(reason))
+    }
+
+    private func consumeScreenVideoEncoderResumeProbeEvent(
+        _ event: ScreenVideoEncoderResumeProbeEvent
+    ) {
+        guard !isClosed else { return }
+        switch event {
+        case .markerEncoded(let proof):
+            if retiredScreenMediaResumeAttemptIDs.contains(proof.attemptID) {
+                return
+            }
+            guard role == .host,
+                  screenMediaSuspensionIsNegotiated(),
+                  screenMediaResumeProbeAuthorization?.isValid == true,
+                  armedScreenMediaResumeAttemptID == proof.attemptID,
+                  sentScreenMediaSuspension != nil,
+                  receivedScreenMediaCoveredAcknowledgement != nil,
+                  screenMediaHideWasAcknowledgedInactive(),
+                  sentScreenMediaMarkerReady == nil else {
+                failCloseScreenMediaResumeProbe(
+                    "An out-of-order screen-video marker encoder event was rejected."
+                )
+                return
+            }
+            if let existing = observedScreenVideoEncoderMarkerProof {
+                if existing != proof {
+                    failCloseScreenMediaResumeProbe(
+                        "A conflicting screen-video marker encoder proof was rejected."
+                    )
+                }
+                return
+            }
+            observedScreenVideoEncoderMarkerProof = proof
+            emit(.screenMediaEncoderResumeProbeEvent(event))
+
+        case .realFrameEncoded(let proof):
+            if retiredScreenMediaResumeAttemptIDs.contains(proof.attemptID) {
+                return
+            }
+            guard role == .host,
+                  screenMediaSuspensionIsNegotiated(),
+                  screenMediaResumeProbeAuthorization?.isValid == true,
+                  armedScreenMediaResumeAttemptID == proof.attemptID,
+                  let ready = sentScreenMediaMarkerReady,
+                  ready.attemptID == proof.attemptID,
+                  ready.encoderGeneration == proof.encoderGeneration,
+                  receivedScreenMediaMarkerPresentation != nil,
+                  sentScreenMediaResumeReady == nil,
+                  WebRTCRTPSerialComparator.strictlyNewerForwardDistance(
+                    from: ready.encoderMarkerRTPTimestamp,
+                    to: proof.rtpTimestamp
+                  ) == proof.forwardDeltaFromMarker else {
+                failCloseScreenMediaResumeProbe(
+                    "An out-of-order or mismatched real-frame encoder event was rejected."
+                )
+                return
+            }
+            if let existing = observedScreenVideoEncoderRealFrameProof {
+                if existing != proof {
+                    failCloseScreenMediaResumeProbe(
+                        "A conflicting real-frame encoder proof was rejected."
+                    )
+                }
+                return
+            }
+            observedScreenVideoEncoderRealFrameProof = proof
+            emit(.screenMediaEncoderResumeProbeEvent(event))
+
+        case .cancelled(let attemptID, let reason):
+            guard armedScreenMediaResumeAttemptID == attemptID else {
+                return
+            }
+            emit(.screenMediaEncoderResumeProbeEvent(event))
+            failCloseScreenMediaResumeProbe(reason)
+        }
+    }
+
+    private func receiveScreenMediaSuspension(
+        _ notice: WebRTCScreenMediaSuspensionNotice
+    ) {
+        guard role == .viewer,
+              screenMediaSuspensionIsNegotiated(),
+              notice.isValid,
+              screenMediaShowWasAcknowledgedActive(notice.screenRequestID),
+              isTransportHealthyForMedia() else {
+            failCloseScreenMediaSuspension(
+                "An unexpected screen-media suspension notice was rejected."
+            )
+            return
+        }
+        if let existing = receivedScreenMediaSuspension {
+            if existing == notice { return }
+            guard receivedScreenMediaResumedAcknowledgement != nil,
+                  notice.suspensionGeneration
+                    > existing.suspensionGeneration else {
+                failCloseScreenMediaSuspension(
+                    "A conflicting screen-media suspension notice was rejected."
+                )
+                return
+            }
+            clearScreenMediaSuspensionState(
+                disableHostVideo: false,
+                emitInvalidation: false,
+                reason: "A newer screen-media suspension generation began."
+            )
+        }
+        if let highestReceivedScreenMediaSuspensionGeneration,
+           notice.suspensionGeneration
+            <= highestReceivedScreenMediaSuspensionGeneration {
+            failCloseScreenMediaSuspension(
+                "A replayed screen-media suspension generation was rejected."
+            )
+            return
+        }
+        receivedScreenMediaSuspension = notice
+        lastSentScreenMediaCancellation = nil
+        lastReceivedScreenMediaCancellation = nil
+        highestReceivedScreenMediaSuspensionGeneration =
+            notice.suspensionGeneration
+        // This executes before the application sees the notice, so a queued tap cannot race the
+        // cover that the viewer installs in response to the event.
+        invalidateInputSession(
+            reason: "Screen media entered a negotiated suspension generation."
+        )
+        emit(.screenMediaSuspensionReceived(notice))
+    }
+
+    private func receiveScreenMediaCoveredAcknowledgement(
+        _ acknowledgement: WebRTCScreenMediaCoveredAcknowledgement
+    ) {
+        guard role == .host,
+              screenMediaSuspensionIsNegotiated(),
+              let notice = sentScreenMediaSuspension,
+              acknowledgement.isExactEcho(of: notice),
+              screenMediaShowWasAcknowledgedActive(notice.screenRequestID),
+              localVideoTrack?.isEnabled == true,
+              screenVideoEncodingsAreActive(true) else {
+            failCloseScreenMediaSuspension(
+                "An unexpected screen-media covered acknowledgement was rejected."
+            )
+            return
+        }
+        if let existing = receivedScreenMediaCoveredAcknowledgement {
+            if existing != acknowledgement {
+                failCloseScreenMediaSuspension(
+                    "A conflicting screen-media covered acknowledgement was rejected."
+                )
+            }
+            return
+        }
+        receivedScreenMediaCoveredAcknowledgement = acknowledgement
+        emit(.screenMediaCoveredAcknowledgementReceived(acknowledgement))
+    }
+
+    private func receiveScreenMediaMarkerReady(
+        _ ready: WebRTCScreenMediaMarkerReady
+    ) {
+        guard role == .viewer,
+              screenMediaSuspensionIsNegotiated(),
+              let notice = receivedScreenMediaSuspension,
+              let covered = sentScreenMediaCoveredAcknowledgement,
+              covered.isExactEcho(of: notice),
+              ready.belongs(to: notice),
+              screenMediaHideWasAcknowledgedInactive(),
+              !retiredScreenMediaResumeAttemptIDs.contains(ready.attemptID) else {
+            failCloseScreenMediaSuspension(
+                "An unexpected screen-media marker-ready message was rejected."
+            )
+            return
+        }
+        if let existing = receivedScreenMediaMarkerReady {
+            if existing == ready { return }
+            guard sentScreenMediaResumeRequest == nil,
+                  receivedScreenMediaResumedAcknowledgement == nil,
+                  existing.attemptID != ready.attemptID else {
+                failCloseScreenMediaSuspension(
+                    "A conflicting screen-media marker-ready message was rejected."
+                )
+                return
+            }
+            clearScreenMediaResumeProbeAttempt(
+                disableHostVideo: false,
+                emitInvalidation: false,
+                reason: "The host began a newer covered screen-media resume attempt."
+            )
+        }
+        receivedScreenMediaMarkerReady = ready
+        emit(.screenMediaMarkerReadyReceived(ready))
+    }
+
+    private func receiveScreenMediaMarkerPresentation(
+        _ presentation: WebRTCScreenMediaMarkerPresentation
+    ) {
+        guard role == .host,
+              screenMediaSuspensionIsNegotiated(),
+              let ready = sentScreenMediaMarkerReady,
+              presentation.isExactEcho(of: ready),
+              let proof = observedScreenVideoEncoderMarkerProof,
+              proof.attemptID == ready.attemptID,
+              proof.encoderGeneration == ready.encoderGeneration,
+              proof.rtpTimestamp == ready.encoderMarkerRTPTimestamp,
+              proof.boundaryRevision == ready.boundaryRevision,
+              screenMediaHideWasAcknowledgedInactive() else {
+            failCloseScreenMediaResumeProbe(
+                "An unexpected marker presentation was rejected."
+            )
+            return
+        }
+        if let existing = receivedScreenMediaMarkerPresentation {
+            if existing != presentation {
+                failCloseScreenMediaResumeProbe(
+                    "A conflicting marker presentation was rejected."
+                )
+            }
+            return
+        }
+        receivedScreenMediaMarkerPresentation = presentation
+        emit(.screenMediaMarkerPresentationReceived(presentation))
+    }
+
+    private func receiveScreenMediaResumeReady(
+        _ ready: WebRTCScreenMediaResumeReady
+    ) {
+        guard role == .viewer,
+              screenMediaSuspensionIsNegotiated(),
+              ready.isValid,
+              let presentation = sentScreenMediaMarkerPresentation,
+              ready.markerPresentation == presentation,
+              let markerReady = receivedScreenMediaMarkerReady,
+              presentation.isExactEcho(of: markerReady),
+              screenMediaHideWasAcknowledgedInactive() else {
+            failCloseScreenMediaResumeProbe(
+                "An unexpected screen-media resume-ready message was rejected."
+            )
+            return
+        }
+        if let existing = receivedScreenMediaResumeReady {
+            if existing != ready {
+                failCloseScreenMediaResumeProbe(
+                    "A conflicting screen-media resume-ready message was rejected."
+                )
+            }
+            return
+        }
+        receivedScreenMediaResumeReady = ready
+        emit(.screenMediaResumeReadyReceived(ready))
+    }
+
+    private func receiveScreenMediaResumeRequest(
+        _ request: WebRTCScreenMediaResumeRequest
+    ) {
+        guard role == .host,
+              screenMediaSuspensionIsNegotiated(),
+              request.isValid,
+              let ready = sentScreenMediaResumeReady,
+              request.presentation.resumeReady == ready,
+              observedScreenVideoEncoderRealFrameProof != nil else {
+            failCloseScreenMediaResumeProbe(
+                "An unexpected screen-media resume request was rejected."
+            )
+            return
+        }
+        if let existing = receivedScreenMediaResumeRequest {
+            guard existing == request else {
+                failCloseScreenMediaResumeProbe(
+                    "A conflicting screen-media resume request was rejected."
+                )
+                return
+            }
+            if let acknowledgement = sentScreenMediaResumedAcknowledgement {
+                do {
+                    try sendScreenMediaMessage(
+                        .screenMediaResumedAcknowledgement(acknowledgement)
+                    )
+                } catch {
+                    failCloseScreenMediaResumeProbe(
+                        "The screen-media resumed acknowledgement could not be replayed."
+                    )
+                }
+            }
+            return
+        }
+        if let highestReceivedControlRequestID,
+           request.id <= highestReceivedControlRequestID {
+            failCloseScreenMediaResumeProbe(
+                "A stale screen-media resume request was rejected."
+            )
+            return
+        }
+        highestReceivedControlRequestID = request.id
+        receivedScreenMediaResumeRequest = request
+        emit(.screenMediaResumeRequestReceived(request))
+    }
+
+    private func receiveScreenMediaResumedAcknowledgement(
+        _ acknowledgement: WebRTCScreenMediaResumedAcknowledgement
+    ) {
+        guard role == .viewer,
+              screenMediaSuspensionIsNegotiated(),
+              acknowledgement.isValid,
+              let request = sentScreenMediaResumeRequest,
+              acknowledgement.request == request,
+              acknowledgement.request.id == highestSentControlRequestID else {
+            failCloseScreenMediaResumeProbe(
+                "An unexpected screen-media resumed acknowledgement was rejected."
+            )
+            return
+        }
+        if let existing = receivedScreenMediaResumedAcknowledgement {
+            if existing != acknowledgement {
+                failCloseScreenMediaResumeProbe(
+                    "A conflicting screen-media resumed acknowledgement was rejected."
+                )
+            }
+            return
+        }
+        receivedScreenMediaResumedAcknowledgement = acknowledgement
+        let inputAuthorization: WebRTCInputAuthorization?
+        if let capability = acknowledgement.inputCapability {
+            let authorization = WebRTCInputAuthorization()
+            replaceViewerInputSession(
+                capability: capability,
+                authorization: authorization
+            )
+            inputAuthorization = authorization
+        } else {
+            replaceViewerInputSession(capability: nil, authorization: nil)
+            inputAuthorization = nil
+        }
+        emit(
+            .screenMediaResumedAcknowledgementReceived(
+                acknowledgement,
+                inputAuthorization: inputAuthorization
+            )
+        )
+    }
+
+    private func receiveScreenMediaCancellation(
+        _ cancellation: WebRTCScreenMediaCancellation
+    ) {
+        if cancellation == lastReceivedScreenMediaCancellation {
+            return
+        }
+        guard lastReceivedScreenMediaCancellation == nil,
+              screenMediaSuspensionIsNegotiated(),
+              cancellation.isValid else {
+            closeTransport()
+            return
+        }
+        let currentNotice = role == .host
+            ? sentScreenMediaSuspension
+            : receivedScreenMediaSuspension
+        let synchronizedNotice = currentNotice
+            ?? lastSentScreenMediaCancellation?.suspension
+        guard let synchronizedNotice,
+              cancellation.isExactCancellation(
+                of: synchronizedNotice
+              ) else {
+            closeTransport()
+            return
+        }
+        lastReceivedScreenMediaCancellation = cancellation
+        clearScreenMediaSuspensionState(
+            disableHostVideo: true,
+            emitInvalidation: true,
+            reason: "The remote peer cancelled the negotiated screen-media suspension."
+        )
+    }
+
     private func receiveControlRequest(_ request: WebRTCControlRequest) {
         guard role == .host, request.id > 0 else {
             emit(.diagnosticFailure("Unexpected control request."))
@@ -5764,10 +7358,25 @@ public actor WebRTCPeer {
             return
         }
 
+        let isCoveredSuspensionHide = request.command == .hideScreen
+            && sentScreenMediaSuspension != nil
+            && receivedScreenMediaCoveredAcknowledgement != nil
+            && screenMediaSuspensionHideRequestID == nil
+            && screenMediaResumeProbeAuthorization == nil
+
         if request.command == .showScreen || request.command == .hideScreen {
+            if !isCoveredSuspensionHide,
+               sentScreenMediaSuspension != nil {
+                clearScreenMediaSuspensionState(
+                    disableHostVideo: true,
+                    emitInvalidation: true,
+                    reason: "An ordinary host visibility transition retired the covered suspension."
+                )
+            }
             // Revoke before the application event is yielded so queued media or input cannot race
             // a newer screen generation through lagging service state. A fresh Show/Active ACK is
             // the only path that may re-enable the host video track.
+            invalidateScreenVideoEncodingTransactions()
             localVideoTrack?.isEnabled = false
             replaceHostInputSession(capability: nil, authorization: nil)
         }
@@ -5781,6 +7390,9 @@ public actor WebRTCPeer {
         highestReceivedControlRequestID = request.id
         receivedControlRequests[request.id] = request
         receivedControlRequestOrder.append(request.id)
+        if isCoveredSuspensionHide {
+            screenMediaSuspensionHideRequestID = request.id
+        }
         emit(.controlRequestReceived(request))
     }
 
@@ -5940,6 +7552,12 @@ public actor WebRTCPeer {
     private func failCloseScreenMedia() async {
         suspendSystemAudioForTransportUncertainty()
         disableRemoteAudioPlayback()
+        clearScreenMediaSuspensionState(
+            disableHostVideo: true,
+            emitInvalidation: true,
+            reason: "WebRTC transport became uncertain."
+        )
+        invalidateScreenVideoEncodingTransactions()
         localVideoTrack?.isEnabled = false
         // Clear the peer-owned capability before lifecycle state events can reach application
         // actors. This closes the window where their health booleans still describe the old route.
@@ -6151,10 +7769,14 @@ public actor WebRTCPeer {
                 let productDescription = Self.applyingProductOpusOfferPolicy(
                     to: description
                 )
+                let evidenceSDP = MacHostedCallEvidenceSDP
+                    .advertisingHostSupport(
+                        in: productDescription.sdp as String
+                    )
                 let localDescription = LKRTCSessionDescription(
                     type: productDescription.type,
-                    sdp: MacHostedCallEvidenceSDP.advertisingHostSupport(
-                        in: productDescription.sdp as String
+                    sdp: ScreenMediaSuspensionSDP.advertisingHostSupport(
+                        in: evidenceSDP
                     )
                 )
                 peerConnection.setLocalDescription(localDescription) { error in
@@ -6186,10 +7808,15 @@ public actor WebRTCPeer {
                     to: description,
                     remoteOfferSDP: remoteOfferSDP
                 )
+                let evidenceSDP = MacHostedCallEvidenceSDP
+                    .advertisingViewerSupport(
+                        in: productDescription.sdp as String,
+                        remoteOfferSDP: remoteOfferSDP
+                    )
                 let localDescription = LKRTCSessionDescription(
                     type: productDescription.type,
-                    sdp: MacHostedCallEvidenceSDP.advertisingViewerSupport(
-                        in: productDescription.sdp as String,
+                    sdp: ScreenMediaSuspensionSDP.advertisingViewerSupport(
+                        in: evidenceSDP,
                         remoteOfferSDP: remoteOfferSDP
                     )
                 )
@@ -7186,6 +8813,12 @@ public actor WebRTCPeer {
         iPhoneMicrophoneTransportSuspensionHandler = nil
         #endif
         disableRemoteAudioPlayback()
+        clearScreenMediaSuspensionState(
+            disableHostVideo: true,
+            emitInvalidation: false,
+            reason: "WebRTC transport closed."
+        )
+        invalidateScreenVideoEncodingTransactions()
         localVideoTrack?.isEnabled = false
         invalidateInputSession(reason: "WebRTC transport closed.")
         guard !isClosed else { return }
@@ -7194,6 +8827,9 @@ public actor WebRTCPeer {
         statisticsTask = nil
         delegateEventTask?.cancel()
         delegateEventTask = nil
+        screenVideoEncoderProbeEventTask?.cancel()
+        screenVideoEncoderProbeEventTask = nil
+        screenVideoEncoderProbeEventContinuation.finish()
         invalidateIPhoneMicrophoneSenderBinding()
         negotiationEpoch &+= 1
         outstandingLocalOfferEpoch = nil
@@ -7390,6 +9026,11 @@ public actor WebRTCPeer {
         for encoding in parameters.encodings {
             encoding.maxBitrateBps = NSNumber(value: OpusStereoSDP.maximumAverageBitrateBps)
             encoding.minBitrateBps = nil
+            encoding.bitratePriority = systemAudioBitratePriority
+            // Audio and screen video intentionally retain the same low DSCP class on the shared
+            // BUNDLE transport. Relative allocator weights prioritize audio without excluding it
+            // from WebRTC's shared bandwidth estimate or depending on socket write order.
+            encoding.networkPriority = .low
         }
         sender.parameters = parameters
 
@@ -7398,9 +9039,43 @@ public actor WebRTCPeer {
               appliedEncodings.allSatisfy({
                   $0.maxBitrateBps?.intValue == OpusStereoSDP.maximumAverageBitrateBps
                       && $0.minBitrateBps == nil
+                      && abs(
+                          $0.bitratePriority
+                              - systemAudioBitratePriority
+                      ) <= 0.000_001
+                      && $0.networkPriority == .low
               }) else {
             throw WebRTCTransportError.nativeFailure(
                 "WebRTC rejected the high-fidelity system-audio bitrate policy."
+            )
+        }
+    }
+
+    private static func applyScreenVideoPriorityParameters(
+        to sender: LKRTCRtpSender
+    ) throws {
+        let parameters = sender.parameters
+        guard !parameters.encodings.isEmpty else {
+            throw WebRTCTransportError.nativeFailure(
+                "The screen-video sender did not expose an RTP encoding."
+            )
+        }
+        for encoding in parameters.encodings {
+            encoding.bitratePriority = screenVideoBitratePriority
+            encoding.networkPriority = .low
+        }
+        sender.parameters = parameters
+        guard sender.parameters.encodings.count
+                == parameters.encodings.count,
+              sender.parameters.encodings.allSatisfy({
+                  abs(
+                      $0.bitratePriority
+                          - screenVideoBitratePriority
+                  ) <= 0.000_001
+                      && $0.networkPriority == .low
+              }) else {
+            throw WebRTCTransportError.nativeFailure(
+                "WebRTC rejected the screen-video allocator priority."
             )
         }
     }
@@ -7433,6 +9108,20 @@ enum ControlChannelMessage: Codable, Equatable, Sendable {
     case inputFeedback(WebRTCInputFeedback)
     case macHostedCallChallenge(WebRTCMacHostedCallChallenge)
     case macHostedCallEvidence(WebRTCMacHostedCallEvidence)
+    case screenMediaSuspension(WebRTCScreenMediaSuspensionNotice)
+    case screenMediaCoveredAcknowledgement(
+        WebRTCScreenMediaCoveredAcknowledgement
+    )
+    case screenMediaMarkerReady(WebRTCScreenMediaMarkerReady)
+    case screenMediaMarkerPresentation(
+        WebRTCScreenMediaMarkerPresentation
+    )
+    case screenMediaResumeReady(WebRTCScreenMediaResumeReady)
+    case screenMediaResumeRequest(WebRTCScreenMediaResumeRequest)
+    case screenMediaResumedAcknowledgement(
+        WebRTCScreenMediaResumedAcknowledgement
+    )
+    case screenMediaCancellation(WebRTCScreenMediaCancellation)
 
     private enum Kind: String, Codable {
         case command
@@ -7441,6 +9130,14 @@ enum ControlChannelMessage: Codable, Equatable, Sendable {
         case inputFeedback
         case macHostedCallChallenge
         case macHostedCallEvidence
+        case screenMediaSuspension
+        case screenMediaCoveredAcknowledgement
+        case screenMediaMarkerReady
+        case screenMediaMarkerPresentation
+        case screenMediaResumeReady
+        case screenMediaResumeRequest
+        case screenMediaResumedAcknowledgement
+        case screenMediaCancellation
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -7452,6 +9149,14 @@ enum ControlChannelMessage: Codable, Equatable, Sendable {
         case inputFeedback
         case macHostedCallChallenge
         case macHostedCallEvidence
+        case screenMediaSuspension
+        case screenMediaCoveredAcknowledgement
+        case screenMediaMarkerReady
+        case screenMediaMarkerPresentation
+        case screenMediaResumeReady
+        case screenMediaResumeRequest
+        case screenMediaResumedAcknowledgement
+        case screenMediaCancellation
     }
 
     init(from decoder: any Decoder) throws {
@@ -7490,6 +9195,62 @@ enum ControlChannelMessage: Codable, Equatable, Sendable {
                     forKey: .macHostedCallEvidence
                 )
             )
+        case .screenMediaSuspension:
+            self = .screenMediaSuspension(
+                try container.decode(
+                    WebRTCScreenMediaSuspensionNotice.self,
+                    forKey: .screenMediaSuspension
+                )
+            )
+        case .screenMediaCoveredAcknowledgement:
+            self = .screenMediaCoveredAcknowledgement(
+                try container.decode(
+                    WebRTCScreenMediaCoveredAcknowledgement.self,
+                    forKey: .screenMediaCoveredAcknowledgement
+                )
+            )
+        case .screenMediaMarkerReady:
+            self = .screenMediaMarkerReady(
+                try container.decode(
+                    WebRTCScreenMediaMarkerReady.self,
+                    forKey: .screenMediaMarkerReady
+                )
+            )
+        case .screenMediaMarkerPresentation:
+            self = .screenMediaMarkerPresentation(
+                try container.decode(
+                    WebRTCScreenMediaMarkerPresentation.self,
+                    forKey: .screenMediaMarkerPresentation
+                )
+            )
+        case .screenMediaResumeReady:
+            self = .screenMediaResumeReady(
+                try container.decode(
+                    WebRTCScreenMediaResumeReady.self,
+                    forKey: .screenMediaResumeReady
+                )
+            )
+        case .screenMediaResumeRequest:
+            self = .screenMediaResumeRequest(
+                try container.decode(
+                    WebRTCScreenMediaResumeRequest.self,
+                    forKey: .screenMediaResumeRequest
+                )
+            )
+        case .screenMediaResumedAcknowledgement:
+            self = .screenMediaResumedAcknowledgement(
+                try container.decode(
+                    WebRTCScreenMediaResumedAcknowledgement.self,
+                    forKey: .screenMediaResumedAcknowledgement
+                )
+            )
+        case .screenMediaCancellation:
+            self = .screenMediaCancellation(
+                try container.decode(
+                    WebRTCScreenMediaCancellation.self,
+                    forKey: .screenMediaCancellation
+                )
+            )
         }
     }
 
@@ -7526,6 +9287,57 @@ enum ControlChannelMessage: Codable, Equatable, Sendable {
             try container.encode(
                 evidence,
                 forKey: .macHostedCallEvidence
+            )
+        case .screenMediaSuspension(let notice):
+            try container.encode(Kind.screenMediaSuspension, forKey: .kind)
+            try container.encode(notice, forKey: .screenMediaSuspension)
+        case .screenMediaCoveredAcknowledgement(let acknowledgement):
+            try container.encode(
+                Kind.screenMediaCoveredAcknowledgement,
+                forKey: .kind
+            )
+            try container.encode(
+                acknowledgement,
+                forKey: .screenMediaCoveredAcknowledgement
+            )
+        case .screenMediaMarkerReady(let ready):
+            try container.encode(Kind.screenMediaMarkerReady, forKey: .kind)
+            try container.encode(ready, forKey: .screenMediaMarkerReady)
+        case .screenMediaMarkerPresentation(let presentation):
+            try container.encode(
+                Kind.screenMediaMarkerPresentation,
+                forKey: .kind
+            )
+            try container.encode(
+                presentation,
+                forKey: .screenMediaMarkerPresentation
+            )
+        case .screenMediaResumeReady(let ready):
+            try container.encode(Kind.screenMediaResumeReady, forKey: .kind)
+            try container.encode(ready, forKey: .screenMediaResumeReady)
+        case .screenMediaResumeRequest(let request):
+            try container.encode(
+                Kind.screenMediaResumeRequest,
+                forKey: .kind
+            )
+            try container.encode(request, forKey: .screenMediaResumeRequest)
+        case .screenMediaResumedAcknowledgement(let acknowledgement):
+            try container.encode(
+                Kind.screenMediaResumedAcknowledgement,
+                forKey: .kind
+            )
+            try container.encode(
+                acknowledgement,
+                forKey: .screenMediaResumedAcknowledgement
+            )
+        case .screenMediaCancellation(let cancellation):
+            try container.encode(
+                Kind.screenMediaCancellation,
+                forKey: .kind
+            )
+            try container.encode(
+                cancellation,
+                forKey: .screenMediaCancellation
             )
         }
     }
