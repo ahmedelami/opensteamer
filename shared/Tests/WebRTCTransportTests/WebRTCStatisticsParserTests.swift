@@ -5,6 +5,184 @@ import XCTest
 /// Uses platform-neutral records to verify extraction of route, concealment, jitter-buffer,
 /// sender, and remote-inbound evidence without requiring a live connection.
 final class WebRTCStatisticsParserTests: XCTestCase {
+    func testSelectedCandidatePairIsOrderIndependentAcrossDuplicateTransportReferences()
+        throws {
+        let records = [
+            WebRTCStatisticsRecord(
+                id: "transport-one",
+                type: "transport",
+                values: ["selectedCandidatePairId": "pair"]
+            ),
+            WebRTCStatisticsRecord(
+                id: "transport-two",
+                type: "transport",
+                values: ["selectedCandidatePairId": "pair"]
+            ),
+            WebRTCStatisticsRecord(
+                id: "pair",
+                type: "candidate-pair",
+                values: [
+                    "state": "succeeded",
+                    "currentRoundTripTime": NSNumber(value: 0.025),
+                    "availableOutgoingBitrate": NSNumber(value: 50_000_000),
+                ]
+            ),
+        ]
+
+        for orderedRecords in [records, Array(records.reversed())] {
+            let snapshot = WebRTCStatisticsParser.parse(
+                records: orderedRecords
+            )
+            XCTAssertEqual(snapshot.currentRoundTripTime, 0.025)
+            XCTAssertEqual(snapshot.availableOutgoingBitrate, 50_000_000)
+        }
+    }
+
+    func testConflictingTransportSelectedPairsFailClosed() {
+        let snapshot = WebRTCStatisticsParser.parse(records: [
+            WebRTCStatisticsRecord(
+                id: "transport-one",
+                type: "transport",
+                values: ["selectedCandidatePairId": "pair-one"]
+            ),
+            WebRTCStatisticsRecord(
+                id: "transport-two",
+                type: "transport",
+                values: ["selectedCandidatePairId": "pair-two"]
+            ),
+            WebRTCStatisticsRecord(
+                id: "pair-one",
+                type: "candidate-pair",
+                values: ["state": "succeeded"]
+            ),
+            WebRTCStatisticsRecord(
+                id: "pair-two",
+                type: "candidate-pair",
+                values: ["state": "succeeded"]
+            ),
+        ])
+
+        XCTAssertNil(snapshot.currentRoundTripTime)
+        XCTAssertNil(snapshot.availableOutgoingBitrate)
+        XCTAssertNil(snapshot.route)
+    }
+
+    func testTransportReferenceToWrongRecordTypeFailsClosed() {
+        let snapshot = WebRTCStatisticsParser.parse(records: [
+            WebRTCStatisticsRecord(
+                id: "transport",
+                type: "transport",
+                values: ["selectedCandidatePairId": "not-a-pair"]
+            ),
+            WebRTCStatisticsRecord(
+                id: "not-a-pair",
+                type: "codec",
+                values: [
+                    "currentRoundTripTime": NSNumber(value: 0.001),
+                    "availableOutgoingBitrate": NSNumber(value: 99_000_000),
+                ]
+            ),
+        ])
+
+        XCTAssertNil(snapshot.currentRoundTripTime)
+        XCTAssertNil(snapshot.availableOutgoingBitrate)
+    }
+
+    func testMalformedExplicitTransportReferenceCannotUseFallbackPair() {
+        let pair = WebRTCStatisticsRecord(
+            id: "pair",
+            type: "candidate-pair",
+            values: [
+                "state": "succeeded",
+                "nominated": NSNumber(value: true),
+                "availableOutgoingBitrate": NSNumber(value: 50_000_000),
+            ]
+        )
+        let malformedReference = WebRTCStatisticsRecord(
+            id: "malformed-transport",
+            type: "transport",
+            values: ["selectedCandidatePairId": NSNumber(value: 7)]
+        )
+        let validReference = WebRTCStatisticsRecord(
+            id: "valid-transport",
+            type: "transport",
+            values: ["selectedCandidatePairId": "pair"]
+        )
+
+        for transports in [
+            [malformedReference],
+            [validReference, malformedReference],
+        ] {
+            let snapshot = WebRTCStatisticsParser.parse(
+                records: transports + [pair]
+            )
+            XCTAssertNil(snapshot.currentRoundTripTime)
+            XCTAssertNil(snapshot.availableOutgoingBitrate)
+            XCTAssertNil(snapshot.route)
+        }
+    }
+
+    func testMalformedSelectedPairStateAndEmptyReferenceFailClosed() {
+        let malformedStateSnapshot = WebRTCStatisticsParser.parse(records: [
+            WebRTCStatisticsRecord(
+                id: "transport",
+                type: "transport",
+                values: ["selectedCandidatePairId": "pair"]
+            ),
+            WebRTCStatisticsRecord(
+                id: "pair",
+                type: "candidate-pair",
+                values: [
+                    "state": NSNumber(value: 1),
+                    "availableOutgoingBitrate": NSNumber(value: 50_000_000),
+                ]
+            ),
+        ])
+        XCTAssertNil(malformedStateSnapshot.availableOutgoingBitrate)
+
+        let emptyReferenceSnapshot = WebRTCStatisticsParser.parse(records: [
+            WebRTCStatisticsRecord(
+                id: "transport",
+                type: "transport",
+                values: ["selectedCandidatePairId": ""]
+            ),
+            WebRTCStatisticsRecord(
+                id: "",
+                type: "candidate-pair",
+                values: [
+                    "state": "succeeded",
+                    "availableOutgoingBitrate": NSNumber(value: 50_000_000),
+                ]
+            ),
+        ])
+        XCTAssertNil(emptyReferenceSnapshot.availableOutgoingBitrate)
+    }
+
+    func testAmbiguousFallbackCandidatePairsFailClosed() {
+        let snapshot = WebRTCStatisticsParser.parse(records: [
+            WebRTCStatisticsRecord(
+                id: "pair-one",
+                type: "candidate-pair",
+                values: [
+                    "state": "succeeded",
+                    "nominated": NSNumber(value: true),
+                    "availableOutgoingBitrate": NSNumber(value: 1_000_000),
+                ]
+            ),
+            WebRTCStatisticsRecord(
+                id: "pair-two",
+                type: "candidate-pair",
+                values: [
+                    "state": "succeeded",
+                    "selected": NSNumber(value: true),
+                    "availableOutgoingBitrate": NSNumber(value: 2_000_000),
+                ]
+            ),
+        ])
+
+        XCTAssertNil(snapshot.availableOutgoingBitrate)
+    }
+
     func testParsesOutboundVideoPacketQueueDelay() throws {
         let snapshot = WebRTCStatisticsParser.parse(records: [
             WebRTCStatisticsRecord(
