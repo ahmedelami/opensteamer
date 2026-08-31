@@ -52,6 +52,45 @@ struct WorldwideRemoteInputInjectionOutcome: Equatable, Sendable {
     }
 }
 
+/// Serializes the irreversible resumed acknowledgement against every cleanup path. The operation
+/// runs while the latch is held, so cleanup can only claim failure before it starts or observe the
+/// completed commit afterward.
+final class WorldwideScreenAutomaticResumeCommitLatch: @unchecked Sendable {
+    private enum State {
+        case pending
+        case committed
+        case failureClaimed
+    }
+
+    private let lock = NSLock()
+    private var state = State.pending
+
+    func commit(_ operation: () throws -> Void) throws {
+        try lock.withLock {
+            guard case .pending = state else {
+                throw WorldwideScreenServiceError.transportUnavailable
+            }
+            try operation()
+            state = .committed
+        }
+    }
+
+    func claimFailure() -> Bool {
+        lock.withLock {
+            guard case .pending = state else { return false }
+            state = .failureClaimed
+            return true
+        }
+    }
+
+    var isCommitted: Bool {
+        lock.withLock {
+            if case .committed = state { return true }
+            return false
+        }
+    }
+}
+
 /// Owns one consume-once rendezvous and its Mac-side WebRTC screen session.
 ///
 /// The invitation authenticates and encrypts signaling. Reachability still comes from
@@ -461,50 +500,12 @@ actor WorldwideScreenService {
     private var screenClientDiagnosticsExpectedScreenRequestID: UInt64?
     private var screenClientDiagnosticsExpectationStartedUptime: TimeInterval?
     private var screenClientDiagnosticsSilenceWasReported = false
-    private final class AutomaticScreenMediaResumeCommitLatch:
-        @unchecked Sendable {
-        private enum State {
-            case pending
-            case committed
-            case failureClaimed
-        }
-
-        private let lock = NSLock()
-        private var state = State.pending
-
-        /// Serializes the irreversible send against failure cleanup. If cleanup claims first,
-        /// the operation is never invoked; if this operation wins, cleanup observes committed.
-        func commit(_ operation: () throws -> Void) throws {
-            try lock.withLock {
-                guard case .pending = state else {
-                    throw WorldwideScreenServiceError.transportUnavailable
-                }
-                try operation()
-                state = .committed
-            }
-        }
-
-        func claimFailure() -> Bool {
-            lock.withLock {
-                guard case .pending = state else { return false }
-                state = .failureClaimed
-                return true
-            }
-        }
-
-        var isCommitted: Bool {
-            lock.withLock {
-                if case .committed = state { return true }
-                return false
-            }
-        }
-    }
     private struct AutomaticScreenMediaResumeContext: Sendable {
         let binding: WorldwideScreenMediaSuspensionCoordinator.Binding
         let notice: WebRTCScreenMediaSuspensionNotice
         let attemptID: UUID
         let finalAcknowledgementCommit:
-            AutomaticScreenMediaResumeCommitLatch
+            WorldwideScreenAutomaticResumeCommitLatch
         var probeAuthorization: WebRTCControlAuthorization?
         var forwardingAuthorization: WebRTCControlAuthorization?
         var boundary: WorldwideScreenSampleSink.ResumeMarkerBoundary?
@@ -1933,12 +1934,13 @@ actor WorldwideScreenService {
         ) else {
             return
         }
+        screenVideoAdaptationPolicy.automaticResumeAttemptBegan()
         automaticScreenMediaResumeContext = AutomaticScreenMediaResumeContext(
             binding: binding,
             notice: notice,
             attemptID: attemptID,
             finalAcknowledgementCommit:
-                AutomaticScreenMediaResumeCommitLatch(),
+                WorldwideScreenAutomaticResumeCommitLatch(),
             probeAuthorization: nil,
             forwardingAuthorization: nil,
             boundary: nil,
@@ -2140,6 +2142,7 @@ actor WorldwideScreenService {
             // concurrent display/route lifecycle owns any subsequent capture transition.
             cancelAutomaticScreenMediaResumeTimeout()
             automaticScreenMediaResumeContext = nil
+            screenVideoAdaptationPolicy.automaticResumeAttemptSucceeded()
             return
         }
         let ownedSource = captureSource
@@ -2567,6 +2570,7 @@ actor WorldwideScreenService {
                     }
                 }
             )
+            screenVideoAdaptationPolicy.automaticResumeAttemptSucceeded()
         } catch {
             await failAutomaticScreenMediaResume(
                 peer: sourcePeer,
@@ -2653,6 +2657,13 @@ actor WorldwideScreenService {
 
     private func resetAutomaticScreenMediaSuspensionState() {
         cancelAutomaticScreenMediaResumeTimeout()
+        if let context = automaticScreenMediaResumeContext {
+            if context.finalAcknowledgementCommit.claimFailure() {
+                screenVideoAdaptationPolicy.automaticResumeAttemptFailed()
+            } else {
+                screenVideoAdaptationPolicy.automaticResumeAttemptSucceeded()
+            }
+        }
         automaticScreenMediaResumeContext?.probeAuthorization?.revoke()
         automaticScreenMediaResumeContext?.forwardingAuthorization?.revoke()
         automaticScreenMediaResumeContext = nil
@@ -5655,6 +5666,7 @@ actor WorldwideScreenService {
                 // ordinary post-resume display rebuild even if the service continuation has not
                 // yet cleared its bookkeeping context.
                 cancelAutomaticScreenMediaResumeTimeout()
+                screenVideoAdaptationPolicy.automaticResumeAttemptSucceeded()
                 automaticScreenMediaResumeContext = nil
             } else {
                 if let peer {
