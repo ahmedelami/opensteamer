@@ -1497,6 +1497,35 @@ actor WorldwideScreenService {
         )
         let recommendation = changedRecommendation
             ?? proposedPolicy.currentRecommendation
+        logger.debug(
+            "Worldwide screen network totalCapKbps=\(maximumVideoBitrate / 1_000) "
+                + "fullVideoKbps=\(proposedPolicy.maximumTierVideoBitrateBps / 1_000) "
+                + "tier=\(String(describing: recommendation.tier)) "
+                + "bweKbps="
+                + (snapshot.availableOutgoingBitrate.map {
+                    String(format: "%.0f", $0 / 1_000)
+                } ?? "unknown")
+                + " rttMs="
+                + (snapshot.currentRoundTripTime.map {
+                    String(format: "%.1f", $0 * 1_000)
+                } ?? "unknown")
+                + " sendQueueMs="
+                + (proposedPolicy.lastAveragePacketSendDelaySeconds.map {
+                    String(format: "%.1f", $0 * 1_000)
+                } ?? "unknown")
+                + " encoded="
+                + (snapshot.outboundVideo.flatMap { video in
+                    guard let width = video.frameWidth,
+                          let height = video.frameHeight else {
+                        return nil
+                    }
+                    return "\(width)x\(height)"
+                } ?? "unknown")
+                + " fps="
+                + (snapshot.outboundVideo?.framesPerSecond.map {
+                    String(format: "%.1f", $0)
+                } ?? "unknown")
+        )
         guard isCaptureActive else {
             if peer === sourcePeer,
                peerGeneration == sourcePeerGeneration {
