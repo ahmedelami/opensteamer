@@ -80,6 +80,12 @@ enum WorldwideScreenVideoAutomaticSuspensionDecision: Equatable, Sendable {
 
 /// Converts transport capacity into a stable, single-layer screen-video encoding ceiling.
 struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
+    private struct AutomaticResumeProbeRestoration: Equatable, Sendable {
+        let belowReserveProbeDisprovedSenderLimitation: Bool
+        let applicationLimitedProbeCooldownSamplesRemaining: Int
+        let applicationLimitedProbeFailureCount: Int
+    }
+
     static let requiredHealthyUpgradeSampleCount = 8
     static let requiredPositiveBandwidthBootstrapSampleCount = 3
     static let requiredApplicationLimitedUpgradeSampleCount = 4
@@ -126,6 +132,9 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
     private(set) var applicationLimitedProbeGraceSamplesRemaining = 0
     private(set) var applicationLimitedProbeCooldownSamplesRemaining = 0
     private(set) var applicationLimitedProbeFailureCount = 0
+    private(set) var belowReserveProbeDisprovedSenderLimitation = false
+    private var automaticResumeProbeRestoration:
+        AutomaticResumeProbeRestoration?
     private(set) var applicationLimitedProbeOriginTier:
         WorldwideScreenVideoAdaptationTier?
     private(set) var automaticSuspensionPressureSampleCount = 0
@@ -304,9 +313,12 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
             if unavailableBandwidthSampleCount < Int.max {
                 unavailableBandwidthSampleCount += 1
             }
-            // Missing BWE is telemetry, not proof of congestion. A stable RTT and send queue hold
-            // the current tier; positive latency pressure lowers quality immediately.
+            // Missing BWE is telemetry, not new proof of congestion. Preserve a prior failed
+            // raised-ceiling probe below the reserved floor, however: that probe already removed
+            // the sender-limit ambiguity and remains actionable until capacity is positively
+            // re-established or an automatic resume authorizes a fresh recovery probe.
             lastSampleHasPositiveSuspensionPressure = latencyPressure
+                || belowReserveProbeDisprovedSenderLimitation
             if latencyPressure {
                 healthyUpgradeSampleCount = 0
                 guard let lowerTier = currentTier.nextLowerQuality else {
@@ -368,6 +380,14 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
         let independentlyQualifiedUpgradeTier = highestQualifiedUpgradeTier(
             for: effectiveAvailableOutgoingBitrateBps
         )
+        let requiredAudioPriorityBitrateBps = requiredOutgoingBitrateBps(
+            for: .audioPriority
+        )
+        if effectiveAvailableOutgoingBitrateBps
+            >= requiredAudioPriorityBitrateBps {
+            belowReserveProbeDisprovedSenderLimitation = false
+            automaticResumeProbeRestoration = nil
+        }
         let estimatorMayBeApplicationLimited = estimatorIsApplicationLimited(
             effectiveAvailableOutgoingBitrateBps
         )
@@ -403,13 +423,21 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
             let probeCapacityCollapsed =
                 effectiveAvailableOutgoingBitrateBps
                     < max(
-                        requiredOutgoingBitrateBps(for: .audioPriority),
+                        requiredAudioPriorityBitrateBps,
                         Double(
                             recommendation(for: probeOriginTier)
                                 .maximumBitrateBps
                         ) * Self.applicationLimitedProbeImmediateAbortRatio
                     )
             if latencyPressure || probeCapacityCollapsed {
+                if probeCapacityCollapsed,
+                   effectiveAvailableOutgoingBitrateBps
+                    < requiredAudioPriorityBitrateBps {
+                    // Raising the sender ceiling removed the censoring ambiguity but the estimate
+                    // stayed below the reserved floor. Preserve that evidence across backoff so a
+                    // genuinely constrained path can still accumulate bounded pause pressure.
+                    belowReserveProbeDisprovedSenderLimitation = true
+                }
                 failApplicationLimitedProbe(revertingTo: probeOriginTier)
             } else if estimatorMayBeApplicationLimited,
                       strictUpgradeEvidenceIsHealthy {
@@ -438,14 +466,25 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
             resetApplicationLimitedProbeBackoff()
         }
 
-        // A near-ceiling estimate with no positive latency pressure is neutral capacity evidence:
-        // hold the applied tier even when an optional RTT or queue delta is missing. Only fresh,
-        // strict RTT and queue evidence may authorize the higher-ceiling probe itself.
+        // A near-ceiling estimate is censored by the sender and therefore cannot prove that the
+        // path itself is congested. Below the absolute audio/control reserve, extend that neutral
+        // treatment only at audioPriority: applying it at higher tiers could pin a truly starved
+        // path above the fail-closed floor when strict probe telemetry is unavailable. At the
+        // floor, fresh RTT and queue evidence may authorize one bounded higher-ceiling probe.
+        let audioPriorityProbeIsFeasible = currentTier == .audioPriority
+            && currentTier.nextHigherQuality.map {
+                requiredOutgoingBitrateBps(for: $0)
+                    <= Double(configuredTotalRTPBitrateBps)
+            } == true
+        let senderLimitedEstimateCanHoldCurrentTier =
+            effectiveAvailableOutgoingBitrateBps
+                >= requiredAudioPriorityBitrateBps
+            || (audioPriorityProbeIsFeasible
+                && !belowReserveProbeDisprovedSenderLimitation)
         let applicationLimitedHoldIsHealthy = !latencyPressure
             && independentlyQualifiedUpgradeTier == nil
             && estimatorMayBeApplicationLimited
-            && effectiveAvailableOutgoingBitrateBps
-                >= requiredOutgoingBitrateBps(for: .audioPriority)
+            && senderLimitedEstimateCanHoldCurrentTier
         if applicationLimitedHoldIsHealthy {
             guard currentTier.nextHigherQuality != nil else {
                 applicationLimitedUpgradeSampleCount = 0
@@ -610,9 +649,42 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
         return .suspend
     }
 
+    /// Consumes retained below-reserve evidence only after the suspension coordinator accepts the
+    /// exact resume attempt. A rejected decision therefore cannot weaken the pause invariant.
+    mutating func automaticResumeAttemptBegan() {
+        guard automaticResumeProbeRestoration == nil else { return }
+        automaticResumeProbeRestoration = AutomaticResumeProbeRestoration(
+            belowReserveProbeDisprovedSenderLimitation:
+                belowReserveProbeDisprovedSenderLimitation,
+            applicationLimitedProbeCooldownSamplesRemaining:
+                applicationLimitedProbeCooldownSamplesRemaining,
+            applicationLimitedProbeFailureCount:
+                applicationLimitedProbeFailureCount
+        )
+        belowReserveProbeDisprovedSenderLimitation = false
+        applicationLimitedUpgradeSampleCount = 0
+        resetApplicationLimitedProbeBackoff()
+    }
+
+    mutating func automaticResumeAttemptSucceeded() {
+        automaticResumeProbeRestoration = nil
+    }
+
     mutating func automaticResumeAttemptFailed() {
+        if let restoration = automaticResumeProbeRestoration {
+            belowReserveProbeDisprovedSenderLimitation =
+                restoration.belowReserveProbeDisprovedSenderLimitation
+            applicationLimitedProbeCooldownSamplesRemaining =
+                restoration.applicationLimitedProbeCooldownSamplesRemaining
+            applicationLimitedProbeFailureCount =
+                restoration.applicationLimitedProbeFailureCount
+        }
+        automaticResumeProbeRestoration = nil
         currentTier = .audioPriority
         healthyUpgradeSampleCount = 0
+        applicationLimitedUpgradeSampleCount = 0
+        applicationLimitedProbeGraceSamplesRemaining = 0
+        applicationLimitedProbeOriginTier = nil
         resetAutomaticSuspensionMeasurements()
     }
 
@@ -723,6 +795,8 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
         applicationLimitedProbeOriginTier = nil
         applicationLimitedProbeGraceSamplesRemaining = 0
         applicationLimitedUpgradeSampleCount = 0
+        belowReserveProbeDisprovedSenderLimitation = false
+        automaticResumeProbeRestoration = nil
         resetApplicationLimitedProbeBackoff()
     }
 
@@ -765,6 +839,8 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
         applicationLimitedUpgradeSampleCount = 0
         applicationLimitedProbeGraceSamplesRemaining = 0
         applicationLimitedProbeOriginTier = nil
+        belowReserveProbeDisprovedSenderLimitation = false
+        automaticResumeProbeRestoration = nil
         resetApplicationLimitedProbeBackoff()
         roundTripTimeBaselineSeconds = nil
         roundTripTimeBootstrapSamples = []

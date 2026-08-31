@@ -124,6 +124,33 @@ final class WorldwideScreenFormatRenegotiationSupersessionTests: XCTestCase {
         XCTAssertTrue(renegotiation.contains("owner: startupOwner"))
     }
 
+    func testCommittedResumeGeometrySupersessionConsumesPolicyRestoration() throws {
+        let source = try serviceSource()
+        let method = try sourceSlice(
+            in: source,
+            after: "    private func renegotiateScreenCaptureFormat(",
+            before: "    /// A newer visibility command, peer, recovery epoch, or completed service owns any failure"
+        )
+        let committedBranch = try XCTUnwrap(
+            method.range(of: "if context.finalAcknowledgementCommit.isCommitted {")
+        )
+        let successConsumption = try XCTUnwrap(
+            method.range(
+                of: "screenVideoAdaptationPolicy.automaticResumeAttemptSucceeded()",
+                range: committedBranch.upperBound..<method.endIndex
+            )
+        )
+        let contextClear = try XCTUnwrap(
+            method.range(
+                of: "automaticScreenMediaResumeContext = nil",
+                range: successConsumption.upperBound..<method.endIndex
+            )
+        )
+
+        XCTAssertLessThan(committedBranch.lowerBound, successConsumption.lowerBound)
+        XCTAssertLessThan(successConsumption.lowerBound, contextClear.lowerBound)
+    }
+
     private func superseded(
         visibilityCommandEpoch: UInt64 = 7,
         currentVisibilityCommandEpoch: UInt64 = 7,

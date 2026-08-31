@@ -325,6 +325,16 @@ manual IP addresses, router configuration, or public TCP ports.
   acknowledged Show after recovery. Physical release evidence must separately require decoded
   frame cadence and decoded pixel-change cadence; a high frame counter over 1–2 pixel updates per
   second is a slideshow, not a live screen.
+- Treat an available-outgoing-bitrate estimate at or above the current video sender ceiling as
+  application-limited, not as standalone congestion proof. In particular, a healthy low-delay
+  audio-priority sender must remain visible and use a bounded higher-tier probe rather than enter
+  the opaque automatic bandwidth pause. If that raised-ceiling probe leaves the estimate below the
+  audio/control reserve, retain the disproved-censoring evidence until capacity rises, the probe
+  succeeds, or the route/peer resets. An exact coordinator-accepted automatic resume may temporarily
+  supersede that evidence for one fresh probe; restore it if the resume attempt fails, and consume
+  it only after the resumed acknowledgement commits. That failed probe, actual latency/queue
+  pressure, or an estimate clearly below the current sender ceiling may authorize the fail-closed
+  pause policy.
 - Worldwide remote input is a separate, host-authorized capability and is off by
   default. It may be enabled only by launching the host with both `--worldwide` and
   `--allow-remote-control`; the trusted-LAN viewer remains view-only. Input uses the
