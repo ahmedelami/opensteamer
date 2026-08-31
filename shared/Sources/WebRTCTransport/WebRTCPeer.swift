@@ -5548,7 +5548,14 @@ public actor WebRTCPeer {
     }
 
     private var screenMediaResumeProbeAttemptIsActive: Bool {
-        screenMediaResumeProbeAuthorization != nil
+        // The completed transcript remains retained so either peer can idempotently replay the
+        // exact resume request/ACK. Once that ACK has committed, however, it is historical replay
+        // state rather than a live proof: ordinary bitrate/FPS adaptation must no longer retire it.
+        guard sentScreenMediaResumedAcknowledgement == nil,
+              receivedScreenMediaResumedAcknowledgement == nil else {
+            return false
+        }
+        return screenMediaResumeProbeAuthorization != nil
             || armedScreenMediaResumeAttemptID != nil
             || observedScreenVideoEncoderMarkerProof != nil
             || observedScreenVideoEncoderRealFrameProof != nil
