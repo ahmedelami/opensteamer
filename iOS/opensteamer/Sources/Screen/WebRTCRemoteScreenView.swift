@@ -7,6 +7,7 @@ import WebRTCTransport
 struct WebRTCRemoteScreenView: UIViewRepresentable {
     let track: WebRTCRemoteVideoTrack?
     var forcePresentationCover = false
+    var forcePrivacyCover = false
     var minimumAcceptedRTPTimestamp: UInt32?
     var proofRTPTimestamps: Set<UInt32> = []
     var markerProof: ScreenVideoInBandMarkerNonce?
@@ -46,6 +47,7 @@ struct WebRTCRemoteScreenView: UIViewRepresentable {
         view.onVideoFramePresentedForProof = onVideoFramePresentedForProof
         view.onVideoMarkerFramePresentedForProof =
             onVideoMarkerFramePresentedForProof
+        view.updatePrivacyCover(isVisible: forcePrivacyCover)
         view.updatePresentationFence(
             forceCover: forcePresentationCover,
             minimumAcceptedRTPTimestamp: minimumAcceptedRTPTimestamp,
@@ -65,6 +67,7 @@ struct WebRTCRemoteScreenView: UIViewRepresentable {
         view.onVideoFramePresentedForProof = onVideoFramePresentedForProof
         view.onVideoMarkerFramePresentedForProof =
             onVideoMarkerFramePresentedForProof
+        view.updatePrivacyCover(isVisible: forcePrivacyCover)
         view.updatePresentationFence(
             forceCover: forcePresentationCover,
             minimumAcceptedRTPTimestamp: minimumAcceptedRTPTimestamp,
@@ -87,6 +90,7 @@ struct WebRTCRemoteScreenView: UIViewRepresentable {
         view.onVideoFrameRendered = nil
         view.onVideoFramePresentedForProof = nil
         view.onVideoMarkerFramePresentedForProof = nil
+        view.updatePrivacyCover(isVisible: true)
         view.updatePresentationFence(
             forceCover: true,
             minimumAcceptedRTPTimestamp: nil,

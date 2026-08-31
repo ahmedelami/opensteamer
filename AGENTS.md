@@ -333,14 +333,17 @@ manual IP addresses, router configuration, or public TCP ports.
   fresh host-issued input-session UUID; Hide, disconnect, recovery, capture failure,
   or permission loss revokes that session synchronously. Viewer disappearance and
   app inactive/background transitions must revoke the local gate and clear queued
-  input before scheduling asynchronous Hide work, even when Hide later fails. An
+  input synchronously. A transient inactive scene must keep the acknowledged Show
+  lease and renderer mounted behind a native privacy cover so returning active can
+  reveal the already-presented frame without a capture restart; entering background
+  must then schedule asynchronous Hide work, even when Hide later fails. An
   initially inactive viewer must never send Show, and a late Active acknowledgement
   from a superseded Show must never reinstall input authorization. Local teardown
   state must not make a still-required network Hide collapse into a no-op. Rotate a
   visibility-operation generation before every actor-reentrant Show/Hide send so a
   superseded call or recovery boundary cannot install a stale continuation. Hide is
   successful only after an explicit Inactive acknowledgement; a failed send, timeout,
-  or Active-for-Hide acknowledgement closes the peer fail closed. Do not render even
+  or Active-for-Hide acknowledgement closes the peer fail closed. Do not expose even
   retained remote frames unless the scene is active and the current Show is confirmed.
 - Only atomic primary taps, atomic primary drags, bounded incremental scroll deltas,
   bounded committed text, Backspace, and Return belong in the input protocol. Primary
