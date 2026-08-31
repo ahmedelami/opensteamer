@@ -48,6 +48,142 @@ final class WorldwideRemoteInputScaleTransitionTests: XCTestCase {
         )
     }
 
+    func testSuspensionInvalidationRequiresFreshOrderedShowWithoutLocalReactivation() throws {
+        let handler = try serviceSlice(
+            after: "        case .screenMediaSuspensionInvalidated(let reason):",
+            before: "        case .screenMediaSuspensionReceived,"
+        )
+        let snapshot = try XCTUnwrap(
+            handler.range(of: "screenMediaSuspension.diagnosticSnapshot")
+        )
+        let reasonLog = try XCTUnwrap(
+            handler.range(
+                of: "reason=\\(diagnosticReason)",
+                range: snapshot.upperBound..<handler.endIndex
+            )
+        )
+        let reset = try XCTUnwrap(
+            handler.range(
+                of: "resetAutomaticScreenMediaSuspensionState()",
+                range: reasonLog.upperBound..<handler.endIndex
+            )
+        )
+        let close = try XCTUnwrap(
+            handler.range(
+                of: "await stop()",
+                range: reset.upperBound..<handler.endIndex
+            )
+        )
+
+        XCTAssertLessThan(snapshot.lowerBound, reasonLog.lowerBound)
+        XCTAssertLessThan(reasonLog.lowerBound, reset.lowerBound)
+        XCTAssertLessThan(reset.lowerBound, close.lowerBound)
+        XCTAssertTrue(handler.contains("phase=\\(diagnostic.phase.rawValue)"))
+        XCTAssertTrue(handler.contains("resumeAttemptWasInFlight"))
+        XCTAssertTrue(handler.contains(".prefix(256)"))
+        XCTAssertFalse(
+            handler.contains(
+                "diagnostic.requiresFreshMediaSessionAfterInvalidation"
+            )
+        )
+        XCTAssertFalse(handler.contains("startScreenCapture"))
+        XCTAssertFalse(handler.contains("acknowledgeActiveControlRequest"))
+    }
+
+    func testOrderedVisibilitySupersessionRetiresSuspensionWithoutTerminalInvalidation() throws {
+        let receipt = try peerSlice(
+            after: "    private func receiveControlRequest(_ request: WebRTCControlRequest) {",
+            before: "    private func receiveControlAcknowledgement("
+        )
+        let ordinaryVisibility = try XCTUnwrap(
+            receipt.range(
+                of: "if request.command == .showScreen || request.command == .hideScreen"
+            )
+        )
+        let retirement = try XCTUnwrap(
+            receipt.range(
+                of: "reason: \"An ordinary host visibility transition retired the covered suspension.\"",
+                range: ordinaryVisibility.upperBound..<receipt.endIndex
+            )
+        )
+        let retirementBlock = String(
+            receipt[ordinaryVisibility.lowerBound..<retirement.upperBound]
+        )
+        let controlDelivery = try XCTUnwrap(
+            receipt.range(
+                of: "emit(.controlRequestReceived(request))",
+                range: retirement.upperBound..<receipt.endIndex
+            )
+        )
+
+        XCTAssertTrue(retirementBlock.contains("emitInvalidation: false"))
+        XCTAssertTrue(retirementBlock.contains("disableHostVideo: true"))
+        XCTAssertLessThan(retirement.lowerBound, controlDelivery.lowerBound)
+        XCTAssertFalse(
+            String(receipt[ordinaryVisibility.lowerBound..<controlDelivery.upperBound])
+                .contains("emitInvalidation: true")
+        )
+    }
+
+    func testClientDiagnosticsFreshnessCannotDriveMediaAdaptation() throws {
+        let receiptHandler = try serviceSlice(
+            after: "    private func handleScreenClientDiagnosticsHeartbeat(",
+            before: "    private func observeScreenClientDiagnosticsFreshness("
+        )
+        XCTAssertTrue(
+            receiptHandler.contains(
+                "heartbeat.screenRequestID == activeScreenRequestID"
+            )
+        )
+        XCTAssertTrue(receiptHandler.contains("if !matchesActiveScreen"))
+        XCTAssertTrue(receiptHandler.contains("isCorrelated: matchesActiveScreen"))
+
+        let isolatedConsumer = try serviceSlice(
+            after: "    private func consumeScreenClientDiagnosticsEvents(",
+            before: "    /// Updates transport health, routes protocol requests"
+        )
+        XCTAssertTrue(
+            isolatedConsumer.contains(
+                "handleScreenClientDiagnosticsHeartbeat(heartbeat)"
+            )
+        )
+        XCTAssertTrue(isolatedConsumer.contains("case .laneFailure(let message)"))
+        XCTAssertFalse(isolatedConsumer.contains("await stop()"))
+        XCTAssertFalse(isolatedConsumer.contains("handlePeerEvent("))
+
+        let statisticsHandler = try serviceSlice(
+            after: "        case .statistics(let snapshot):",
+            before: "        case .iceCandidateError(let error):"
+        )
+        let adaptation = try XCTUnwrap(
+            statisticsHandler.range(
+                of: "await adaptScreenVideoForNetworkConditions("
+            )
+        )
+        let diagnostics = try XCTUnwrap(
+            statisticsHandler.range(
+                of: "await observeScreenClientDiagnosticsFreshness(",
+                range: adaptation.upperBound..<statisticsHandler.endIndex
+            )
+        )
+        XCTAssertLessThan(adaptation.lowerBound, diagnostics.lowerBound)
+
+        let freshness = try serviceSlice(
+            after: "    private func observeScreenClientDiagnosticsFreshness(",
+            before: "    /// Applies a new sender ceiling only after the current capture"
+        )
+        XCTAssertTrue(
+            freshness.contains(
+                "await sourcePeer.screenClientDiagnosticsIsNegotiated()"
+            )
+        )
+        XCTAssertTrue(freshness.contains("warning=heartbeatMissing"))
+        XCTAssertFalse(freshness.contains("screenVideoAdaptationPolicy"))
+        XCTAssertFalse(freshness.contains("startScreenCapture"))
+        XCTAssertFalse(freshness.contains("stopScreenCapture"))
+        XCTAssertFalse(freshness.contains("await stop()"))
+    }
+
     func testAdaptiveEncoderScalingPreservesAuthoritativeCaptureDimensions() throws {
         let adaptation = try serviceSlice(
             after: "    private func adaptScreenVideoForNetworkConditions(",
@@ -349,15 +485,33 @@ final class WorldwideRemoteInputScaleTransitionTests: XCTestCase {
     }
 
     private func serviceSlice(after startMarker: String, before endMarker: String) throws -> String {
+        try sourceSlice(
+            at: "macOS/Sources/CaptureServer/WorldwideScreenService.swift",
+            after: startMarker,
+            before: endMarker
+        )
+    }
+
+    private func peerSlice(after startMarker: String, before endMarker: String) throws -> String {
+        try sourceSlice(
+            at: "shared/Sources/WebRTCTransport/WebRTCPeer.swift",
+            after: startMarker,
+            before: endMarker
+        )
+    }
+
+    private func sourceSlice(
+        at relativePath: String,
+        after startMarker: String,
+        before endMarker: String
+    ) throws -> String {
         let repositoryRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         let source = try String(
-            contentsOf: repositoryRoot.appendingPathComponent(
-                "macOS/Sources/CaptureServer/WorldwideScreenService.swift"
-            ),
+            contentsOf: repositoryRoot.appendingPathComponent(relativePath),
             encoding: .utf8
         )
         let start = try XCTUnwrap(source.range(of: startMarker)?.upperBound)

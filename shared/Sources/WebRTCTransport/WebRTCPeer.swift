@@ -2143,6 +2143,8 @@ public actor WebRTCPeer {
     #endif
 
     public nonisolated let events: AsyncStream<WebRTCTransportEvent>
+    public nonisolated let screenClientDiagnosticsEvents:
+        AsyncStream<WebRTCScreenClientDiagnosticsEvent>
     public nonisolated let externalAudioCapturer: MacExternalAudioCapturer?
     public nonisolated let externalVideoCapturer: MacExternalVideoCapturer?
     #if os(macOS)
@@ -2152,6 +2154,8 @@ public actor WebRTCPeer {
     private let role: RemotePeerRole
     private let configuredMaximumVideoBitrate: Int?
     private let eventContinuation: AsyncStream<WebRTCTransportEvent>.Continuation
+    private let screenClientDiagnosticsEventContinuation:
+        AsyncStream<WebRTCScreenClientDiagnosticsEvent>.Continuation
     private let factory: LKRTCPeerConnectionFactory
     private let peerConnection: LKRTCPeerConnection
     private let delegateProxy: WebRTCDelegateProxy
@@ -2218,6 +2222,7 @@ public actor WebRTCPeer {
     #endif
 
     private var delegateEventTask: Task<Void, Never>?
+    private var screenDiagnosticsDelegateEventTask: Task<Void, Never>?
     private var screenVideoEncoderProbeEventTask: Task<Void, Never>?
     private var statisticsTask: Task<Void, Never>?
     private nonisolated let screenVideoEncoderProbeEvents:
@@ -2293,6 +2298,12 @@ public actor WebRTCPeer {
     // boundary clears the whole chain before a later generation can be admitted.
     private var screenMediaSuspensionNegotiationEpoch: UInt64?
     private var pendingScreenMediaHostOfferSDP: String?
+    // Client diagnostics use a distinct unreliable lane so malformed or backpressured telemetry
+    // can never revoke input or mutate the ordered screen-media state machine.
+    private var screenClientDiagnosticsNegotiationEpoch: UInt64?
+    private var screenClientDiagnosticsCapabilityIsLocallyAvailable = false
+    private var highestSentScreenClientDiagnosticsSequence: UInt64 = 0
+    private var highestReceivedScreenClientDiagnosticsSequence: UInt64 = 0
     private var sentScreenMediaSuspension:
         WebRTCScreenMediaSuspensionNotice?
     private var receivedScreenMediaSuspension:
@@ -2353,6 +2364,13 @@ public actor WebRTCPeer {
         )
         events = eventPair.stream
         eventContinuation = eventPair.continuation
+        let screenClientDiagnosticsEventPair =
+            AsyncStream<WebRTCScreenClientDiagnosticsEvent>.makeStream(
+                bufferingPolicy: .bufferingNewest(8)
+            )
+        screenClientDiagnosticsEvents = screenClientDiagnosticsEventPair.stream
+        screenClientDiagnosticsEventContinuation =
+            screenClientDiagnosticsEventPair.continuation
         let probeEventPair = AsyncStream<ScreenVideoEncoderResumeProbeEvent>
             .makeStream(bufferingPolicy: .bufferingNewest(32))
         screenVideoEncoderProbeEvents = probeEventPair.stream
@@ -2360,6 +2378,10 @@ public actor WebRTCPeer {
             probeEventPair.continuation
         let probeEventContinuation = probeEventPair.continuation
         role = configuration.role
+        // A viewer can receive the host-created optional channel. A host advertises support only
+        // after native allocation of that channel succeeds below.
+        screenClientDiagnosticsCapabilityIsLocallyAvailable =
+            configuration.role == .viewer
         configuredMaximumVideoBitrate = configuration.maximumVideoBitrate
 
         let defaultEncoderFactory = LKRTCDefaultVideoEncoderFactory()
@@ -2683,6 +2705,28 @@ public actor WebRTCPeer {
                 throw WebRTCTransportError.dataChannelCreationFailed
             }
             proxy.installDataChannel(dataChannel)
+
+            let diagnosticsChannelConfiguration = LKRTCDataChannelConfiguration()
+            diagnosticsChannelConfiguration.isOrdered = false
+            diagnosticsChannelConfiguration.maxPacketLifeTime = -1
+            diagnosticsChannelConfiguration.maxRetransmits = 0
+            diagnosticsChannelConfiguration.isNegotiated = false
+            diagnosticsChannelConfiguration.`protocol` =
+                WebRTCWireConstants.screenDiagnosticsProtocol
+            if let diagnosticsChannel = nativePeer.dataChannel(
+                forLabel: WebRTCWireConstants.screenDiagnosticsChannelLabel,
+                configuration: diagnosticsChannelConfiguration
+            ) {
+                proxy.installDataChannel(diagnosticsChannel)
+                screenClientDiagnosticsCapabilityIsLocallyAvailable = true
+            } else {
+                // Observability must never become a construction dependency for media/control.
+                _ = screenClientDiagnosticsEventContinuation.yield(
+                    .laneFailure(
+                        "Native screen-client diagnostics channel was unavailable."
+                    )
+                )
+            }
         } else {
             localAudioTrack = nil
             externalAudioCapturer = nil
@@ -2716,8 +2760,10 @@ public actor WebRTCPeer {
     deinit {
         statisticsTask?.cancel()
         delegateEventTask?.cancel()
+        screenDiagnosticsDelegateEventTask?.cancel()
         screenVideoEncoderProbeEventTask?.cancel()
         screenVideoEncoderProbeEventContinuation.finish()
+        screenClientDiagnosticsEventContinuation.finish()
         delegateProxy.close()
         peerConnection.close()
         eventContinuation.finish()
@@ -2739,6 +2785,7 @@ public actor WebRTCPeer {
         let offerEpoch = nextNegotiationEpoch()
         resetMacHostedCallEvidenceNegotiation()
         resetScreenMediaSuspensionNegotiation()
+        resetScreenClientDiagnosticsNegotiation()
         outstandingLocalOfferEpoch = offerEpoch
         hasStarted = true
         localDescriptionIsAnnounced = false
@@ -2785,6 +2832,7 @@ public actor WebRTCPeer {
             let offerEpoch = nextNegotiationEpoch()
             resetMacHostedCallEvidenceNegotiation()
             resetScreenMediaSuspensionNegotiation()
+            resetScreenClientDiagnosticsNegotiation()
             applyingRemoteOfferEpoch = offerEpoch
             defer {
                 if applyingRemoteOfferEpoch == offerEpoch {
@@ -2839,6 +2887,13 @@ public actor WebRTCPeer {
             ) {
                 screenMediaSuspensionNegotiationEpoch = offerEpoch
             }
+            if screenClientDiagnosticsCapabilityIsLocallyAvailable,
+               ScreenClientDiagnosticsSDP.wasNegotiated(
+                hostOfferSDP: sdp,
+                viewerAnswerSDP: answerSDP
+            ) {
+                screenClientDiagnosticsNegotiationEpoch = offerEpoch
+            }
             // `outboundSignal(.answer)` is the ordered post-capability event consumed by the
             // viewer. The application may retry its current challenge only after forwarding this
             // answer; the peer-side transport/capability check remains authoritative.
@@ -2873,7 +2928,8 @@ public actor WebRTCPeer {
             try requestRawSystemAudioProcessing()
             macHostedCallEvidenceIsNegotiated =
                 MacHostedCallEvidenceSDP.peerSupportsEvidence(in: sdp)
-            if let hostOfferSDP = pendingScreenMediaHostOfferSDP,
+            if screenClientDiagnosticsCapabilityIsLocallyAvailable,
+               let hostOfferSDP = pendingScreenMediaHostOfferSDP,
                ScreenMediaSuspensionSDP.wasNegotiated(
                 hostOfferSDP: hostOfferSDP,
                 viewerAnswerSDP: sdp
@@ -2881,6 +2937,15 @@ public actor WebRTCPeer {
                 screenMediaSuspensionNegotiationEpoch = offerEpoch
             } else {
                 screenMediaSuspensionNegotiationEpoch = nil
+            }
+            if let hostOfferSDP = pendingScreenMediaHostOfferSDP,
+               ScreenClientDiagnosticsSDP.wasNegotiated(
+                   hostOfferSDP: hostOfferSDP,
+                   viewerAnswerSDP: sdp
+               ) {
+                screenClientDiagnosticsNegotiationEpoch = offerEpoch
+            } else {
+                screenClientDiagnosticsNegotiationEpoch = nil
             }
             try installRemoteICEUsernameFragments(from: sdp)
             remoteDescriptionIsSet = true
@@ -2943,6 +3008,7 @@ public actor WebRTCPeer {
         let offerEpoch = nextNegotiationEpoch()
         resetMacHostedCallEvidenceNegotiation()
         resetScreenMediaSuspensionNegotiation()
+        resetScreenClientDiagnosticsNegotiation()
         outstandingLocalOfferEpoch = offerEpoch
         localDescriptionIsAnnounced = false
         remoteDescriptionIsSet = false
@@ -3888,6 +3954,37 @@ public actor WebRTCPeer {
     /// v1. This is intentionally read-only; no application flag can opt an older peer in.
     public func screenMediaSuspensionIsNegotiated() -> Bool {
         screenMediaSuspensionNegotiationEpoch == negotiationEpoch
+    }
+
+    /// True only for the exact offer/answer generation that negotiated the isolated client
+    /// diagnostics lane. The channel may physically exist for compatibility, but carries no
+    /// application data until this proof is current.
+    public func screenClientDiagnosticsIsNegotiated() -> Bool {
+        screenClientDiagnosticsCapabilityIsLocallyAvailable
+            && screenClientDiagnosticsNegotiationEpoch == negotiationEpoch
+    }
+
+    /// Best-effort viewer evidence. Failure or backpressure on this lane never changes screen,
+    /// audio, control, or input authorization state.
+    public func sendScreenClientDiagnosticsHeartbeat(
+        _ heartbeat: WebRTCScreenClientDiagnosticsHeartbeat
+    ) throws {
+        try ensureOpen()
+        guard role == .viewer else { throw WebRTCTransportError.invalidRole }
+        ensureDelegateEventLoop()
+        guard screenClientDiagnosticsIsNegotiated(),
+              isTransportHealthyForMedia() else {
+            throw WebRTCTransportError.transportNotHealthy
+        }
+        guard heartbeat.isValid,
+              heartbeat.sequence > highestSentScreenClientDiagnosticsSequence else {
+            throw WebRTCTransportError.unexpectedSignal
+        }
+        let message = ScreenClientDiagnosticsChannelMessage.heartbeat(heartbeat)
+        try delegateProxy.sendScreenDiagnosticsData(
+            try JSONEncoder().encode(message)
+        )
+        highestSentScreenClientDiagnosticsSequence = heartbeat.sequence
     }
 
     /// Announces one negotiated suspension while the original Show is still Active. The viewer
@@ -6422,6 +6519,15 @@ public actor WebRTCPeer {
                 await self.nativeEventStreamTerminatedUnexpectedly()
             }
         }
+        if screenDiagnosticsDelegateEventTask == nil {
+            let nativeDiagnosticsEvents = delegateProxy.screenDiagnosticsEvents
+            screenDiagnosticsDelegateEventTask = Task { [weak self] in
+                for await event in nativeDiagnosticsEvents {
+                    guard let self else { return }
+                    await self.consumeScreenDiagnostics(event)
+                }
+            }
+        }
         if screenVideoEncoderProbeEventTask == nil {
             let probeEvents = screenVideoEncoderProbeEvents
             screenVideoEncoderProbeEventTask = Task { [weak self] in
@@ -6547,6 +6653,21 @@ public actor WebRTCPeer {
         }
     }
 
+    private func consumeScreenDiagnostics(
+        _ event: NativeScreenDiagnosticsEvent
+    ) {
+        guard !isClosed else { return }
+        // Release native coalescing only after this optional event has crossed into the actor's
+        // dedicated consumer. Subsequent telemetry never touches the critical native queue.
+        delegateProxy.didConsumeScreenDiagnosticsEvent()
+        switch event {
+        case .message(let data):
+            receiveScreenClientDiagnosticsData(data)
+        case .failure(let message):
+            emitScreenClientDiagnosticsEvent(.laneFailure(message))
+        }
+    }
+
     private func nativeEventStreamTerminatedUnexpectedly() {
         guard !isClosed else { return }
         failClosedForEventDeliveryLoss("Native WebRTC event stream terminated unexpectedly.")
@@ -6602,9 +6723,12 @@ public actor WebRTCPeer {
         statisticsTask = nil
         delegateEventTask?.cancel()
         delegateEventTask = nil
+        screenDiagnosticsDelegateEventTask?.cancel()
+        screenDiagnosticsDelegateEventTask = nil
         screenVideoEncoderProbeEventTask?.cancel()
         screenVideoEncoderProbeEventTask = nil
         screenVideoEncoderProbeEventContinuation.finish()
+        screenClientDiagnosticsEventContinuation.finish()
         negotiationEpoch &+= 1
         outstandingLocalOfferEpoch = nil
         applyingRemoteAnswerEpoch = nil
@@ -6682,6 +6806,55 @@ public actor WebRTCPeer {
             )
             emit(.diagnosticFailure("Invalid control-channel message."))
         }
+    }
+
+    private func receiveScreenClientDiagnosticsData(_ data: Data) {
+        guard role == .host else {
+            delegateProxy.closeScreenDiagnosticsChannel()
+            emitScreenClientDiagnosticsEvent(.laneFailure(
+                "Unexpected screen-client diagnostics message."
+            ))
+            return
+        }
+        // During ICE restart the viewer finishes its answer locally before that answer traverses
+        // signaling back to the host. A heartbeat may therefore cross the still-open SCTP lane
+        // while this host's new negotiation epoch is pending. Drop it without consuming sequence
+        // state or closing the optional channel; the first post-answer heartbeat reestablishes
+        // correlated evidence.
+        guard screenClientDiagnosticsIsNegotiated() else { return }
+        do {
+            let message = try JSONDecoder().decode(
+                ScreenClientDiagnosticsChannelMessage.self,
+                from: data
+            )
+            switch message {
+            case .heartbeat(let heartbeat):
+                guard heartbeat.isValid else {
+                    throw WebRTCTransportError.unexpectedSignal
+                }
+                // The diagnostics channel is deliberately unordered and unreliable. A delayed
+                // heartbeat is harmless and must not become a protocol or media failure.
+                guard heartbeat.sequence
+                        > highestReceivedScreenClientDiagnosticsSequence else {
+                    return
+                }
+                highestReceivedScreenClientDiagnosticsSequence = heartbeat.sequence
+                emitScreenClientDiagnosticsEvent(.heartbeat(heartbeat))
+            }
+        } catch {
+            delegateProxy.closeScreenDiagnosticsChannel()
+            emitScreenClientDiagnosticsEvent(.laneFailure(
+                "Invalid screen-client diagnostics message; diagnostics lane closed."
+            ))
+        }
+    }
+
+    private func emitScreenClientDiagnosticsEvent(
+        _ event: WebRTCScreenClientDiagnosticsEvent
+    ) {
+        // Newest-only, best-effort delivery: loss or consumer termination is local to telemetry.
+        // In particular it must never call `failClosedForEventDeliveryLoss`.
+        _ = screenClientDiagnosticsEventContinuation.yield(event)
     }
 
     private func receiveMacHostedCallChallenge(
@@ -6789,6 +6962,12 @@ public actor WebRTCPeer {
         lastReceivedScreenMediaCancellation = nil
         retiredScreenMediaResumeAttemptIDs.removeAll(keepingCapacity: true)
         retiredScreenMediaResumeAttemptOrder.removeAll(keepingCapacity: true)
+    }
+
+    private func resetScreenClientDiagnosticsNegotiation() {
+        screenClientDiagnosticsNegotiationEpoch = nil
+        highestSentScreenClientDiagnosticsSequence = 0
+        highestReceivedScreenClientDiagnosticsSequence = 0
     }
 
     private func screenMediaShowWasAcknowledgedActive(
@@ -7376,7 +7555,11 @@ public actor WebRTCPeer {
                sentScreenMediaSuspension != nil {
                 clearScreenMediaSuspensionState(
                     disableHostVideo: true,
-                    emitInvalidation: true,
+                    // This exact ordered Show/Hide is the replacement owner and is emitted below
+                    // only after video/input are revoked. A terminal invalidation here would race
+                    // ahead of that control request and force the host service to disconnect a
+                    // healthy ordinary visibility transition after a completed resume.
+                    emitInvalidation: false,
                     reason: "An ordinary host visibility transition retired the covered suspension."
                 )
             }
@@ -7764,6 +7947,8 @@ public actor WebRTCPeer {
 
     private func createAndSetLocalOffer() async throws -> String {
         try applyHighFidelityAudioSenderParameters()
+        let advertisesScreenClientDiagnostics =
+            screenClientDiagnosticsCapabilityIsLocallyAvailable
         let sdp = try await withCheckedThrowingContinuation {
             (continuation: CheckedContinuation<String, any Error>) in
             peerConnection.offer(for: mediaConstraints) { [peerConnection] description, error in
@@ -7780,11 +7965,16 @@ public actor WebRTCPeer {
                     .advertisingHostSupport(
                         in: productDescription.sdp as String
                     )
+                let suspensionSDP = ScreenMediaSuspensionSDP
+                    .advertisingHostSupport(in: evidenceSDP)
+                let diagnosticsSDP = advertisesScreenClientDiagnostics
+                    ? ScreenClientDiagnosticsSDP.advertisingHostSupport(
+                        in: suspensionSDP
+                    )
+                    : suspensionSDP
                 let localDescription = LKRTCSessionDescription(
                     type: productDescription.type,
-                    sdp: ScreenMediaSuspensionSDP.advertisingHostSupport(
-                        in: evidenceSDP
-                    )
+                    sdp: diagnosticsSDP
                 )
                 peerConnection.setLocalDescription(localDescription) { error in
                     if let error {
@@ -7802,6 +7992,8 @@ public actor WebRTCPeer {
     private func createAndSetLocalAnswer(remoteOfferSDP: String) async throws -> String {
         try applyHighFidelityAudioSenderParameters()
         let expectedNegotiationEpoch = negotiationEpoch
+        let advertisesScreenClientDiagnostics =
+            screenClientDiagnosticsCapabilityIsLocallyAvailable
         let answerSDP = try await withCheckedThrowingContinuation {
             (continuation: CheckedContinuation<String, any Error>) in
             peerConnection.answer(for: mediaConstraints) { [peerConnection] description, error in
@@ -7820,12 +8012,20 @@ public actor WebRTCPeer {
                         in: productDescription.sdp as String,
                         remoteOfferSDP: remoteOfferSDP
                     )
-                let localDescription = LKRTCSessionDescription(
-                    type: productDescription.type,
-                    sdp: ScreenMediaSuspensionSDP.advertisingViewerSupport(
+                let suspensionSDP = ScreenMediaSuspensionSDP
+                    .advertisingViewerSupport(
                         in: evidenceSDP,
                         remoteOfferSDP: remoteOfferSDP
                     )
+                let diagnosticsSDP = advertisesScreenClientDiagnostics
+                    ? ScreenClientDiagnosticsSDP.advertisingViewerSupport(
+                        in: suspensionSDP,
+                        remoteOfferSDP: remoteOfferSDP
+                    )
+                    : suspensionSDP
+                let localDescription = LKRTCSessionDescription(
+                    type: productDescription.type,
+                    sdp: diagnosticsSDP
                 )
                 peerConnection.setLocalDescription(localDescription) { error in
                     if let error {
@@ -8834,9 +9034,12 @@ public actor WebRTCPeer {
         statisticsTask = nil
         delegateEventTask?.cancel()
         delegateEventTask = nil
+        screenDiagnosticsDelegateEventTask?.cancel()
+        screenDiagnosticsDelegateEventTask = nil
         screenVideoEncoderProbeEventTask?.cancel()
         screenVideoEncoderProbeEventTask = nil
         screenVideoEncoderProbeEventContinuation.finish()
+        screenClientDiagnosticsEventContinuation.finish()
         invalidateIPhoneMicrophoneSenderBinding()
         negotiationEpoch &+= 1
         outstandingLocalOfferEpoch = nil

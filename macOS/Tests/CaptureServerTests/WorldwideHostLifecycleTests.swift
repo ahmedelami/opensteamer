@@ -22,6 +22,49 @@ final class WorldwideHostLifecycleTests: XCTestCase {
         )
     }
 
+    func testScreenClientDiagnosticsLogIsBoundedToAggregateProtocolEvidence() {
+        let heartbeat = WebRTCScreenClientDiagnosticsHeartbeat(
+            sequence: 9,
+            screenRequestID: 42,
+            liveness: .presentationStalled,
+            trackAttached: true,
+            coverVisible: false,
+            coverReason: .none,
+            inboundBytes: 8_192,
+            inboundPackets: 64,
+            framesDecoded: 32,
+            framesPresented: 31,
+            contentSamples: 12,
+            contentChanges: 4,
+            presentationAgeMilliseconds: 5_250,
+            frameWidth: 1_280,
+            frameHeight: 832,
+            framesPerSecond: 12.5
+        )
+
+        let message = WorldwideScreenService.screenClientDiagnosticsLogMessage(
+            heartbeat,
+            hostPhase: .suspended,
+            isCorrelated: false
+        )
+
+        XCTAssertEqual(
+            message,
+            "Worldwide screen client diagnostics seq=9 screenRequestID=42 "
+                + "hostPhase=suspended correlation=mismatch "
+                + "liveness=presentationStalled trackAttached=true "
+                + "coverVisible=false coverReason=none inboundBytes=8192 "
+                + "inboundPackets=64 decoded=32 presented=31 contentSamples=12 "
+                + "contentChanges=4 presentationAgeMs=5250 dimensions=1280x832 "
+                + "fps=12.5"
+        )
+        XCTAssertFalse(message.contains("trackID"))
+        XCTAssertFalse(message.contains("receiverID"))
+        XCTAssertFalse(message.contains("sourceID"))
+        XCTAssertFalse(message.contains("SSRC"))
+        XCTAssertFalse(message.contains("SDP"))
+    }
+
     func testRemoteInputFormatDiagnosticReportsBoundedOriginAndGeometryState() {
         let portrait = WebRTCInputVideoSize(width: 1_080, height: 2_340)
         let captureGate = WorldwideRemoteInputInjectionOutcome(

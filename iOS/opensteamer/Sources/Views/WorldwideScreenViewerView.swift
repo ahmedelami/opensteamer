@@ -151,6 +151,22 @@ struct WorldwideScreenViewerView: View {
                                 )
                             }
                         }
+                        .overlay(alignment: .top) {
+                            if let statusText = screenPipelineFailureText {
+                                Text(statusText)
+                                    .font(.callout.weight(.semibold))
+                                    .foregroundStyle(.white)
+                                    .multilineTextAlignment(.center)
+                                    .padding(.horizontal, 14)
+                                    .padding(.vertical, 10)
+                                    .background(.black.opacity(0.82), in: Capsule())
+                                    .padding(.top, 12)
+                                    .allowsHitTesting(false)
+                                    .accessibilityIdentifier(
+                                        "worldwideScreenClientPipelineStatus"
+                                    )
+                            }
+                        }
                         .privacySensitive()
                     } else {
                         Color.black
@@ -243,6 +259,16 @@ struct WorldwideScreenViewerView: View {
         }
         .frame(width: 1, height: 1)
         .allowsHitTesting(false)
+    }
+
+    private var screenPipelineFailureText: String? {
+        switch viewModel.screenLivenessDiagnosticSnapshot.state {
+        case .inboundRTPStalled, .decodeStalled, .presentationStalled:
+            viewModel.screenLivenessStatusText
+        case .intentionallyCovered, .covered, .trackMissing,
+             .awaitingEvidence, .presentingUnchanged, .presentingLive:
+            nil
+        }
     }
 
     private func hideAndDismiss() {

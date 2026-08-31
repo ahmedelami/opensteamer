@@ -9,6 +9,12 @@ enum WebRTCWireConstants {
     static let controlProtocol = "audiostreamer.control.v2"
     static let maximumControlMessageBytes = WebRTCInputCapability.maximumMessageBytes
     static let maximumBufferedControlBytes: UInt64 = 256 * 1_024
+
+    // Client observability is intentionally isolated from the safety-critical ordered lane.
+    static let screenDiagnosticsChannelLabel = "opensteamer.screen-diagnostics"
+    static let screenDiagnosticsProtocol = "opensteamer.screen-diagnostics.v1"
+    static let maximumScreenDiagnosticsMessageBytes = 8 * 1_024
+    static let maximumBufferedScreenDiagnosticsBytes: UInt64 = 32 * 1_024
 }
 
 /// Value-semantic events crossing from native WebRTC callbacks into the peer actor.
@@ -27,20 +33,32 @@ enum NativePeerEvent: Sendable {
     case failure(String)
 }
 
+/// Optional native callbacks use their own newest-one queue. Dropping or terminating this queue
+/// closes only the diagnostics channel and can never consume a safety-critical peer-event slot.
+enum NativeScreenDiagnosticsEvent: Sendable {
+    case message(Data)
+    case failure(String)
+}
+
 /// Serializes the small amount of mutable state touched directly by native WebRTC callbacks.
 ///
 /// Native delegates arrive on WebRTC queues; only channel ownership and synchronous authorization
 /// revocation live here. Higher-level protocol state is consumed by `WebRTCPeer`'s actor.
 final class WebRTCDelegateProxy: NSObject, @unchecked Sendable {
     let events: AsyncStream<NativePeerEvent>
+    let screenDiagnosticsEvents: AsyncStream<NativeScreenDiagnosticsEvent>
 
     private let continuation: AsyncStream<NativePeerEvent>.Continuation
+    private let screenDiagnosticsContinuation:
+        AsyncStream<NativeScreenDiagnosticsEvent>.Continuation
     private let channelLock = NSLock()
     private var dataChannel: LKRTCDataChannel?
+    private var screenDiagnosticsChannel: LKRTCDataChannel?
     private var inputAuthorization: WebRTCInputAuthorization?
     private var peerState: WebRTCPeerState = .new
     private var iceState: WebRTCICEState = .new
     private var dataChannelState: WebRTCDataChannelState = .connecting
+    private var screenDiagnosticsEventIsPending = false
     private var emittedRemoteAudioReceiverIDs: Set<String> = []
     private var eventDeliveryFailed = false
     private var isClosed = false
@@ -51,10 +69,20 @@ final class WebRTCDelegateProxy: NSObject, @unchecked Sendable {
         )
         events = pair.stream
         continuation = pair.continuation
+        let diagnosticsPair = AsyncStream<NativeScreenDiagnosticsEvent>.makeStream(
+            bufferingPolicy: .bufferingNewest(1)
+        )
+        screenDiagnosticsEvents = diagnosticsPair.stream
+        screenDiagnosticsContinuation = diagnosticsPair.continuation
         super.init()
     }
 
     func installDataChannel(_ channel: LKRTCDataChannel) {
+        if channel.label as String == WebRTCWireConstants.screenDiagnosticsChannelLabel,
+           channel.protocol as String == WebRTCWireConstants.screenDiagnosticsProtocol {
+            installScreenDiagnosticsChannel(channel)
+            return
+        }
         guard channel.label as String == WebRTCWireConstants.controlChannelLabel,
               channel.protocol as String == WebRTCWireConstants.controlProtocol else {
             channel.close()
@@ -97,6 +125,32 @@ final class WebRTCDelegateProxy: NSObject, @unchecked Sendable {
         }
         channel.delegate = self
         emit(.dataChannelState(channel.readyState.transportValue))
+    }
+
+    private func installScreenDiagnosticsChannel(_ channel: LKRTCDataChannel) {
+        let installation = channelLock.withLock { () -> (
+            previous: LKRTCDataChannel?,
+            accepted: Bool
+        ) in
+            let previous = screenDiagnosticsChannel
+            guard !isClosed, !eventDeliveryFailed else {
+                return (previous, false)
+            }
+            screenDiagnosticsChannel = channel
+            if previous !== channel {
+                screenDiagnosticsEventIsPending = false
+            }
+            return (previous, true)
+        }
+        guard installation.accepted else {
+            channel.close()
+            return
+        }
+        if installation.previous !== channel {
+            installation.previous?.delegate = nil
+            installation.previous?.close()
+        }
+        channel.delegate = self
     }
 
     /// Mirrors the peer's current process-local input gate so a native callback-buffer overflow
@@ -150,6 +204,12 @@ final class WebRTCDelegateProxy: NSObject, @unchecked Sendable {
         emit(event)
     }
 
+    func emitScreenDiagnosticsForTesting(
+        _ event: NativeScreenDiagnosticsEvent
+    ) {
+        emitScreenDiagnostics(event)
+    }
+
     func markNativeTransportHealthyForTesting() {
         channelLock.withLock {
             peerState = .connected
@@ -200,6 +260,41 @@ final class WebRTCDelegateProxy: NSObject, @unchecked Sendable {
         }
     }
 
+    func sendScreenDiagnosticsData(_ data: Data) throws {
+        guard data.count <= WebRTCWireConstants.maximumScreenDiagnosticsMessageBytes else {
+            throw WebRTCTransportError.invalidInputRequest
+        }
+        let channel = channelLock.withLock { screenDiagnosticsChannel }
+        guard let channel, channel.readyState == .open else {
+            throw WebRTCTransportError.dataChannelUnavailable
+        }
+        guard channel.bufferedAmount
+                < WebRTCWireConstants.maximumBufferedScreenDiagnosticsBytes else {
+            throw WebRTCTransportError.dataChannelBackpressured
+        }
+        guard channel.sendData(LKRTCDataBuffer(data: data, isBinary: false)) else {
+            throw WebRTCTransportError.dataChannelSendFailed
+        }
+    }
+
+    func closeScreenDiagnosticsChannel() {
+        let channel = channelLock.withLock { () -> LKRTCDataChannel? in
+            defer {
+                screenDiagnosticsChannel = nil
+                screenDiagnosticsEventIsPending = false
+            }
+            return screenDiagnosticsChannel
+        }
+        channel?.delegate = nil
+        channel?.close()
+    }
+
+    func didConsumeScreenDiagnosticsEvent() {
+        channelLock.withLock {
+            screenDiagnosticsEventIsPending = false
+        }
+    }
+
     func isControlChannelOpen() -> Bool {
         channelLock.withLock { dataChannel?.readyState == .open }
     }
@@ -207,19 +302,25 @@ final class WebRTCDelegateProxy: NSObject, @unchecked Sendable {
     func close() {
         let resources = channelLock.withLock { () -> (
             channel: LKRTCDataChannel?,
+            screenDiagnosticsChannel: LKRTCDataChannel?,
             authorization: WebRTCInputAuthorization?
         ) in
             isClosed = true
             defer {
                 dataChannel = nil
+                screenDiagnosticsChannel = nil
+                screenDiagnosticsEventIsPending = false
                 inputAuthorization = nil
                 dataChannelState = .closed
             }
-            return (dataChannel, inputAuthorization)
+            return (dataChannel, screenDiagnosticsChannel, inputAuthorization)
         }
         resources.authorization?.revoke()
         resources.channel?.delegate = nil
         resources.channel?.close()
+        resources.screenDiagnosticsChannel?.delegate = nil
+        resources.screenDiagnosticsChannel?.close()
+        screenDiagnosticsContinuation.finish()
         continuation.finish()
     }
 
@@ -231,6 +332,19 @@ final class WebRTCDelegateProxy: NSObject, @unchecked Sendable {
             failClosedForEventDeliveryLoss()
         @unknown default:
             failClosedForEventDeliveryLoss()
+        }
+    }
+
+    private func emitScreenDiagnostics(_ event: NativeScreenDiagnosticsEvent) {
+        switch screenDiagnosticsContinuation.yield(event) {
+        case .enqueued:
+            break
+        case .dropped, .terminated:
+            // This lane is optional. Its own delivery uncertainty must never revoke input or
+            // close media/control, so retire only the channel that produced the event.
+            closeScreenDiagnosticsChannel()
+        @unknown default:
+            closeScreenDiagnosticsChannel()
         }
     }
 
@@ -271,23 +385,29 @@ final class WebRTCDelegateProxy: NSObject, @unchecked Sendable {
         let resources = channelLock.withLock { () -> (
             shouldClose: Bool,
             channel: LKRTCDataChannel?,
+            screenDiagnosticsChannel: LKRTCDataChannel?,
             authorization: WebRTCInputAuthorization?
         ) in
             guard !eventDeliveryFailed, !isClosed else {
-                return (false, nil, nil)
+                return (false, nil, nil, nil)
             }
             eventDeliveryFailed = true
             let channel = dataChannel
+            let screenDiagnosticsChannel = screenDiagnosticsChannel
             let authorization = inputAuthorization
             dataChannel = nil
+            self.screenDiagnosticsChannel = nil
+            screenDiagnosticsEventIsPending = false
             inputAuthorization = nil
             dataChannelState = .closed
-            return (true, channel, authorization)
+            return (true, channel, screenDiagnosticsChannel, authorization)
         }
         guard resources.shouldClose else { return }
         resources.authorization?.revoke()
         resources.channel?.delegate = nil
         resources.channel?.close()
+        resources.screenDiagnosticsChannel?.delegate = nil
+        resources.screenDiagnosticsChannel?.close()
         continuation.finish()
     }
 
@@ -356,6 +476,35 @@ final class WebRTCDelegateProxy: NSObject, @unchecked Sendable {
         guard transition.isCurrent else { return }
         transition.authorization?.revoke()
         emit(.dataChannelState(state))
+    }
+
+    private func receiveScreenDiagnosticsChannelState(
+        _ state: WebRTCDataChannelState,
+        channel: LKRTCDataChannel
+    ) {
+        let isCurrent = channelLock.withLock { () -> Bool in
+            guard screenDiagnosticsChannel === channel else { return false }
+            if state == .closed {
+                screenDiagnosticsChannel = nil
+                screenDiagnosticsEventIsPending = false
+            }
+            return true
+        }
+        guard isCurrent else { return }
+    }
+
+    /// At most one best-effort diagnostics callback may occupy the safety-critical native event
+    /// stream. A noisy viewer therefore cannot evict ordered control or transport transitions.
+    private func beginScreenDiagnosticsEvent() -> Bool {
+        channelLock.withLock {
+            guard !screenDiagnosticsEventIsPending,
+                  !isClosed,
+                  !eventDeliveryFailed else {
+                return false
+            }
+            screenDiagnosticsEventIsPending = true
+            return true
+        }
     }
 }
 
@@ -508,6 +657,14 @@ extension WebRTCDelegateProxy: LKRTCPeerConnectionDelegate {
 
 extension WebRTCDelegateProxy: LKRTCDataChannelDelegate {
     func dataChannelDidChangeState(_ dataChannel: LKRTCDataChannel) {
+        if dataChannel.label as String
+                == WebRTCWireConstants.screenDiagnosticsChannelLabel {
+            receiveScreenDiagnosticsChannelState(
+                dataChannel.readyState.transportValue,
+                channel: dataChannel
+            )
+            return
+        }
         receiveDataChannelState(dataChannel.readyState.transportValue, channel: dataChannel)
     }
 
@@ -515,6 +672,32 @@ extension WebRTCDelegateProxy: LKRTCDataChannelDelegate {
         _ dataChannel: LKRTCDataChannel,
         didReceiveMessageWith buffer: LKRTCDataBuffer
     ) {
+        if dataChannel.label as String
+                == WebRTCWireConstants.screenDiagnosticsChannelLabel {
+            guard !buffer.isBinary else {
+                if beginScreenDiagnosticsEvent() {
+                    emitScreenDiagnostics(.failure(
+                        "Binary screen-client diagnostics messages are not accepted."
+                    ))
+                }
+                closeScreenDiagnosticsChannel()
+                return
+            }
+            guard buffer.data.count
+                    <= WebRTCWireConstants.maximumScreenDiagnosticsMessageBytes else {
+                if beginScreenDiagnosticsEvent() {
+                    emitScreenDiagnostics(.failure(
+                        "Oversized screen-client diagnostics message rejected."
+                    ))
+                }
+                closeScreenDiagnosticsChannel()
+                return
+            }
+            if beginScreenDiagnosticsEvent() {
+                emitScreenDiagnostics(.message(buffer.data))
+            }
+            return
+        }
         guard !buffer.isBinary else {
             failInputAuthorizationSynchronously()
             emit(.failure("Binary control-channel messages are not accepted."))

@@ -195,6 +195,13 @@ public enum WebRTCTransportEvent: Sendable {
     case diagnosticFailure(String)
 }
 
+/// Best-effort events from the fully isolated client-observability lane. This stream is distinct
+/// from `WebRTCTransportEvent`, so telemetry backlog or delivery loss cannot close media/control.
+public enum WebRTCScreenClientDiagnosticsEvent: Equatable, Sendable {
+    case heartbeat(WebRTCScreenClientDiagnosticsHeartbeat)
+    case laneFailure(String)
+}
+
 /// Construction, signaling, authorization, and data-channel failures for WebRTC transport.
 public enum WebRTCTransportError: Error, Equatable, LocalizedError, Sendable {
     case relayPolicyRequiresTURN

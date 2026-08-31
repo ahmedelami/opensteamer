@@ -61,6 +61,7 @@ actor WorldwideScreenService {
     private static let maximumForwardingStartupProofPolls = 40
     private static let forwardingStartupProofPollInterval = Duration.milliseconds(25)
     private static let automaticScreenMediaResumeTimeout = Duration.seconds(12)
+    private static let screenClientDiagnosticsStaleInterval: TimeInterval = 5
     private static let maximumSharedClockEpochQuiescencePolls = 20
     private static let sharedClockEpochQuiescencePollInterval =
         Duration.milliseconds(50)
@@ -81,6 +82,48 @@ actor WorldwideScreenService {
         processIdentifier: Int32
     ) -> String {
         "Worldwide WebRTC peer state: \(state) pid=\(processIdentifier)"
+    }
+
+    /// Renders only bounded, content-free client pipeline counters and local protocol state.
+    nonisolated static func screenClientDiagnosticsLogMessage(
+        _ heartbeat: WebRTCScreenClientDiagnosticsHeartbeat,
+        hostPhase: WorldwideScreenMediaSuspensionCoordinator.DiagnosticPhase,
+        isCorrelated: Bool
+    ) -> String {
+        let dimensions = if let width = heartbeat.frameWidth,
+                            let height = heartbeat.frameHeight {
+            "\(width)x\(height)"
+        } else {
+            "unknown"
+        }
+        return "Worldwide screen client diagnostics "
+            + "seq=\(heartbeat.sequence) "
+            + "screenRequestID="
+            + (heartbeat.screenRequestID.map(String.init) ?? "none")
+            + " hostPhase=\(hostPhase.rawValue) "
+            + "correlation=\(isCorrelated ? "matched" : "mismatch") "
+            + "liveness=\(heartbeat.liveness.rawValue) "
+            + "trackAttached=\(heartbeat.trackAttached) "
+            + "coverVisible=\(heartbeat.coverVisible) "
+            + "coverReason=\(heartbeat.coverReason.rawValue) "
+            + "inboundBytes="
+            + (heartbeat.inboundBytes.map(String.init) ?? "none")
+            + " inboundPackets="
+            + (heartbeat.inboundPackets.map(String.init) ?? "none")
+            + " decoded="
+            + (heartbeat.framesDecoded.map(String.init) ?? "none")
+            + " presented="
+            + (heartbeat.framesPresented.map(String.init) ?? "none")
+            + " contentSamples="
+            + (heartbeat.contentSamples.map(String.init) ?? "none")
+            + " contentChanges="
+            + (heartbeat.contentChanges.map(String.init) ?? "none")
+            + " presentationAgeMs="
+            + (heartbeat.presentationAgeMilliseconds.map(String.init) ?? "none")
+            + " dimensions=\(dimensions) fps="
+            + (heartbeat.framesPerSecond.map {
+                String(format: "%.1f", $0)
+            } ?? "none")
     }
 
     /// Adds only structural state when a pointer action fails the screen-format fence.
@@ -392,6 +435,7 @@ actor WorldwideScreenService {
 
     private var signalingTask: Task<Void, Never>?
     private var peerEventTask: Task<Void, Never>?
+    private var screenClientDiagnosticsEventTask: Task<Void, Never>?
     private var keyFrameControlTask: Task<Void, Never>?
     private var peer: WebRTCPeer?
     private var recoveryCoordinator: ICERecoveryCoordinator?
@@ -411,6 +455,12 @@ actor WorldwideScreenService {
     private var screenVisibilityCommandEpoch: UInt64 = 0
     private var screenMediaSuspension =
         WorldwideScreenMediaSuspensionCoordinator()
+    private var lastScreenClientDiagnosticsReceiptUptime: TimeInterval?
+    private var lastScreenClientDiagnosticsSequence: UInt64?
+    private var lastScreenClientDiagnosticsScreenRequestID: UInt64?
+    private var screenClientDiagnosticsExpectedScreenRequestID: UInt64?
+    private var screenClientDiagnosticsExpectationStartedUptime: TimeInterval?
+    private var screenClientDiagnosticsSilenceWasReported = false
     private final class AutomaticScreenMediaResumeCommitLatch:
         @unchecked Sendable {
         private enum State {
@@ -835,12 +885,15 @@ actor WorldwideScreenService {
         signalingTask = nil
         peerEventTask?.cancel()
         peerEventTask = nil
+        screenClientDiagnosticsEventTask?.cancel()
+        screenClientDiagnosticsEventTask = nil
         keyFrameControlTask?.cancel()
         keyFrameControlTask = nil
         let coordinator = recoveryCoordinator
         recoveryCoordinator = nil
         peerGeneration &+= 1
         resetAutomaticScreenMediaSuspensionState()
+        resetScreenClientDiagnosticsFreshness()
         peerIsConnected = false
         iceIsConnected = false
         controlChannelIsOpen = false
@@ -1039,6 +1092,7 @@ actor WorldwideScreenService {
         peerGeneration &+= 1
         let generation = peerGeneration
         resetAutomaticScreenMediaSuspensionState()
+        resetScreenClientDiagnosticsFreshness()
         screenVideoAdaptationPolicy.bind(toPeerGeneration: generation)
         appliedScreenVideoRecommendation = nil
         highestRestartRequestID = nil
@@ -1081,9 +1135,17 @@ actor WorldwideScreenService {
         )
         recoveryCoordinator = coordinator
         let events = peer.events
+        let screenClientDiagnosticsEvents = peer.screenClientDiagnosticsEvents
         peerEventTask = Task { [weak self] in
             await self?.consumePeerEvents(
                 events,
+                sourcePeer: peer,
+                sourcePeerGeneration: generation
+            )
+        }
+        screenClientDiagnosticsEventTask = Task { [weak self] in
+            await self?.consumeScreenClientDiagnosticsEvents(
+                screenClientDiagnosticsEvents,
                 sourcePeer: peer,
                 sourcePeerGeneration: generation
             )
@@ -1131,6 +1193,28 @@ actor WorldwideScreenService {
         }
         logger.error("Worldwide WebRTC event stream ended unexpectedly")
         await stop()
+    }
+
+    /// Consumes only privacy-safe, best-effort telemetry. This stream ending, dropping values, or
+    /// reporting lane failure must never stop the peer or mutate media/control authorization.
+    private func consumeScreenClientDiagnosticsEvents(
+        _ events: AsyncStream<WebRTCScreenClientDiagnosticsEvent>,
+        sourcePeer: WebRTCPeer,
+        sourcePeerGeneration: UInt64
+    ) async {
+        for await event in events {
+            guard !isStopped,
+                  peer === sourcePeer,
+                  peerGeneration == sourcePeerGeneration else {
+                return
+            }
+            switch event {
+            case .heartbeat(let heartbeat):
+                handleScreenClientDiagnosticsHeartbeat(heartbeat)
+            case .laneFailure(let message):
+                logger.info("Worldwide screen client diagnostics unavailable: \(message)")
+            }
+        }
     }
 
     /// Updates transport health, routes protocol requests, and emits sanitized diagnostics.
@@ -1302,19 +1386,55 @@ actor WorldwideScreenService {
             )
 
         case .screenMediaSuspensionInvalidated(let reason):
+            let diagnostic = screenMediaSuspension.diagnosticSnapshot
+            let resumeAttemptWasInFlight = automaticScreenMediaResumeContext != nil
+            let diagnosticReason = String(
+                reason
+                    .replacingOccurrences(of: "\r", with: " ")
+                    .replacingOccurrences(of: "\n", with: " ")
+                    .prefix(256)
+            )
+            logger.error(
+                "Worldwide .screenMediaSuspensionInvalidated "
+                    + "phase=\(diagnostic.phase.rawValue) "
+                    + "screenRequestID="
+                    + (diagnostic.screenRequestID.map(String.init) ?? "none")
+                    + " suspensionGeneration="
+                    + (diagnostic.suspensionGeneration.map(String.init) ?? "none")
+                    + " bindingPeerGeneration="
+                    + (diagnostic.binding.map {
+                        String($0.peerGeneration)
+                    } ?? "none")
+                    + " bindingVisibilityEpoch="
+                    + (diagnostic.binding.map {
+                        String($0.visibilityCommandEpoch)
+                    } ?? "none")
+                    + " bindingRecoveryEpoch="
+                    + (diagnostic.binding.map {
+                        String($0.recoveryEpoch)
+                    } ?? "none")
+                    + " sourcePeerGeneration=\(sourcePeerGeneration) "
+                    + "resumeAttemptInFlight=\(resumeAttemptWasInFlight) "
+                    + "reason=\(diagnosticReason)"
+            )
             if let context = automaticScreenMediaResumeContext {
                 await failAutomaticScreenMediaResume(
                     peer: sourcePeer,
                     attemptID: context.attemptID,
                     reason: reason
                 )
-            } else if screenMediaSuspension.isAutomaticallySuspended
-                        || screenMediaSuspension.suspensionIsInFlight {
-                resetAutomaticScreenMediaSuspensionState()
-                _ = await stopScreenCaptureOrCloseSession(
-                    context: "screen-media suspension invalidation"
-                )
             }
+            // WebRTCPeer has already cleared the negotiated suspension and disabled host video.
+            // Ordinary ordered Show/Hide supersession deliberately does not emit this event; every
+            // invalidation that does reach the host is therefore terminal for this media
+            // generation. Locally reopening capture would violate privacy and request ordering.
+            // Close only this media generation; availability remains ready for reconnect/Show.
+            resetAutomaticScreenMediaSuspensionState()
+            logger.error(
+                "Worldwide screen suspension invalidation is closing the media generation "
+                    + "for a fresh ordered Show"
+            )
+            await stop()
 
         case .screenMediaSuspensionReceived,
              .screenMediaMarkerReadyReceived,
@@ -1441,6 +1561,12 @@ actor WorldwideScreenService {
                 sourcePeer: sourcePeer,
                 sourcePeerGeneration: sourcePeerGeneration
             )
+            // Client diagnostics are an observability-only lane. Evaluate freshness strictly
+            // after media adaptation so these best-effort heartbeats can never drive policy.
+            await observeScreenClientDiagnosticsFreshness(
+                peer: sourcePeer,
+                peerGeneration: sourcePeerGeneration
+            )
 
         case .iceCandidateError(let error):
             logger.error(
@@ -1460,6 +1586,130 @@ actor WorldwideScreenService {
         case .identityReceived, .remoteVideoTrack, .negotiationNeeded:
             break
         }
+    }
+
+    /// Emits only stale/recovered transitions for the negotiated best-effort diagnostics lane.
+    /// Missing evidence never mutates capture, adaptation, control, audio, or input state.
+    private func handleScreenClientDiagnosticsHeartbeat(
+        _ heartbeat: WebRTCScreenClientDiagnosticsHeartbeat
+    ) {
+        guard lastScreenClientDiagnosticsSequence.map({
+            heartbeat.sequence > $0
+        }) ?? true else {
+            return
+        }
+        let receiptUptime = ProcessInfo.processInfo.systemUptime
+        let activeScreenRequestID = screenMediaSuspension.activeScreenRequestID
+        let matchesActiveScreen = activeScreenRequestID != nil
+            && heartbeat.screenRequestID == activeScreenRequestID
+        let staleReference: TimeInterval?
+        if lastScreenClientDiagnosticsScreenRequestID
+                == screenClientDiagnosticsExpectedScreenRequestID {
+            staleReference = lastScreenClientDiagnosticsReceiptUptime
+                ?? screenClientDiagnosticsExpectationStartedUptime
+        } else {
+            staleReference = screenClientDiagnosticsExpectationStartedUptime
+        }
+        lastScreenClientDiagnosticsReceiptUptime = receiptUptime
+        lastScreenClientDiagnosticsSequence = heartbeat.sequence
+        lastScreenClientDiagnosticsScreenRequestID = heartbeat.screenRequestID
+        let matchesExpectedScreen =
+            matchesActiveScreen
+                && screenClientDiagnosticsExpectedScreenRequestID
+                    == activeScreenRequestID
+        if screenClientDiagnosticsSilenceWasReported,
+           matchesExpectedScreen {
+            let silenceMilliseconds = staleReference.map {
+                Int(max(0, receiptUptime - $0) * 1_000)
+            } ?? 0
+            screenClientDiagnosticsSilenceWasReported = false
+            logger.info(
+                "Worldwide screen client diagnostics heartbeat recovered "
+                    + "seq=\(heartbeat.sequence) "
+                    + "silenceMs=\(silenceMilliseconds)"
+            )
+        }
+        let message = Self.screenClientDiagnosticsLogMessage(
+            heartbeat,
+            hostPhase: screenMediaSuspension.diagnosticSnapshot.phase,
+            isCorrelated: matchesActiveScreen
+        )
+        if !matchesActiveScreen {
+            logger.info(message)
+            return
+        }
+        switch heartbeat.liveness {
+        case .intentionallyCovered, .covered,
+             .presentingUnchanged, .presentingLive:
+            logger.debug(message)
+        case .trackMissing, .awaitingEvidence, .inboundRTPStalled,
+             .decodeStalled, .presentationStalled, .unavailable:
+            logger.info(message)
+        }
+    }
+
+    private func observeScreenClientDiagnosticsFreshness(
+        peer sourcePeer: WebRTCPeer,
+        peerGeneration sourcePeerGeneration: UInt64
+    ) async {
+        guard !isStopped,
+              peer === sourcePeer,
+              peerGeneration == sourcePeerGeneration,
+              let screenRequestID = screenMediaSuspension.activeScreenRequestID else {
+            screenClientDiagnosticsExpectedScreenRequestID = nil
+            screenClientDiagnosticsExpectationStartedUptime = nil
+            screenClientDiagnosticsSilenceWasReported = false
+            return
+        }
+        let isNegotiated = await sourcePeer.screenClientDiagnosticsIsNegotiated()
+        guard !isStopped,
+              peer === sourcePeer,
+              peerGeneration == sourcePeerGeneration,
+              screenMediaSuspension.activeScreenRequestID == screenRequestID else {
+            return
+        }
+        guard isNegotiated else {
+            screenClientDiagnosticsExpectedScreenRequestID = nil
+            screenClientDiagnosticsExpectationStartedUptime = nil
+            screenClientDiagnosticsSilenceWasReported = false
+            return
+        }
+
+        let now = ProcessInfo.processInfo.systemUptime
+        if screenClientDiagnosticsExpectedScreenRequestID != screenRequestID {
+            screenClientDiagnosticsExpectedScreenRequestID = screenRequestID
+            screenClientDiagnosticsExpectationStartedUptime = now
+            screenClientDiagnosticsSilenceWasReported = false
+            return
+        }
+        if screenClientDiagnosticsExpectationStartedUptime == nil {
+            screenClientDiagnosticsExpectationStartedUptime = now
+        }
+        guard let expectationStarted =
+                screenClientDiagnosticsExpectationStartedUptime else {
+            return
+        }
+        let freshnessReference = max(
+            expectationStarted,
+            lastScreenClientDiagnosticsScreenRequestID == screenRequestID
+                ? (lastScreenClientDiagnosticsReceiptUptime ?? expectationStarted)
+                : expectationStarted
+        )
+        let staleInterval = now - freshnessReference
+        guard staleInterval >= Self.screenClientDiagnosticsStaleInterval,
+              !screenClientDiagnosticsSilenceWasReported else {
+            return
+        }
+        screenClientDiagnosticsSilenceWasReported = true
+        let diagnostic = screenMediaSuspension.diagnosticSnapshot
+        logger.info(
+            "Worldwide screen client diagnostics warning=heartbeatMissing "
+                + "phase=\(diagnostic.phase.rawValue) "
+                + "screenRequestID=\(screenRequestID) "
+                + "lastSequence="
+                + (lastScreenClientDiagnosticsSequence.map(String.init) ?? "none")
+                + " staleMs=\(Int(staleInterval * 1_000))"
+        )
     }
 
     /// Applies a new sender ceiling only after the current capture and peer identities survive
@@ -1921,11 +2171,41 @@ actor WorldwideScreenService {
             binding: context.binding,
             logicalScreenIsStillRequested: logicalScreenIsStillRequested
         )
+        let failureDiagnostic = screenMediaSuspension.diagnosticSnapshot
         screenVideoAdaptationPolicy.automaticResumeAttemptFailed()
         await sourcePeer.cancelScreenMediaResumeProbe(
             attemptID: attemptID,
             reason: reason
         )
+        let diagnosticReason = String(
+            reason
+                .replacingOccurrences(of: "\r", with: " ")
+                .replacingOccurrences(of: "\n", with: " ")
+                .prefix(256)
+        )
+        logger.error(
+            "Worldwide screen video resume failed "
+                + "phase=\(failureDiagnostic.phase.rawValue) "
+                + "screenRequestID="
+                + (failureDiagnostic.screenRequestID.map(String.init) ?? "none")
+                + " suspensionGeneration="
+                + (failureDiagnostic.suspensionGeneration.map(String.init) ?? "none")
+                + " logicalScreenIsStillRequested=\(logicalScreenIsStillRequested) "
+                + "captureGenerationOwned=\(ownedCaptureIsCurrent) "
+                + "reason=\(diagnosticReason)"
+        )
+        guard !logicalScreenIsStillRequested
+                || screenMediaSuspension.isAutomaticallySuspended else {
+            // A failed attempt may stay covered only while the exact suspension transcript can
+            // drive another bounded retry. If that ownership disappeared, require reconnect and
+            // a fresh ordered Show instead of leaving a logically visible viewer permanently dark.
+            logger.error(
+                "Worldwide screen resume lost covered ownership; closing the media generation "
+                    + "for a fresh ordered Show"
+            )
+            await stop()
+            return
+        }
         guard ownedCaptureIsCurrent,
               let ownedSource,
               let ownedSink,
@@ -1940,7 +2220,9 @@ actor WorldwideScreenService {
         ) else {
             return
         }
-        logger.info("Worldwide screen video remained paused: \(reason)")
+        logger.info(
+            "Worldwide screen video remained covered for a bounded retry after resume failure"
+        )
     }
 
     private func handleAutomaticScreenMediaEncoderProbeEvent(
@@ -2375,6 +2657,15 @@ actor WorldwideScreenService {
         automaticScreenMediaResumeContext?.forwardingAuthorization?.revoke()
         automaticScreenMediaResumeContext = nil
         screenMediaSuspension.retire()
+    }
+
+    private func resetScreenClientDiagnosticsFreshness() {
+        lastScreenClientDiagnosticsReceiptUptime = nil
+        lastScreenClientDiagnosticsSequence = nil
+        lastScreenClientDiagnosticsScreenRequestID = nil
+        screenClientDiagnosticsExpectedScreenRequestID = nil
+        screenClientDiagnosticsExpectationStartedUptime = nil
+        screenClientDiagnosticsSilenceWasReported = false
     }
 
     private func activateAutomaticScreenMediaSuspensionOwnership(
