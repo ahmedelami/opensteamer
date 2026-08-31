@@ -526,20 +526,46 @@ enum WebRTCStatisticsParser {
     private static func selectedCandidatePair(
         in records: [WebRTCStatisticsRecord]
     ) -> WebRTCStatisticsRecord? {
-        let selectedID = records
-            .first(where: { $0.type == "transport" })
-            .flatMap { string("selectedCandidatePairId", in: $0.values) }
-        if let selectedID, let selected = records.first(where: { $0.id == selectedID }) {
+        let explicitPairReferences = records
+            .filter {
+                $0.type == "transport"
+                    && $0.values.keys.contains("selectedCandidatePairId")
+            }
+        if !explicitPairReferences.isEmpty {
+            let selectedIDValues = explicitPairReferences.compactMap {
+                string("selectedCandidatePairId", in: $0.values)
+            }
+            let selectedIDs = Set(selectedIDValues)
+            guard selectedIDValues.count == explicitPairReferences.count,
+                  selectedIDs.count == 1,
+                  let selectedID = selectedIDs.first,
+                  !selectedID.isEmpty else {
+                return nil
+            }
+            let selectedRecords = records.filter { $0.id == selectedID }
+            guard selectedRecords.count == 1,
+                  let selected = selectedRecords.first,
+                  selected.type == "candidate-pair" else {
+                return nil
+            }
+            if selected.values.keys.contains("state") {
+                guard string("state", in: selected.values)?
+                    .lowercased() == "succeeded" else {
+                    return nil
+                }
+            }
             return selected
         }
 
-        return records.first { record in
+        let fallbackPairs = records.filter { record in
             guard record.type == "candidate-pair" else { return false }
             let nominated = bool("nominated", in: record.values) ?? false
             let selected = bool("selected", in: record.values) ?? false
             let succeeded = string("state", in: record.values)?.lowercased() == "succeeded"
             return succeeded && (nominated || selected)
         }
+        guard fallbackPairs.count == 1 else { return nil }
+        return fallbackPairs[0]
     }
 
     /// Selects the single primary video stream while excluding repair and redundancy RTP.

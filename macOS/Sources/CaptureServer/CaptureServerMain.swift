@@ -275,7 +275,9 @@ struct CaptureServerMain {
                     systemAudioDisplayID: displaySelection.systemAudioDisplayID,
                     maximumWidth: options.screenMaximumWidth,
                     framesPerSecond: options.screenFramesPerSecond,
-                    maximumVideoBitrate: Int(options.screenBitrate),
+                    maximumVideoBitrate: Int(
+                        options.worldwideTotalRTPBitrate
+                    ),
                     remoteInputController: remoteInputController,
                     captureLifetime: virtualDisplayOwner == nil ? nil : serviceLifetime,
                     iPhoneMicrophoneForwardingPolicy:

@@ -7,6 +7,28 @@ import XCTest
 /// Pairing reset and remote input are worldwide-only operations. Remote control must remain an
 /// explicit opt-in so adding worldwide connectivity cannot silently grant input injection.
 final class CaptureServerOptionsTests: XCTestCase {
+    func testDefaultTotalRTPBitrateCeilingIsFiftyMegabits() throws {
+        let options = try CaptureServerOptions.parse(["CaptureServer"])
+
+        XCTAssertEqual(options.screenBitrate, 12_000_000)
+        XCTAssertEqual(options.worldwideTotalRTPBitrate, 50_000_000)
+    }
+
+    func testTotalRTPBitrateCeilingRejectsValuesAboveFiftyMegabits() {
+        XCTAssertThrowsError(
+            try CaptureServerOptions.parse([
+                "CaptureServer",
+                "--worldwide-bitrate",
+                "50000001",
+            ])
+        ) { error in
+            XCTAssertEqual(
+                error.localizedDescription,
+                "--worldwide-bitrate must be from 250000 through 50000000"
+            )
+        }
+    }
+
     func testVirtualPhoneDisplayIsDisabledByDefault() throws {
         let options = try CaptureServerOptions.parse(["CaptureServer"])
 

@@ -7,6 +7,8 @@ import Foundation
 /// Authentication values may come from CLI or process environment, remain in memory,
 /// and are not persisted by this options layer.
 struct CaptureServerOptions {
+    static let maximumWorldwideTotalRTPBitrate: UInt32 = 50_000_000
+
     var host = "0.0.0.0"
     var port: UInt16 = 9000
     var screenPort: UInt16 = 9001
@@ -14,6 +16,7 @@ struct CaptureServerOptions {
     var screenFramesPerSecond = 60
     var screenMaximumWidth = 1_920
     var screenBitrate: UInt32 = 12_000_000
+    var worldwideTotalRTPBitrate: UInt32 = 50_000_000
     var lanEnabled = true
     var worldwideEnabled = false
     var resetWorldwidePairing = false
@@ -54,7 +57,9 @@ struct CaptureServerOptions {
       --screen-port <port>   Screen video port; must equal --port + 1. Normally derived automatically.
       --screen-fps <fps>     Screen frame rate from 1 through 60. Defaults to 60.
       --screen-max-width <n> Maximum encoded screen width. Defaults to 1920.
-      --screen-bitrate <bps> H.264 target bitrate. Defaults to 12000000.
+      --screen-bitrate <bps> LAN H.264 target bitrate. Defaults to 12000000.
+      --worldwide-bitrate <bps>
+                             Total WebRTC RTP bitrate ceiling. Defaults to 50000000.
       --no-screen            Disable the screen video service.
       --worldwide            Enable one-code WebRTC access using the explicitly configured endpoint.
       --reset-worldwide-pairing
@@ -144,6 +149,18 @@ struct CaptureServerOptions {
                     )
                 }
                 options.screenBitrate = value
+            case "--worldwide-bitrate":
+                index += 1
+                guard index < arguments.count,
+                      let value = UInt32(arguments[index]),
+                      value >= 250_000,
+                      value <= Self.maximumWorldwideTotalRTPBitrate else {
+                    throw CaptureServerOptionError.invalid(
+                        "--worldwide-bitrate must be from 250000 through "
+                            + "\(Self.maximumWorldwideTotalRTPBitrate)"
+                    )
+                }
+                options.worldwideTotalRTPBitrate = value
             case "--no-screen":
                 options.screenEnabled = false
             case "--worldwide":
