@@ -1,6 +1,7 @@
 import CoreVideo
 import RemoteSessionCore
 import SwiftUI
+import UIKit
 @preconcurrency import LiveKitWebRTC
 import XCTest
 @testable import WebRTCTransport
@@ -697,6 +698,66 @@ final class WorldwideRemoteInputLifecycleTests: XCTestCase {
     }
 
     @MainActor
+    func testOnlyBackgroundTearsDownAnExistingScreenPresentation() {
+        XCTAssertFalse(
+            WorldwideScreenViewerView.shouldTearDownPresentation(in: .active)
+        )
+        XCTAssertFalse(
+            WorldwideScreenViewerView.shouldTearDownPresentation(in: .inactive)
+        )
+        XCTAssertTrue(
+            WorldwideScreenViewerView.shouldTearDownPresentation(in: .background)
+        )
+    }
+
+    @MainActor
+    func testTransientInactiveKeepsRendererMountedBehindPrivacyCover() {
+        XCTAssertTrue(
+            WorldwideScreenViewerView.keepsScreenRendererMounted(
+                allowsPresentation: true,
+                isScreenVisible: true
+            )
+        )
+        XCTAssertFalse(
+            WorldwideScreenViewerView.allowsScreenRendering(
+                in: .inactive,
+                allowsPresentation: true,
+                isScreenVisible: true
+            )
+        )
+    }
+
+    @MainActor
+    func testNativePrivacyCoverPreservesPresentedFrameForImmediateReveal() {
+        let videoView = WebRTCRemoteVideoView(frame: .zero)
+        videoView.debugInstallPresentedFrameForPrivacyCoverTests()
+        XCTAssertTrue(videoView.debugHasCurrentPresentedFrame)
+        XCTAssertFalse(videoView.debugPresentationCoverIsVisible)
+
+        videoView.updatePrivacyCover(isVisible: true)
+        XCTAssertTrue(videoView.debugPresentationCoverIsVisible)
+        XCTAssertTrue(videoView.debugHasCurrentPresentedFrame)
+
+        videoView.updatePrivacyCover(isVisible: false)
+        XCTAssertFalse(videoView.debugPresentationCoverIsVisible)
+        XCTAssertTrue(videoView.debugHasCurrentPresentedFrame)
+
+        NotificationCenter.default.post(
+            name: UIApplication.willResignActiveNotification,
+            object: nil
+        )
+        XCTAssertTrue(videoView.debugPresentationCoverIsVisible)
+        XCTAssertTrue(videoView.debugHasCurrentPresentedFrame)
+
+        NotificationCenter.default.post(
+            name: UIApplication.didBecomeActiveNotification,
+            object: nil
+        )
+        XCTAssertFalse(videoView.debugPresentationCoverIsVisible)
+        XCTAssertTrue(videoView.debugHasCurrentPresentedFrame)
+    }
+
+    @MainActor
     func testRemoteScreenPixelsRenderOnlyForAnActivePresentation() {
         XCTAssertTrue(
             WorldwideScreenViewerView.allowsScreenRendering(
@@ -733,6 +794,225 @@ final class WorldwideRemoteInputLifecycleTests: XCTestCase {
                 isScreenVisible: true
             )
         )
+    }
+
+    @MainActor
+    func testTransientInactivePreservesActiveScreenWithoutSendingHide() async throws {
+        let viewModel = WorldwideSessionViewModel()
+        let peer = try makeScreenPeer()
+        let fixture = viewModel.debugInstallActiveScreenPresentationForTests(peer: peer)
+        let transport = ScreenVisibilityTransportProbe()
+        viewModel.debugInstallScreenVisibilityRequestSender(transport.send)
+        viewModel.handleAppBecameActive()
+
+        viewModel.handleAppBecameInactive()
+        for _ in 0..<4 { await Task.yield() }
+
+        let inactiveState = viewModel.debugScreenPresentationState
+        XCTAssertEqual(inactiveState.currentLease, fixture.lease)
+        XCTAssertEqual(inactiveState.activeLease, fixture.lease)
+        XCTAssertEqual(inactiveState.activeScreenRequestID, 1)
+        XCTAssertTrue(inactiveState.isScreenVisible)
+        XCTAssertFalse(inactiveState.inputAvailable)
+        XCTAssertTrue(fixture.authorization.isValid)
+        XCTAssertTrue(transport.requests.isEmpty)
+        XCTAssertEqual(
+            viewModel.screenLivenessDiagnosticSnapshot.coverState,
+            .privacy
+        )
+
+        viewModel.handleAppBecameActive()
+        XCTAssertTrue(viewModel.screenPresentationIsVisible(fixture.lease))
+        XCTAssertTrue(viewModel.remoteInputIsAvailable(for: fixture.lease))
+        XCTAssertEqual(viewModel.debugScreenPresentationState.activeScreenRequestID, 1)
+        XCTAssertTrue(transport.requests.isEmpty)
+        XCTAssertEqual(
+            viewModel.screenLivenessDiagnosticSnapshot.coverState,
+            .none
+        )
+
+        viewModel.disconnect()
+        await peer.close()
+    }
+
+    @MainActor
+    func testTransientInactiveRevokesInFlightInputAndActiveUsesFreshGate() async throws {
+        let viewModel = WorldwideSessionViewModel()
+        let peer = try makeScreenPeer()
+        let firstSendReachedBoundary = expectation(
+            description: "input reached the final local send boundary"
+        )
+        let inactiveSendRejected = expectation(
+            description: "inactive input rejected by the lifecycle gate"
+        )
+        let freshSendCommitted = expectation(
+            description: "fresh active input committed"
+        )
+        let firstSendGate = NonCooperativeAsyncGate()
+        var attemptedSendCount = 0
+        var committedActions: [WebRTCInputAction] = []
+
+        viewModel.debugInstallRemoteInputSender {
+            _, action, _, _, _, sendAuthorization in
+            attemptedSendCount += 1
+            let authorization = try XCTUnwrap(sendAuthorization)
+            if attemptedSendCount == 1 {
+                firstSendReachedBoundary.fulfill()
+                await firstSendGate.wait()
+            }
+            do {
+                let requestID = try authorization.withValidAuthorization {
+                    committedActions.append(action)
+                    return UInt64(attemptedSendCount)
+                }
+                if attemptedSendCount == 2 {
+                    freshSendCommitted.fulfill()
+                }
+                return requestID
+            } catch {
+                if attemptedSendCount == 1 {
+                    inactiveSendRejected.fulfill()
+                }
+                throw error
+            }
+        }
+        let fixture = viewModel.debugInstallActiveScreenPresentationForTests(peer: peer)
+        viewModel.handleAppBecameActive()
+
+        viewModel.sendRemoteTap(
+            normalizedPoint: CGPoint(x: 0.25, y: 0.25),
+            viewerVideoSize: CGSize(width: 360, height: 640)
+        )
+        await fulfillment(of: [firstSendReachedBoundary], timeout: 2)
+        let activeInputGeneration = viewModel.debugRemoteInputState.inputGeneration
+        viewModel.sendRemoteTap(
+            normalizedPoint: CGPoint(x: 0.5, y: 0.5),
+            viewerVideoSize: CGSize(width: 360, height: 640)
+        )
+        XCTAssertEqual(viewModel.debugRemoteInputState.queuedActionCount, 1)
+
+        NotificationCenter.default.post(
+            name: UIApplication.willResignActiveNotification,
+            object: nil
+        )
+        XCTAssertTrue(fixture.authorization.isValid)
+        XCTAssertFalse(viewModel.remoteInputIsAvailable(for: fixture.lease))
+        XCTAssertEqual(viewModel.debugRemoteInputState.queuedActionCount, 0)
+        XCTAssertNotEqual(
+            viewModel.debugRemoteInputState.inputGeneration,
+            activeInputGeneration
+        )
+        let inactiveInputGeneration = viewModel.debugRemoteInputState.inputGeneration
+
+        // A duplicate SwiftUI `.active` delivery must not reopen input after UIKit has already
+        // begun resignation but before SwiftUI delivers `.inactive`.
+        viewModel.handleAppBecameActive()
+        XCTAssertFalse(viewModel.remoteInputIsAvailable(for: fixture.lease))
+        XCTAssertEqual(
+            viewModel.debugRemoteInputState.inputGeneration,
+            inactiveInputGeneration
+        )
+
+        // SwiftUI scene delivery is asynchronous relative to UIKit's notification. The fallback
+        // scene-phase handler must not rotate the generation a second time.
+        viewModel.handleAppBecameInactive()
+        XCTAssertEqual(
+            viewModel.debugRemoteInputState.inputGeneration,
+            inactiveInputGeneration
+        )
+
+        await firstSendGate.open()
+        await fulfillment(of: [inactiveSendRejected], timeout: 2)
+        XCTAssertTrue(committedActions.isEmpty)
+
+        NotificationCenter.default.post(
+            name: UIApplication.didBecomeActiveNotification,
+            object: nil
+        )
+        XCTAssertFalse(viewModel.remoteInputIsAvailable(for: fixture.lease))
+        viewModel.handleAppBecameActive()
+        viewModel.sendRemoteTap(
+            normalizedPoint: CGPoint(x: 0.75, y: 0.75),
+            viewerVideoSize: CGSize(width: 360, height: 640)
+        )
+        await fulfillment(of: [freshSendCommitted], timeout: 2)
+        XCTAssertEqual(
+            committedActions,
+            [.tap(.init(x: 0.75, y: 0.75))]
+        )
+        XCTAssertTrue(fixture.authorization.isValid)
+        XCTAssertTrue(viewModel.remoteInputIsAvailable(for: fixture.lease))
+
+        viewModel.disconnect()
+        await peer.close()
+    }
+
+    @MainActor
+    func testTransientInactiveDiscardsQueuedCommittedText() async throws {
+        let viewModel = WorldwideSessionViewModel()
+        let peer = try makeScreenPeer()
+        let focusGeneration: UInt64 = 91
+        let authorization =
+            viewModel.debugInstallQueuedRemoteInputSessionForRaceTests(
+                peer: peer,
+                focusGeneration: focusGeneration,
+                diagnostic: "queued text fixture",
+                queuedAction: .insertText(
+                    "discard me",
+                    focusGeneration: focusGeneration
+                )
+            )
+        let activeInputGeneration = viewModel.debugRemoteInputState.inputGeneration
+        XCTAssertEqual(viewModel.debugRemoteInputState.queuedActionCount, 1)
+
+        viewModel.handleAppBecameInactive()
+
+        let inactiveState = viewModel.debugRemoteInputState
+        XCTAssertEqual(inactiveState.queuedActionCount, 0)
+        XCTAssertNotEqual(inactiveState.inputGeneration, activeInputGeneration)
+        XCTAssertNil(inactiveState.focusGeneration)
+        XCTAssertTrue(authorization.isValid)
+
+        viewModel.disconnect()
+        await peer.close()
+    }
+
+    @MainActor
+    func testBackgroundAfterTransientInactiveStillSendsOneHide() async throws {
+        let viewModel = WorldwideSessionViewModel()
+        let peer = try makeScreenPeer()
+        let fixture = viewModel.debugInstallActiveScreenPresentationForTests(peer: peer)
+        let transport = ScreenVisibilityTransportProbe()
+        viewModel.debugInstallScreenVisibilityRequestSender(transport.send)
+        viewModel.handleAppBecameActive()
+        viewModel.handleAppBecameInactive()
+        XCTAssertTrue(transport.requests.isEmpty)
+
+        viewModel.handleAppEnteredBackground()
+        await transport.waitForRequestCount(1)
+        XCTAssertEqual(transport.requests.map(\.isVisible), [false])
+        XCTAssertEqual(transport.requests.first?.lease, fixture.lease)
+        XCTAssertFalse(viewModel.debugScreenPresentationState.isScreenVisible)
+
+        let hideKey = WorldwideScreenVisibilityRequestKey(
+            sessionGeneration: fixture.lease.sessionGeneration,
+            requestID: 1_001
+        )
+        await transport.resolveRequest(at: 0, with: .success(hideKey.requestID))
+        await viewModel.debugWaitForPendingScreenVisibilityRequest(hideKey)
+        await viewModel.debugDeliverControlAcknowledgement(
+            key: hideKey,
+            state: .inactive,
+            sourcePeer: peer
+        )
+        let hiddenState = viewModel.debugScreenPresentationState
+        XCTAssertNil(hiddenState.activeScreenRequestID)
+        XCTAssertNil(hiddenState.activeLease)
+        XCTAssertFalse(hiddenState.inputAvailable)
+        XCTAssertFalse(hiddenState.remoteHideRequired)
+
+        viewModel.disconnect()
+        await peer.close()
     }
 
     @MainActor
@@ -1863,6 +2143,57 @@ final class WorldwideSessionGenerationFenceTests: XCTestCase {
         )
         XCTAssertTrue(fixture.authorization.isValid)
         XCTAssertTrue(viewModel.isRemoteScrollAvailable)
+
+        viewModel.disconnect()
+        await peer.close(reason: .viewerDisconnected)
+    }
+
+    @MainActor
+    func testScrollCancellationDoesNotRevokeUnrelatedInFlightTap() async throws {
+        let viewModel = WorldwideSessionViewModel()
+        let peer = try makeViewerPeer()
+        let tapReachedBoundary = expectation(description: "tap reached final send boundary")
+        let tapCommitted = expectation(description: "tap remained authorized")
+        let tapGate = NonCooperativeAsyncGate()
+        var tapAuthorization: WebRTCInputSendAuthorization?
+        var sentActions: [WebRTCInputAction] = []
+
+        viewModel.debugInstallRemoteInputSender {
+            _, action, _, _, _, sendAuthorization in
+            let authorization = try XCTUnwrap(sendAuthorization)
+            tapAuthorization = authorization
+            tapReachedBoundary.fulfill()
+            await tapGate.wait()
+            return try authorization.withValidAuthorization {
+                sentActions.append(action)
+                tapCommitted.fulfill()
+                return 1
+            }
+        }
+        _ = viewModel.debugInstallActiveScreenPresentationForTests(
+            peer: peer,
+            supportsScroll: true
+        )
+
+        viewModel.sendRemoteTap(
+            normalizedPoint: CGPoint(x: 0.25, y: 0.75),
+            viewerVideoSize: CGSize(width: 1_000, height: 1_000)
+        )
+        await fulfillment(of: [tapReachedBoundary], timeout: 2)
+
+        _ = try XCTUnwrap(
+            viewModel.beginRemoteScroll(
+                normalizedAnchor: CGPoint(x: 0.5, y: 0.5),
+                containerSize: CGSize(width: 100, height: 100),
+                viewerVideoSize: CGSize(width: 1_000, height: 1_000)
+            )
+        )
+        viewModel.discardPendingRemoteScrolls()
+        XCTAssertTrue(try XCTUnwrap(tapAuthorization).isValid)
+
+        await tapGate.open()
+        await fulfillment(of: [tapCommitted], timeout: 2)
+        XCTAssertEqual(sentActions, [.tap(.init(x: 0.25, y: 0.75))])
 
         viewModel.disconnect()
         await peer.close(reason: .viewerDisconnected)

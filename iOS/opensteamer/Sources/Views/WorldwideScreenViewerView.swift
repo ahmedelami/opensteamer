@@ -3,9 +3,11 @@ import WebRTCTransport
 
 /// Privacy-bounded full-screen WebRTC renderer and remote-input surface.
 ///
-/// Rendering and input are allowed only while this exact presentation lease remains current and
-/// the scene is active. SwiftUI owns presentation and lifecycle; narrow UIKit bridges own video,
-/// keyboard responder behavior, and mutually exclusive native gesture recognition.
+/// Remote pixels and input are exposed only while this exact presentation lease remains current
+/// and the scene is active. The renderer stays mounted behind an opaque privacy cover during a
+/// transient inactive phase so returning active does not tear down and rebuild a healthy stream.
+/// SwiftUI owns presentation and lifecycle; narrow UIKit bridges own video, keyboard responder
+/// behavior, and mutually exclusive native gesture recognition.
 struct WorldwideScreenViewerView: View {
     @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject private var viewModel: WorldwideSessionViewModel
@@ -19,11 +21,12 @@ struct WorldwideScreenViewerView: View {
         ZStack {
             FullscreenViewerLayout {
                 GeometryReader { geometry in
-                    if allowsRemoteScreenRendering {
+                    if keepsRemoteScreenRendererMounted {
                         WebRTCRemoteScreenView(
                             track: viewModel.remoteVideoTrack,
                             forcePresentationCover:
                                 screenMediaFence?.forceCover == true,
+                            forcePrivacyCover: requiresLocalPrivacyCover,
                             minimumAcceptedRTPTimestamp:
                                 screenMediaFence?.minimumAcceptedRTPTimestamp,
                             proofRTPTimestamps:
@@ -80,6 +83,14 @@ struct WorldwideScreenViewerView: View {
                         )
                         .frame(width: geometry.size.width, height: geometry.size.height)
                         .background(.black)
+                        .overlay {
+                            if requiresLocalPrivacyCover {
+                                Color.black
+                                    .accessibilityLabel(
+                                        "Mac screen covered while the app is inactive"
+                                    )
+                            }
+                        }
                         .contentShape(Rectangle())
                         .overlay {
                             if let configuration = remotePointerGestureConfiguration(
@@ -216,7 +227,7 @@ struct WorldwideScreenViewerView: View {
             _ = viewModel.beginPassiveScreenTeardown(for: lease)
         }
         .onChange(of: scenePhase) { _, newPhase in
-            guard newPhase != .active else { return }
+            guard Self.shouldTearDownPresentation(in: newPhase) else { return }
             hideAndDismiss()
         }
         .onChange(of: remoteVideoTrackIdentity) {
@@ -421,8 +432,15 @@ struct WorldwideScreenViewerView: View {
         )
     }
 
-    private var allowsRemoteScreenRendering: Bool {
-        Self.allowsScreenRendering(
+    private var keepsRemoteScreenRendererMounted: Bool {
+        Self.keepsScreenRendererMounted(
+            allowsPresentation: allowsRemoteInputPresentation,
+            isScreenVisible: viewModel.screenPresentationIsVisible(lease)
+        )
+    }
+
+    private var requiresLocalPrivacyCover: Bool {
+        !Self.allowsScreenRendering(
             in: scenePhase,
             allowsPresentation: allowsRemoteInputPresentation,
             isScreenVisible: viewModel.screenPresentationIsVisible(lease)
@@ -447,6 +465,17 @@ struct WorldwideScreenViewerView: View {
 
     static func allowsScreenPresentation(in scenePhase: ScenePhase) -> Bool {
         scenePhase == .active
+    }
+
+    static func shouldTearDownPresentation(in scenePhase: ScenePhase) -> Bool {
+        scenePhase == .background
+    }
+
+    static func keepsScreenRendererMounted(
+        allowsPresentation: Bool,
+        isScreenVisible: Bool
+    ) -> Bool {
+        allowsPresentation && isScreenVisible
     }
 
     static func allowsScreenRendering(

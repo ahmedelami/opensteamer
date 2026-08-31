@@ -3,6 +3,7 @@ import AVFoundation
 import CoreGraphics
 import Foundation
 import RemoteSessionCore
+import UIKit
 import WebRTCTransport
 
 /// Capability-like token that binds one screen presentation to one media-session generation.
@@ -258,6 +259,7 @@ struct WorldwideScreenPresentationDebugState {
     let sessionGeneration: UUID
     let currentLease: WorldwideScreenPresentationLease?
     let activeLease: WorldwideScreenPresentationLease?
+    let activeScreenRequestID: UInt64?
     let isScreenVisible: Bool
     let inputAvailable: Bool
     let remoteHideRequired: Bool
@@ -845,6 +847,9 @@ final class WorldwideSessionViewModel: ObservableObject {
     private var activeRemoteScroll: ActiveRemoteScroll?
     private var remoteScrollFlushTask: Task<Void, Never>?
     private var remoteScrollSendAuthorization: WebRTCInputSendAuthorization?
+    private var remoteInputLifecycleSendAuthorization:
+        WebRTCInputSendAuthorization?
+    private var applicationInputIsSuspended = false
     private var pendingRemoteInputs: [UInt64: PendingRemoteInput] = [:]
     private var pendingRemoteInputOrder: [UInt64] = []
     private var earlyRemoteInputFeedback: [UInt64: WebRTCInputFeedback] = [:]
@@ -969,6 +974,18 @@ final class WorldwideSessionViewModel: ObservableObject {
 
     init(audioLifecycle: WorldwideAudioLifecycleController = WorldwideAudioLifecycleController()) {
         self.audioLifecycle = audioLifecycle
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(applicationWillResignActive),
+            name: UIApplication.willResignActiveNotification,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(applicationDidBecomeActive),
+            name: UIApplication.didBecomeActiveNotification,
+            object: nil
+        )
         audioLifecycle.onSnapshotChanged = { [weak self] snapshot in
             guard let self else { return }
             audioStateText = snapshot.stateText
@@ -1039,6 +1056,10 @@ final class WorldwideSessionViewModel: ObservableObject {
         }
     }
 
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
     // MARK: - Published capabilities
 
     var hasActiveSession: Bool {
@@ -1058,6 +1079,17 @@ final class WorldwideSessionViewModel: ObservableObject {
             && remoteInputAuthorization?.isValid == true
             && isScreenVisible
             && canViewScreen
+            && applicationAllowsRemoteInput
+    }
+
+    private var applicationAllowsRemoteInput: Bool {
+        guard !applicationInputIsSuspended else { return false }
+        return switch lastHandledApplicationLifecyclePhase {
+        case .inactive, .background:
+            false
+        case .active, nil:
+            true
+        }
     }
 
     var isRemotePrimaryDragAvailable: Bool {
@@ -1294,8 +1326,10 @@ final class WorldwideSessionViewModel: ObservableObject {
         guard lastHandledApplicationLifecyclePhase != .active else {
             return
         }
+        applicationInputIsSuspended = false
         lastHandledApplicationLifecyclePhase = .active
         applicationIsActive = true
+        refreshScreenLivenessDiagnostic()
         recoverPassiveAudioLifecyclePreservingEstablishedMicrophone {
             audioLifecycle.appBecameActive()
         }
@@ -1311,7 +1345,11 @@ final class WorldwideSessionViewModel: ObservableObject {
         applicationIsActive = false
         pausePendingIPhoneMicrophoneForInactiveApp()
         audioLifecycle.appBecameInactive()
-        hideScreenForPassiveLifecycleIfNeeded()
+        // `.inactive` is also used for short system interruptions while the viewer remains the
+        // logical foreground presentation. Keep the authenticated screen owner alive; SwiftUI
+        // covers its renderer and gates input until the scene is active again.
+        suspendRemoteInputForApplicationLifecycle()
+        refreshScreenLivenessDiagnostic()
     }
 
     func handleAppEnteredBackground() {
@@ -1320,11 +1358,20 @@ final class WorldwideSessionViewModel: ObservableObject {
         }
         lastHandledApplicationLifecyclePhase = .background
         applicationIsActive = false
+        suspendRemoteInputForApplicationLifecycle()
         pausePendingIPhoneMicrophoneForInactiveApp()
         recoverPassiveAudioLifecyclePreservingEstablishedMicrophone {
             audioLifecycle.appEnteredBackground()
         }
         hideScreenForPassiveLifecycleIfNeeded()
+    }
+
+    @objc private func applicationWillResignActive() {
+        suspendRemoteInputForApplicationLifecycle()
+    }
+
+    @objc private func applicationDidBecomeActive() {
+        applicationInputIsSuspended = false
     }
 
     private func recoverPassiveAudioLifecyclePreservingEstablishedMicrophone(
@@ -2202,6 +2249,9 @@ final class WorldwideSessionViewModel: ObservableObject {
             case .resumed:
                 return .none
             }
+        }
+        if isScreenVisible, !applicationIsActive {
+            return .privacy
         }
         return isScreenVisible ? .none : .screenHidden
     }
@@ -3871,6 +3921,23 @@ final class WorldwideSessionViewModel: ObservableObject {
         remoteInputQueue.removeAll(where: { $0.scrollGestureID != nil })
     }
 
+    private func discardQueuedRemoteInputsForInactiveLifecycle() {
+        revokeRemoteScrollSendAuthorization()
+        revokeRemoteInputLifecycleSendAuthorization()
+        remoteInputGeneration = UUID()
+        remoteInputDrainTask?.cancel()
+        remoteInputDrainTask = nil
+        discardActiveRemoteScroll(removingQueuedPackets: false)
+        remoteInputQueue.removeAll(keepingCapacity: false)
+    }
+
+    private func suspendRemoteInputForApplicationLifecycle() {
+        guard !applicationInputIsSuspended else { return }
+        applicationInputIsSuspended = true
+        discardQueuedRemoteInputsForInactiveLifecycle()
+        clearRemoteKeyboardFocus()
+    }
+
     private func scheduleRemoteScrollFlush(for scroll: ActiveRemoteScroll) {
         guard remoteScrollFlushTask == nil,
               activeRemoteScroll?.gestureID == scroll.gestureID else { return }
@@ -3977,6 +4044,25 @@ final class WorldwideSessionViewModel: ObservableObject {
         remoteScrollSendAuthorization = nil
     }
 
+    private func currentRemoteInputLifecycleSendAuthorization()
+        -> WebRTCInputSendAuthorization {
+        if let remoteInputLifecycleSendAuthorization,
+           remoteInputLifecycleSendAuthorization.isValid {
+            return remoteInputLifecycleSendAuthorization
+        }
+        let authorization = WebRTCInputSendAuthorization()
+        remoteInputLifecycleSendAuthorization = authorization
+        return authorization
+    }
+
+    private func revokeRemoteInputLifecycleSendAuthorization() {
+        guard let authorization = remoteInputLifecycleSendAuthorization else {
+            return
+        }
+        authorization.revoke()
+        remoteInputLifecycleSendAuthorization = nil
+    }
+
     private static func remoteInputVideoSize(
         from size: CGSize
     ) -> WebRTCInputVideoSize? {
@@ -4025,6 +4111,9 @@ final class WorldwideSessionViewModel: ObservableObject {
               isRemoteInputAvailable else {
             return
         }
+        let sendAuthorization = sendAuthorization
+            ?? currentRemoteInputLifecycleSendAuthorization()
+        guard sendAuthorization.isValid else { return }
         guard remoteInputQueue.count < 128 else {
             lastDiagnostic = "Remote input was paused because its local queue filled."
             invalidateRemoteInputState()
@@ -7703,11 +7792,12 @@ final class WorldwideSessionViewModel: ObservableObject {
         if remoteScreenOwnerLease == pending.lease {
             remoteScreenOwnerLease = nil
         }
-        if activeScreenRequestID == pending.key.requestID {
-            activeScreenRequestID = nil
-        }
         if activeScreenPresentationLease == pending.lease {
             activeScreenPresentationLease = nil
+            // `activeScreenRequestID` belongs to the acknowledged Show, while `pending.key` is
+            // this later Hide. Comparing those unrelated command IDs leaves the old Show
+            // correlation alive after capture has stopped.
+            activeScreenRequestID = nil
         }
         #if DEBUG
         if debugActiveScreenPresentationLease == pending.lease {
@@ -7946,6 +8036,7 @@ final class WorldwideSessionViewModel: ObservableObject {
         // Revoke both final-send gates before cancelling actor work. A send already inside the
         // gates linearizes before this call; queued work cannot enter afterward.
         revokeRemoteScrollSendAuthorization()
+        revokeRemoteInputLifecycleSendAuthorization()
         remoteInputAuthorization?.revoke()
         remoteInputAuthorization = nil
         remoteInputGeneration = UUID()
@@ -8500,7 +8591,7 @@ final class WorldwideSessionViewModel: ObservableObject {
                 pointerIntentID: action.requiresRemoteFocus ? nil : 1,
                 viewerVideoSize: viewerVideoSize,
                 scrollGestureID: nil,
-                sendAuthorization: nil
+                sendAuthorization: currentRemoteInputLifecycleSendAuthorization()
             )
         ]
         return authorization
@@ -8558,7 +8649,7 @@ final class WorldwideSessionViewModel: ObservableObject {
                 pointerIntentID: nil,
                 viewerVideoSize: nil,
                 scrollGestureID: nil,
-                sendAuthorization: nil
+                sendAuthorization: currentRemoteInputLifecycleSendAuthorization()
             )
         ]
         return authorization
@@ -8731,6 +8822,7 @@ final class WorldwideSessionViewModel: ObservableObject {
             sessionGeneration: sessionGeneration,
             currentLease: currentScreenPresentationLease,
             activeLease: activeScreenPresentationLease,
+            activeScreenRequestID: activeScreenRequestID,
             isScreenVisible: isScreenVisible,
             inputAvailable: isRemoteInputAvailable,
             remoteHideRequired: remoteHideRequired,

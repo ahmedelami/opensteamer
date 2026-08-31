@@ -822,6 +822,8 @@ public final class WebRTCRemoteVideoView: UIView, LKRTCVideoViewDelegate {
     private var presentationGenerationFence = WebRTCVideoPresentationGenerationFence()
     private var currentVideoSize = CGSize.zero
     private var presentationCoverIsForced = false
+    private var privacyCoverIsForced = false
+    private var applicationPrivacyCoverIsForced = false
     private var minimumAcceptedRTPTimestamp: UInt32?
     private var proofRTPTimestamps: Set<UInt32> = []
     private var retainsPresentedMarkerCandidates = false
@@ -853,6 +855,10 @@ public final class WebRTCRemoteVideoView: UIView, LKRTCVideoViewDelegate {
         configureRenderer()
     }
 
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
     /// Forces the privacy cover and installs the receiver-side RTP floor for one resume proof.
     /// Removing the force reveals media only after a frame accepted under the current floor has
     /// actually reached a Metal drawable.
@@ -882,6 +888,31 @@ public final class WebRTCRemoteVideoView: UIView, LKRTCVideoViewDelegate {
         )
         updatePresentationCoverVisibility()
     }
+
+    /// Covers remote pixels for a local lifecycle interruption without resetting the renderer's
+    /// accepted-frame state. Keeping that state warm lets the same presented frame become visible
+    /// immediately when the scene becomes active again, while this native sibling view protects
+    /// the app-switcher snapshot synchronously.
+    public func updatePrivacyCover(isVisible: Bool) {
+        guard privacyCoverIsForced != isVisible else { return }
+        privacyCoverIsForced = isVisible
+        updatePresentationCoverVisibility()
+    }
+
+    #if DEBUG
+    public var debugPresentationCoverIsVisible: Bool {
+        !presentationCover.isHidden
+    }
+
+    public var debugHasCurrentPresentedFrame: Bool {
+        hasCurrentPresentedFrame
+    }
+
+    public func debugInstallPresentedFrameForPrivacyCoverTests() {
+        hasCurrentPresentedFrame = true
+        updatePresentationCoverVisibility()
+    }
+    #endif
 
     /// Atomically detaches the previous renderer binding and attaches `track`.
     public func setTrack(_ track: WebRTCRemoteVideoTrack?) {
@@ -1034,6 +1065,18 @@ public final class WebRTCRemoteVideoView: UIView, LKRTCVideoViewDelegate {
             presentationCover.topAnchor.constraint(equalTo: topAnchor),
             presentationCover.bottomAnchor.constraint(equalTo: bottomAnchor)
         ])
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(applicationWillResignActive),
+            name: UIApplication.willResignActiveNotification,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(applicationDidBecomeActive),
+            name: UIApplication.didBecomeActiveNotification,
+            object: nil
+        )
 
         if let metalView = renderer.subviews.compactMap({ $0 as? MTKView }).first,
            let downstream = metalView.delegate {
@@ -1045,6 +1088,16 @@ public final class WebRTCRemoteVideoView: UIView, LKRTCVideoViewDelegate {
             // presented-frame observation that could authorize touch.
             updatePresentationCoverVisibility()
         }
+    }
+
+    @objc private func applicationWillResignActive() {
+        applicationPrivacyCoverIsForced = true
+        updatePresentationCoverVisibility()
+    }
+
+    @objc private func applicationDidBecomeActive() {
+        applicationPrivacyCoverIsForced = false
+        updatePresentationCoverVisibility()
     }
 
     private func publishVideoSize(_ size: CGSize) {
@@ -1083,14 +1136,16 @@ public final class WebRTCRemoteVideoView: UIView, LKRTCVideoViewDelegate {
     }
 
     private func updatePresentationCoverVisibility() {
-        if presentationCoverIsForced {
+        if presentationCoverIsForced
+            || privacyCoverIsForced
+            || applicationPrivacyCoverIsForced {
             presentationCover.isHidden = false
         } else if metalDelegateProxy == nil {
             // Preserve legacy visibility on an unsupported renderer hierarchy, but no proof or
             // touch callback can be emitted through that path.
             presentationCover.isHidden = true
         } else {
-            presentationCover.isHidden = !hasCurrentPresentedFrame
+            presentationCover.isHidden = hasCurrentPresentedFrame
         }
     }
 }
