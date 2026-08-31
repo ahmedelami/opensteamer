@@ -1863,54 +1863,11 @@ actor WorldwideScreenService {
             }
         }
 
-        let suspensionDecision = proposedPolicy.automaticSuspensionDecision(
-            isCaptureActive: true,
-            isAutomaticallySuspended: false
-        )
         guard peer === sourcePeer,
               peerGeneration == sourcePeerGeneration else {
             return
         }
         screenVideoAdaptationPolicy = proposedPolicy
-        if suspensionDecision == .suspend,
-           appliedScreenVideoRecommendation?.tier == .audioPriority {
-            await beginAutomaticScreenMediaSuspensionIfPossible(
-                peer: sourcePeer,
-                peerGeneration: sourcePeerGeneration
-            )
-        }
-    }
-
-    private func beginAutomaticScreenMediaSuspensionIfPossible(
-        peer sourcePeer: WebRTCPeer,
-        peerGeneration sourcePeerGeneration: UInt64
-    ) async {
-        guard peer === sourcePeer,
-              peerGeneration == sourcePeerGeneration,
-              !screenMediaSuspension.suspensionIsInFlight,
-              !screenMediaSuspension.isAutomaticallySuspended,
-              await sourcePeer.screenMediaSuspensionIsNegotiated() else {
-            return
-        }
-        let binding = currentScreenMediaSuspensionBinding
-        guard let notice = screenMediaSuspension.beginSuspensionIfNegotiated(
-            negotiated: true,
-            binding: binding
-        ) else {
-            return
-        }
-        do {
-            try await sourcePeer.sendScreenMediaSuspensionNotice(notice)
-            logger.info("Worldwide screen requested an audio-priority video pause")
-        } catch {
-            _ = screenMediaSuspension.abortSuspensionBeforeInactive(
-                binding: binding
-            )
-            logger.error(
-                "Worldwide screen could not begin its negotiated video pause: "
-                    + error.localizedDescription
-            )
-        }
     }
 
     private func beginAutomaticScreenMediaResumeIfPossible(
