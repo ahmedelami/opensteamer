@@ -3399,6 +3399,25 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
         XCTAssertFalse(probeAuthorization.isValid)
         XCTAssertTrue(resumedSnapshot.screenMediaInvalidations.isEmpty)
 
+        // A completed resume ACK is the terminal proof boundary. Ordinary adaptation must be
+        // allowed immediately afterward; treating the retained replay transcript as an active
+        // probe fail-closes video and creates a suspend/resume capture loop on weak networks.
+        let postResumeLimits = WebRTCScreenVideoEncodingLimits(
+            maximumBitrateBps: 64_000,
+            maximumFramesPerSecond: 2,
+            scaleResolutionDownBy: 8
+        )
+        let postResumeUpdate = try await host.applyScreenVideoEncodingLimits(
+            postResumeLimits
+        )
+        XCTAssertEqual(postResumeUpdate.appliedLimits, postResumeLimits)
+        let postResumeEncoding = await host
+            .screenVideoEncodingActivityForTesting()
+        XCTAssertEqual(postResumeEncoding, [true])
+        try await Task.sleep(for: .milliseconds(100))
+        let postResumeSnapshot = await recorder.snapshot()
+        XCTAssertTrue(postResumeSnapshot.screenMediaInvalidations.isEmpty)
+
         let staleSuspension = WebRTCScreenMediaSuspensionNotice(
             screenRequestID: suspension.screenRequestID,
             suspensionGeneration: suspension.suspensionGeneration + 1
