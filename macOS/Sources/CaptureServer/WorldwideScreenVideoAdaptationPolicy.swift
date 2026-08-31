@@ -586,8 +586,11 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
         return isCaptureActive ? currentRecommendation : nil
     }
 
-    /// Converts already-classified path evidence into one bounded capture transition. The caller
-    /// must invoke this at most once for each `update` sample and owns the actual media lifecycle.
+    /// Recovers a session created by an older automatic-suspension policy, but never turns an
+    /// acknowledged visible session opaque. Network adaptation owns encoding limits only: even
+    /// under genuine congestion the audio-priority 1 fps recommendation remains the visible floor.
+    /// Explicit Hide, authorization loss, and transport uncertainty continue to own fail-closed
+    /// capture teardown outside this policy.
     mutating func automaticSuspensionDecision(
         isCaptureActive: Bool,
         isAutomaticallySuspended: Bool
@@ -631,22 +634,8 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
 
         stableSuspensionResumeProbeSampleCount = 0
         maximumSuspensionResumeProbeSampleCount = 0
-        guard isCaptureActive,
-              currentTier == .audioPriority,
-              lastSampleHasPositiveSuspensionPressure else {
-            automaticSuspensionPressureSampleCount = 0
-            return nil
-        }
-        automaticSuspensionPressureSampleCount = min(
-            Self.requiredSuspensionPressureSampleCount,
-            automaticSuspensionPressureSampleCount + 1
-        )
-        guard automaticSuspensionPressureSampleCount
-                >= Self.requiredSuspensionPressureSampleCount else {
-            return nil
-        }
         automaticSuspensionPressureSampleCount = 0
-        return .suspend
+        return nil
     }
 
     /// Consumes retained below-reserve evidence only after the suspension coordinator accepts the
