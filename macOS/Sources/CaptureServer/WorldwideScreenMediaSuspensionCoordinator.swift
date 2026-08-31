@@ -5,6 +5,47 @@ import WebRTCTransport
 /// native objects: `WorldwideScreenService` must recheck the binding and its concrete source/sink
 /// authorizations before performing each asynchronous action.
 struct WorldwideScreenMediaSuspensionCoordinator: Equatable, Sendable {
+    enum DiagnosticPhase: String, Equatable, Sendable {
+        case idle
+        case active
+        case suspending
+        case suspended
+        case awaitingMarker
+        case awaitingMarkerPresentation
+        case awaitingRealFrame
+        case awaitingRealPresentation
+        case awaitingFinalization
+    }
+
+    /// Privacy-safe protocol correlation for host diagnostics. The values are monotonic protocol
+    /// identifiers and local lifecycle epochs; no pairing, SDP, input, or frame data is exposed.
+    struct DiagnosticSnapshot: Equatable, Sendable {
+        let phase: DiagnosticPhase
+        let screenRequestID: UInt64?
+        let suspensionGeneration: UInt64?
+        let binding: Binding?
+
+        /// Once the viewer has covered an acknowledged Show, invalidating any suspension-owned
+        /// phase clears WebRTC's host-video authorization. The old ordered Hide must not be
+        /// contradicted locally; a fresh media session is required to obtain a new Show.
+        var requiresFreshMediaSessionAfterInvalidation: Bool {
+            switch phase {
+            case .active:
+                // A resumed Active phase still owns the completed suspension transcript until a
+                // newer suspension generation or ordinary visibility command retires it. A
+                // crossed cancellation can therefore invalidate that transcript after the final
+                // resumed ACK and must close this media generation instead of leaving RTP off.
+                suspensionGeneration != nil
+            case .suspending, .suspended, .awaitingMarker,
+                 .awaitingMarkerPresentation, .awaitingRealFrame,
+                 .awaitingRealPresentation, .awaitingFinalization:
+                true
+            case .idle:
+                false
+            }
+        }
+    }
+
     struct Binding: Equatable, Sendable {
         let peerGeneration: UInt64
         let visibilityCommandEpoch: UInt64
@@ -18,6 +59,7 @@ struct WorldwideScreenMediaSuspensionCoordinator: Equatable, Sendable {
     private struct Suspending: Equatable, Sendable {
         let notice: WebRTCScreenMediaSuspensionNotice
         var binding: Binding
+        let priorResumedSuspension: WebRTCScreenMediaSuspensionNotice?
         var coverWasConfirmed: Bool
         var inactiveWasConfirmed: Bool
     }
@@ -30,7 +72,11 @@ struct WorldwideScreenMediaSuspensionCoordinator: Equatable, Sendable {
 
     private enum Phase: Equatable, Sendable {
         case idle
-        case active(screenRequestID: UInt64, binding: Binding)
+        case active(
+            screenRequestID: UInt64,
+            binding: Binding,
+            resumedSuspension: WebRTCScreenMediaSuspensionNotice?
+        )
         case suspending(Suspending)
         case suspended(notice: WebRTCScreenMediaSuspensionNotice, binding: Binding)
         case awaitingMarker(ResumeAttempt)
@@ -54,6 +100,64 @@ struct WorldwideScreenMediaSuspensionCoordinator: Equatable, Sendable {
 
     private var phase: Phase = .idle
     private var nextSuspensionGeneration: UInt64 = 1
+
+    var diagnosticSnapshot: DiagnosticSnapshot {
+        switch phase {
+        case .idle:
+            DiagnosticSnapshot(
+                phase: .idle,
+                screenRequestID: nil,
+                suspensionGeneration: nil,
+                binding: nil
+            )
+        case .active(let screenRequestID, let binding, let resumedSuspension):
+            DiagnosticSnapshot(
+                phase: .active,
+                screenRequestID: screenRequestID,
+                suspensionGeneration: resumedSuspension?.suspensionGeneration,
+                binding: binding
+            )
+        case .suspending(let state):
+            DiagnosticSnapshot(
+                phase: .suspending,
+                screenRequestID: state.notice.screenRequestID,
+                suspensionGeneration: state.notice.suspensionGeneration,
+                binding: state.binding
+            )
+        case .suspended(let notice, let binding):
+            DiagnosticSnapshot(
+                phase: .suspended,
+                screenRequestID: notice.screenRequestID,
+                suspensionGeneration: notice.suspensionGeneration,
+                binding: binding
+            )
+        case .awaitingMarker(let attempt):
+            resumeDiagnosticSnapshot(
+                phase: .awaitingMarker,
+                attempt: attempt
+            )
+        case .awaitingMarkerPresentation(let attempt, _):
+            resumeDiagnosticSnapshot(
+                phase: .awaitingMarkerPresentation,
+                attempt: attempt
+            )
+        case .awaitingRealFrame(let attempt, _):
+            resumeDiagnosticSnapshot(
+                phase: .awaitingRealFrame,
+                attempt: attempt
+            )
+        case .awaitingRealPresentation(let attempt, _):
+            resumeDiagnosticSnapshot(
+                phase: .awaitingRealPresentation,
+                attempt: attempt
+            )
+        case .awaitingFinalization(let attempt, _):
+            resumeDiagnosticSnapshot(
+                phase: .awaitingFinalization,
+                attempt: attempt
+            )
+        }
+    }
 
     var isAutomaticallySuspended: Bool {
         switch phase {
@@ -87,7 +191,7 @@ struct WorldwideScreenMediaSuspensionCoordinator: Equatable, Sendable {
 
     var activeScreenRequestID: UInt64? {
         switch phase {
-        case .active(let screenRequestID, _):
+        case .active(let screenRequestID, _, _):
             screenRequestID
         case .suspending(let state):
             state.notice.screenRequestID
@@ -106,7 +210,11 @@ struct WorldwideScreenMediaSuspensionCoordinator: Equatable, Sendable {
 
     mutating func activate(screenRequestID: UInt64, binding: Binding) -> Bool {
         guard screenRequestID > 0, binding.isValid else { return false }
-        phase = .active(screenRequestID: screenRequestID, binding: binding)
+        phase = .active(
+            screenRequestID: screenRequestID,
+            binding: binding,
+            resumedSuspension: nil
+        )
         return true
     }
 
@@ -122,7 +230,10 @@ struct WorldwideScreenMediaSuspensionCoordinator: Equatable, Sendable {
         }
         phase = .active(
             screenRequestID: state.notice.screenRequestID,
-            binding: binding
+            binding: binding,
+            // Sending the newer notice may fail before WebRTCPeer retires the completed prior
+            // transcript. Preserve that provenance so a later cancellation remains correlated.
+            resumedSuspension: state.priorResumedSuspension
         )
         return true
     }
@@ -135,7 +246,11 @@ struct WorldwideScreenMediaSuspensionCoordinator: Equatable, Sendable {
     ) -> WebRTCScreenMediaSuspensionNotice? {
         guard negotiated,
               binding.isValid,
-              case .active(let screenRequestID, let activeBinding) = phase,
+              case .active(
+                let screenRequestID,
+                let activeBinding,
+                let priorResumedSuspension
+              ) = phase,
               activeBinding == binding else {
             return nil
         }
@@ -151,6 +266,7 @@ struct WorldwideScreenMediaSuspensionCoordinator: Equatable, Sendable {
             Suspending(
                 notice: notice,
                 binding: binding,
+                priorResumedSuspension: priorResumedSuspension,
                 coverWasConfirmed: false,
                 inactiveWasConfirmed: false
             )
@@ -289,7 +405,8 @@ struct WorldwideScreenMediaSuspensionCoordinator: Equatable, Sendable {
         }
         phase = .active(
             screenRequestID: attempt.notice.screenRequestID,
-            binding: binding
+            binding: binding,
+            resumedSuspension: attempt.notice
         )
         return true
     }
@@ -302,9 +419,14 @@ struct WorldwideScreenMediaSuspensionCoordinator: Equatable, Sendable {
         binding: Binding
     ) -> Bool {
         guard notice.isValid,
-              case .active(let screenRequestID, let activeBinding) = phase,
+              case .active(
+                let screenRequestID,
+                let activeBinding,
+                let resumedSuspension
+              ) = phase,
               activeBinding == binding,
-              screenRequestID == notice.screenRequestID else {
+              screenRequestID == notice.screenRequestID,
+              resumedSuspension == notice else {
             return false
         }
         phase = .suspended(notice: notice, binding: binding)
@@ -330,7 +452,7 @@ struct WorldwideScreenMediaSuspensionCoordinator: Equatable, Sendable {
 
     func owns(_ binding: Binding) -> Bool {
         switch phase {
-        case .active(_, let current), .suspended(_, let current):
+        case .active(_, let current, _), .suspended(_, let current):
             current == binding
         case .suspending(let state):
             state.binding == binding
@@ -350,18 +472,21 @@ struct WorldwideScreenMediaSuspensionCoordinator: Equatable, Sendable {
         binding: Binding
     )? {
         switch phase {
+        case .active(_, let binding, let resumedSuspension):
+            guard let resumedSuspension else { return nil }
+            return (resumedSuspension, binding)
         case .suspending(let state):
-            (state.notice, state.binding)
+            return (state.notice, state.binding)
         case .suspended(let notice, let binding):
-            (notice, binding)
+            return (notice, binding)
         case .awaitingMarker(let attempt),
              .awaitingMarkerPresentation(let attempt, _),
              .awaitingRealFrame(let attempt, _),
              .awaitingRealPresentation(let attempt, _),
              .awaitingFinalization(let attempt, _):
-            (attempt.notice, attempt.binding)
-        case .idle, .active:
-            nil
+            return (attempt.notice, attempt.binding)
+        case .idle:
+            return nil
         }
     }
 
@@ -371,6 +496,18 @@ struct WorldwideScreenMediaSuspensionCoordinator: Equatable, Sendable {
         } else {
             phase = .suspending(state)
         }
+    }
+
+    private func resumeDiagnosticSnapshot(
+        phase: DiagnosticPhase,
+        attempt: ResumeAttempt
+    ) -> DiagnosticSnapshot {
+        DiagnosticSnapshot(
+            phase: phase,
+            screenRequestID: attempt.notice.screenRequestID,
+            suspensionGeneration: attempt.notice.suspensionGeneration,
+            binding: attempt.binding
+        )
     }
 
     private static let zeroUUID = UUID(

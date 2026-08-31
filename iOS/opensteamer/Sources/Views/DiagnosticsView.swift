@@ -55,6 +55,78 @@ struct DiagnosticsView: View {
                     title: "Video",
                     value: worldwideVideoDescription
                 )
+                MetricRow(
+                    title: "Client Pipeline",
+                    value: worldwideViewModel.screenLivenessStatusText
+                )
+                MetricRow(
+                    title: "Mac Heartbeat",
+                    value: worldwideViewModel
+                        .screenClientDiagnosticsDeliveryText
+                )
+                MetricRow(
+                    title: "Inbound Bytes",
+                    value: screenCounterDescription(
+                        total: worldwideViewModel
+                            .screenLivenessDiagnosticSnapshot.inboundBytes,
+                        delta: worldwideViewModel
+                            .screenLivenessDiagnosticSnapshot.inboundByteDelta
+                    )
+                )
+                MetricRow(
+                    title: "Inbound Packets",
+                    value: screenCounterDescription(
+                        total: worldwideViewModel
+                            .screenLivenessDiagnosticSnapshot.inboundPackets,
+                        delta: worldwideViewModel
+                            .screenLivenessDiagnosticSnapshot.inboundPacketDelta
+                    )
+                )
+                MetricRow(
+                    title: "Decoded Frames",
+                    value: screenCounterDescription(
+                        total: worldwideViewModel
+                            .screenLivenessDiagnosticSnapshot.decodedFrames,
+                        delta: worldwideViewModel
+                            .screenLivenessDiagnosticSnapshot.decodedFrameDelta
+                    )
+                )
+                MetricRow(
+                    title: "Presented Frames",
+                    value: screenCounterDescription(
+                        total: worldwideViewModel
+                            .screenLivenessDiagnosticSnapshot.presentedFrames,
+                        delta: worldwideViewModel
+                            .screenLivenessDiagnosticSnapshot.presentedFrameDelta
+                    )
+                )
+                MetricRow(
+                    title: "Content Samples",
+                    value: screenCounterDescription(
+                        total: worldwideViewModel
+                            .screenLivenessDiagnosticSnapshot.contentSamples,
+                        delta: worldwideViewModel
+                            .screenLivenessDiagnosticSnapshot.contentSampleDelta
+                    )
+                )
+                MetricRow(
+                    title: "Content Changes",
+                    value: screenCounterDescription(
+                        total: worldwideViewModel
+                            .screenLivenessDiagnosticSnapshot.contentChanges,
+                        delta: worldwideViewModel
+                            .screenLivenessDiagnosticSnapshot.contentChangeDelta
+                    )
+                )
+                MetricRow(
+                    title: "Last Presentation",
+                    value: lastScreenPresentationDescription
+                )
+                MetricRow(
+                    title: "Cover Evidence",
+                    value: worldwideViewModel.screenLivenessDiagnosticSnapshot
+                        .coverState.statusText
+                )
             }
 
             Section("Connection Timeline") {
@@ -192,6 +264,28 @@ struct DiagnosticsView: View {
         }
         guard let framesPerSecond = video.framesPerSecond else { return size }
         return "\(size) · \(framesPerSecond.formatted(.number.precision(.fractionLength(1)))) fps"
+    }
+
+    private var lastScreenPresentationDescription: String {
+        guard let age = worldwideViewModel.screenLivenessDiagnosticSnapshot
+            .lastPresentationAgeMilliseconds else {
+            return "No presentation observed"
+        }
+        if age < 1_000 {
+            return "\(age) ms ago"
+        }
+        return (Double(age) / 1_000).formatted(
+            .number.precision(.fractionLength(1))
+        ) + " s ago"
+    }
+
+    private func screenCounterDescription(
+        total: UInt64?,
+        delta: UInt64?
+    ) -> String {
+        guard let total else { return "Unknown" }
+        guard let delta else { return "\(total) · new baseline" }
+        return "\(total) · +\(delta)"
     }
 
     private func milliseconds(_ seconds: Double?) -> String {

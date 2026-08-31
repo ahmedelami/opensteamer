@@ -608,7 +608,12 @@ final class WorldwideSessionViewModel: ObservableObject {
     @Published private(set) var isConnecting = false
     @Published private(set) var isPeerConnected = false
     @Published private(set) var isControlChannelReady = false
-    @Published private(set) var isScreenVisible = false
+    @Published private(set) var isScreenVisible = false {
+        didSet {
+            guard oldValue != isScreenVisible else { return }
+            advanceScreenLivenessGeneration(clearRenderObservation: true)
+        }
+    }
     @Published private(set) var remoteVideoTrack: WebRTCRemoteVideoTrack? {
         willSet {
             let currentIdentity = remoteVideoTrack.map { ObjectIdentifier($0) }
@@ -620,11 +625,25 @@ final class WorldwideSessionViewModel: ObservableObject {
             )
             discardPendingRemoteScrolls()
         }
+        didSet {
+            let previousIdentity = oldValue.map { ObjectIdentifier($0) }
+            let currentIdentity = remoteVideoTrack.map { ObjectIdentifier($0) }
+            guard previousIdentity != currentIdentity else { return }
+            advanceScreenLivenessGeneration(clearRenderObservation: true)
+        }
     }
     @Published private(set) var screenAcknowledgementOracle:
         WorldwideScreenAcknowledgementOracleSnapshot?
     @Published private(set) var screenMediaViewerFence:
-        WorldwideScreenMediaViewerFence?
+        WorldwideScreenMediaViewerFence? {
+        didSet {
+            guard oldValue != screenMediaViewerFence else { return }
+            refreshScreenLivenessDiagnostic()
+        }
+    }
+    @Published private(set) var screenLivenessDiagnosticSnapshot =
+        WorldwideScreenLivenessDiagnosticSnapshot.unobserved
+    @Published private(set) var screenClientDiagnosticsDeliveryText = "Idle"
     @Published private(set) var audioStateText = "Inactive"
     @Published private(set) var isRemoteAudioAvailable = false
     @Published private(set) var isRemoteAudioPlaying = false
@@ -804,6 +823,7 @@ final class WorldwideSessionViewModel: ObservableObject {
     private var sessionGeneration = UUID() {
         didSet {
             if oldValue != sessionGeneration {
+                advanceScreenLivenessGeneration(clearRenderObservation: true)
                 beginMacHostedCallNegotiationBoundary()
                 transportAuthorizationGeneration = UUID()
                 invalidateRawMicrophoneOracle()
@@ -834,6 +854,12 @@ final class WorldwideSessionViewModel: ObservableObject {
     private var activeScreenPresentationLease: WorldwideScreenPresentationLease?
     private var remoteScreenOwnerLease: WorldwideScreenPresentationLease?
     private var activeScreenRequestID: UInt64?
+    private var screenLivenessClassifier = WorldwideScreenLivenessClassifier()
+    private var screenLivenessGeneration: UInt64 = 1
+    private var latestScreenVideoRenderObservation:
+        WebRTCVideoRenderObservation?
+    private var latestScreenVideoPresentationUptimeNanoseconds: UInt64?
+    private var nextScreenClientDiagnosticsSequence: UInt64 = 1
     private var screenMediaViewerAttempt: WorldwideScreenMediaViewerAttempt?
     private var screenMediaCoveredHideTask: Task<Void, Never>?
     private var screenMediaMarkerPresentationTask: Task<Void, Never>?
@@ -937,6 +963,8 @@ final class WorldwideSessionViewModel: ObservableObject {
         (@MainActor () async -> Void)?
     private var debugScreenMediaCancellationObserver:
         (@MainActor (WebRTCPeer, String) -> Void)?
+    private var debugScreenLivenessUptimeClock:
+        (@MainActor () -> UInt64)?
     #endif
 
     init(audioLifecycle: WorldwideAudioLifecycleController = WorldwideAudioLifecycleController()) {
@@ -1019,6 +1047,10 @@ final class WorldwideSessionViewModel: ObservableObject {
 
     var canViewScreen: Bool {
         isPeerConnected && iceIsConnected && isControlChannelReady
+    }
+
+    var screenLivenessStatusText: String {
+        screenLivenessDiagnosticSnapshot.statusText
     }
 
     var isRemoteInputAvailable: Bool {
@@ -2124,6 +2156,191 @@ final class WorldwideSessionViewModel: ObservableObject {
         invalidateRemoteInputState()
     }
 
+    private func advanceScreenLivenessGeneration(
+        clearRenderObservation: Bool
+    ) {
+        screenLivenessGeneration &+= 1
+        if screenLivenessGeneration == 0 {
+            screenLivenessGeneration = 1
+        }
+        screenLivenessClassifier.reset()
+        if clearRenderObservation {
+            latestScreenVideoRenderObservation = nil
+            latestScreenVideoPresentationUptimeNanoseconds = nil
+        }
+        refreshScreenLivenessDiagnostic()
+    }
+
+    private func screenLivenessUptimeNanoseconds() -> UInt64 {
+        #if DEBUG
+        if let debugScreenLivenessUptimeClock {
+            return debugScreenLivenessUptimeClock()
+        }
+        #endif
+        return DispatchTime.now().uptimeNanoseconds
+    }
+
+    private var currentScreenLivenessCoverState:
+        WorldwideScreenLivenessCoverState {
+        if screenMediaViewerFence?.forceCover == true {
+            guard let phase = screenMediaViewerAttempt?.phase else {
+                return .privacy
+            }
+            switch phase {
+            case .awaitingCoverInstallation,
+                 .sendingCoveredAcknowledgementAndHide,
+                 .awaitingHideAcknowledgement,
+                 .awaitingMarkerReady:
+                return .intentionalBandwidthPause
+            case .awaitingMarkerPresentation,
+                 .sendingMarkerPresentation,
+                 .awaitingResumeReady,
+                 .awaitingRealPresentation,
+                 .sendingResumeRequest,
+                 .awaitingResumedAcknowledgement:
+                return .resuming
+            case .resumed:
+                return .none
+            }
+        }
+        return isScreenVisible ? .none : .screenHidden
+    }
+
+    private func refreshScreenLivenessDiagnostic(
+        at observedAtUptimeNanoseconds: UInt64? = nil
+    ) {
+        let observedAt = observedAtUptimeNanoseconds
+            ?? screenLivenessUptimeNanoseconds()
+        let renderObservation:
+            WorldwideScreenLivenessRenderObservation? = if
+                let latestScreenVideoRenderObservation,
+                let latestScreenVideoPresentationUptimeNanoseconds {
+                WorldwideScreenLivenessRenderObservation(
+                    latestScreenVideoRenderObservation,
+                    presentedAtUptimeNanoseconds:
+                        latestScreenVideoPresentationUptimeNanoseconds
+                )
+            } else {
+                nil
+            }
+        screenLivenessDiagnosticSnapshot = screenLivenessClassifier.observe(
+            WorldwideScreenLivenessSample(
+                generation: screenLivenessGeneration,
+                observedAtUptimeNanoseconds: observedAt,
+                hasRemoteVideoTrack: remoteVideoTrack != nil,
+                coverState: currentScreenLivenessCoverState,
+                inboundVideo: statistics?.inboundVideo,
+                renderObservation: renderObservation
+            )
+        )
+    }
+
+    private func sendScreenClientDiagnosticsHeartbeat(
+        through sourcePeer: WebRTCPeer,
+        generation: UUID
+    ) async {
+        guard generation == sessionGeneration,
+              peer === sourcePeer,
+              let screenRequestID = activeScreenRequestID else {
+            screenClientDiagnosticsDeliveryText = "Idle"
+            return
+        }
+        guard nextScreenClientDiagnosticsSequence < UInt64.max else {
+            screenClientDiagnosticsDeliveryText = "Local only"
+            return
+        }
+        let isNegotiated = await sourcePeer
+            .screenClientDiagnosticsIsNegotiated()
+        guard generation == sessionGeneration,
+              peer === sourcePeer,
+              activeScreenRequestID == screenRequestID else {
+            return
+        }
+        guard isNegotiated else {
+            screenClientDiagnosticsDeliveryText = "Local only"
+            return
+        }
+
+        let snapshot = screenLivenessDiagnosticSnapshot
+        let heartbeat = WebRTCScreenClientDiagnosticsHeartbeat(
+            sequence: nextScreenClientDiagnosticsSequence,
+            screenRequestID: screenRequestID,
+            liveness: Self.wireLiveness(snapshot.state),
+            trackAttached: snapshot.trackAttached,
+            coverVisible: snapshot.coverState != .none,
+            coverReason: Self.wireCoverReason(snapshot.coverState),
+            inboundBytes: snapshot.inboundBytes,
+            inboundPackets: snapshot.inboundPackets,
+            framesDecoded: snapshot.decodedFrames,
+            framesPresented: snapshot.presentedFrames,
+            contentSamples: snapshot.contentSamples,
+            contentChanges: snapshot.contentChanges,
+            presentationAgeMilliseconds:
+                snapshot.lastPresentationAgeMilliseconds,
+            frameWidth: snapshot.frameWidth,
+            frameHeight: snapshot.frameHeight,
+            framesPerSecond: snapshot.framesPerSecond
+        )
+        guard heartbeat.isValid else {
+            screenClientDiagnosticsDeliveryText = "Local evidence unavailable"
+            return
+        }
+        do {
+            try await sourcePeer.sendScreenClientDiagnosticsHeartbeat(
+                heartbeat
+            )
+            nextScreenClientDiagnosticsSequence += 1
+            guard generation == sessionGeneration,
+                  peer === sourcePeer else { return }
+            screenClientDiagnosticsDeliveryText = "Reporting to Mac"
+        } catch {
+            guard generation == sessionGeneration,
+                  peer === sourcePeer else { return }
+            // This best-effort lane never changes the user-visible media or control state.
+            screenClientDiagnosticsDeliveryText = "Heartbeat unavailable"
+        }
+    }
+
+    private static func wireLiveness(
+        _ state: WorldwideScreenLivenessState
+    ) -> WebRTCScreenClientLiveness {
+        switch state {
+        case .intentionallyCovered: .intentionallyCovered
+        case .covered: .covered
+        case .trackMissing: .trackMissing
+        case .awaitingEvidence: .awaitingEvidence
+        case .inboundRTPStalled: .inboundRTPStalled
+        case .decodeStalled: .decodeStalled
+        case .presentationStalled: .presentationStalled
+        case .presentingUnchanged: .presentingUnchanged
+        case .presentingLive: .presentingLive
+        }
+    }
+
+    private static func wireCoverReason(
+        _ state: WorldwideScreenLivenessCoverState
+    ) -> WebRTCScreenClientCoverReason {
+        switch state {
+        case .none: .none
+        case .intentionalBandwidthPause: .bandwidthPause
+        case .privacy: .privacy
+        case .resuming: .resuming
+        case .screenHidden: .screenHidden
+        }
+    }
+
+    private func recordScreenVideoRenderObservation(
+        _ observation: WebRTCVideoRenderObservation,
+        for lease: WorldwideScreenPresentationLease
+    ) {
+        guard screenPresentationIsCurrent(lease),
+              remoteVideoTrack != nil else { return }
+        let observedAt = screenLivenessUptimeNanoseconds()
+        latestScreenVideoRenderObservation = observation
+        latestScreenVideoPresentationUptimeNanoseconds = observedAt
+        refreshScreenLivenessDiagnostic(at: observedAt)
+    }
+
     func screenMediaViewerFence(
         for lease: WorldwideScreenPresentationLease
     ) -> WorldwideScreenMediaViewerFence? {
@@ -2157,6 +2374,7 @@ final class WorldwideSessionViewModel: ObservableObject {
         _ observation: WebRTCVideoRenderObservation,
         for lease: WorldwideScreenPresentationLease
     ) {
+        recordScreenVideoRenderObservation(observation, for: lease)
         considerScreenMediaProofCandidate(observation, for: lease)
         validateScreenMediaSourceContinuity(for: lease)
     }
@@ -2382,7 +2600,8 @@ final class WorldwideSessionViewModel: ObservableObject {
         publishScreenMediaViewerFence(
             for: attempt,
             forceCover: true,
-            statusText: "Screen paused to save bandwidth"
+            statusText: WorldwideScreenLivenessCoverState
+                .intentionalBandwidthPause.statusText
         )
     }
 
@@ -2668,6 +2887,7 @@ final class WorldwideSessionViewModel: ObservableObject {
         // This Hide is transport-only. The exact lease remains logically visible and owns the
         // mounted, covered renderer until the typed resumed acknowledgement commits.
         attempt.phase = .awaitingMarkerReady
+        refreshScreenLivenessDiagnostic()
         stateText = "Screen paused"
     }
 
@@ -4416,6 +4636,11 @@ final class WorldwideSessionViewModel: ObservableObject {
               peer === sourcePeer else { return }
 
         statistics = snapshot
+        refreshScreenLivenessDiagnostic()
+        await sendScreenClientDiagnosticsHeartbeat(
+            through: sourcePeer,
+            generation: generation
+        )
         if hasOwnedIOSHostedCallPlayoutPolicy {
             await refreshIOSHostedCallPlayoutProof(
                 from: sourcePeer,
@@ -4844,6 +5069,8 @@ final class WorldwideSessionViewModel: ObservableObject {
         remoteDisplayName = "Mac mini"
         invitationExpiresAt = nil
         statistics = nil
+        screenClientDiagnosticsDeliveryText = "Idle"
+        advanceScreenLivenessGeneration(clearRenderObservation: true)
     }
 
     // MARK: - Runtime audio proof
@@ -8480,6 +8707,12 @@ final class WorldwideSessionViewModel: ObservableObject {
         _ observer: @escaping @MainActor (WebRTCPeer, String) -> Void
     ) {
         debugScreenMediaCancellationObserver = observer
+    }
+
+    func debugInstallScreenLivenessUptimeClock(
+        _ clock: @escaping @MainActor () -> UInt64
+    ) {
+        debugScreenLivenessUptimeClock = clock
     }
 
     func debugDeliverScreenMediaSuspensionForTests(

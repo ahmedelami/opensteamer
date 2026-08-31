@@ -315,6 +315,29 @@ private func sampleIPhoneMicrophoneSenderStatistics(
 
 /// Exercises two real in-process native peers. Milestones, exact signaling counts, decoded PCM
 /// waveform evidence, media frames, and authorization revocation form the end-to-end oracles.
+private func makeScreenClientDiagnosticsHeartbeat(
+    sequence: UInt64
+) -> WebRTCScreenClientDiagnosticsHeartbeat {
+    WebRTCScreenClientDiagnosticsHeartbeat(
+        sequence: sequence,
+        screenRequestID: 1,
+        liveness: .presentingLive,
+        trackAttached: true,
+        coverVisible: false,
+        coverReason: .none,
+        inboundBytes: 4_096 + sequence,
+        inboundPackets: 32 + sequence,
+        framesDecoded: 30 + sequence,
+        framesPresented: 29 + sequence,
+        contentSamples: 8 + sequence,
+        contentChanges: 4 + sequence,
+        presentationAgeMilliseconds: 20,
+        frameWidth: 1_080,
+        frameHeight: 1_920,
+        framesPerSecond: 30
+    )
+}
+
 final class WebRTCPeerLoopbackTests: XCTestCase {
     func testScreenVideoEncodingLimitsApplyAtomicallyAndFailClosed() async throws {
         let host = try WebRTCPeer(
@@ -1894,6 +1917,12 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
             expectations.hostForwarderFinished.fulfill()
         }
 
+        let hostDiagnosticsForwarder = Task {
+            for await event in host.screenClientDiagnosticsEvents {
+                await recorder.observeScreenClientDiagnostics(event)
+            }
+        }
+
         let viewerForwarder = Task {
             do {
                 for await event in viewer.events {
@@ -1928,6 +1957,7 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
             Task { await secondAnswerDeliveryGate.release() }
             headlessPlayout.cancel()
             hostForwarder.cancel()
+            hostDiagnosticsForwarder.cancel()
             viewerForwarder.cancel()
         }
 
@@ -2104,6 +2134,22 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
             await viewer.screenMediaSuspensionIsNegotiated()
         XCTAssertTrue(hostScreenMediaNegotiated)
         XCTAssertTrue(viewerScreenMediaNegotiated)
+        let hostScreenDiagnosticsNegotiated =
+            await host.screenClientDiagnosticsIsNegotiated()
+        let viewerScreenDiagnosticsNegotiated =
+            await viewer.screenClientDiagnosticsIsNegotiated()
+        XCTAssertTrue(hostScreenDiagnosticsNegotiated)
+        XCTAssertTrue(viewerScreenDiagnosticsNegotiated)
+        let clientHeartbeat = makeScreenClientDiagnosticsHeartbeat(sequence: 1)
+        try await viewer.sendScreenClientDiagnosticsHeartbeat(clientHeartbeat)
+        var receivedClientHeartbeats =
+            await recorder.screenClientDiagnosticsHeartbeats()
+        for _ in 0..<200 where receivedClientHeartbeats.isEmpty {
+            try await Task.sleep(for: .milliseconds(10))
+            receivedClientHeartbeats =
+                await recorder.screenClientDiagnosticsHeartbeats()
+        }
+        XCTAssertEqual(receivedClientHeartbeats, [clientHeartbeat])
         let initialAnswerAudioSections = mediaSections(
             kind: "audio",
             in: initialAnswer
@@ -3672,6 +3718,20 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
         }
         XCTAssertFalse(hostIPhoneMicrophoneTrack.isEnabled)
 
+        let crossedRestartHeartbeat =
+            makeScreenClientDiagnosticsHeartbeat(sequence: 2)
+        try await viewer.sendScreenClientDiagnosticsHeartbeat(
+            crossedRestartHeartbeat
+        )
+        try await Task.sleep(for: .milliseconds(100))
+        let heartbeatsWhileAnswerIsHeld =
+            await recorder.screenClientDiagnosticsHeartbeats()
+        XCTAssertEqual(
+            heartbeatsWhileAnswerIsHeld,
+            [clientHeartbeat],
+            "A pre-answer heartbeat is dropped without closing the optional lane."
+        )
+
         // The data channel can cross the WSS answer path. Prove that a privacy-monotone Hide
         // received before the second answer is applied cannot be acknowledged as recovered.
         let recoveryProbeID = try await viewer.setScreenVisible(false)
@@ -3690,6 +3750,25 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
 
         await secondAnswerDeliveryGate.release()
         await fulfillment(of: [expectations.secondAnswerDelivered], timeout: 10)
+        let recoveredDiagnosticsNegotiated =
+            await host.screenClientDiagnosticsIsNegotiated()
+        XCTAssertTrue(recoveredDiagnosticsNegotiated)
+        let postRestartHeartbeat =
+            makeScreenClientDiagnosticsHeartbeat(sequence: 3)
+        try await viewer.sendScreenClientDiagnosticsHeartbeat(
+            postRestartHeartbeat
+        )
+        var postRestartHeartbeats =
+            await recorder.screenClientDiagnosticsHeartbeats()
+        for _ in 0..<200 where postRestartHeartbeats.count < 2 {
+            try await Task.sleep(for: .milliseconds(10))
+            postRestartHeartbeats =
+                await recorder.screenClientDiagnosticsHeartbeats()
+        }
+        XCTAssertEqual(
+            postRestartHeartbeats,
+            [clientHeartbeat, postRestartHeartbeat]
+        )
         let recoveredMicrophoneSenderState =
             await viewer.iPhoneMicrophoneSenderStateForTesting()
         XCTAssertEqual(
@@ -4054,6 +4133,8 @@ private actor LoopbackRecorder {
     private var screenMediaProbeEvents:
         [ScreenVideoEncoderResumeProbeEvent] = []
     private var screenMediaInvalidations: [String] = []
+    private var screenClientDiagnosticsHeartbeatsStorage:
+        [WebRTCScreenClientDiagnosticsHeartbeat] = []
 
     func observe(
         _ event: WebRTCTransportEvent,
@@ -4187,6 +4268,14 @@ private actor LoopbackRecorder {
         return observed.filter { milestones.insert($0).inserted }
     }
 
+    func observeScreenClientDiagnostics(
+        _ event: WebRTCScreenClientDiagnosticsEvent
+    ) {
+        if case .heartbeat(let heartbeat) = event {
+            screenClientDiagnosticsHeartbeatsStorage.append(heartbeat)
+        }
+    }
+
     func recordEmitted(
         _ payload: RemoteSignalPayload,
         from side: LoopbackSide
@@ -4253,6 +4342,11 @@ private actor LoopbackRecorder {
 
     func macHostedCallEvidence() -> [WebRTCMacHostedCallEvidence] {
         receivedMacHostedCallEvidence
+    }
+
+    func screenClientDiagnosticsHeartbeats()
+        -> [WebRTCScreenClientDiagnosticsHeartbeat] {
+        screenClientDiagnosticsHeartbeatsStorage
     }
 
     func snapshot() -> LoopbackSnapshot {
