@@ -10328,6 +10328,75 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         await oldPeer.close()
     }
 
+    func testFreshPreparationWaitsForExactRetiredPeerClose() async throws {
+        let fixture = makeFixture()
+        let viewModel = WorldwideSessionViewModel(audioLifecycle: fixture.controller)
+        let oldPeer = try makeAudioRacePeer()
+        let retirementReached = expectation(description: "retirement reached exact peer close")
+        let retirementGate = AudioNonCooperativeGate<Void>()
+        viewModel.debugInstallScreenSessionForTests(peer: oldPeer)
+        viewModel.debugInstallBeforeRetiredPeerClose {
+            retirementReached.fulfill()
+            await retirementGate.wait()
+        }
+        viewModel.disconnect()
+        await fulfillment(of: [retirementReached], timeout: 2)
+
+        let admission = Task { @MainActor in
+            await viewModel.admitFreshConnectionPreparation()
+        }
+        for _ in 0..<4 { await Task.yield() }
+        XCTAssertFalse(admission.isCancelled)
+
+        await retirementGate.open(())
+        let admittedAfterRetirement = await admission.value
+        XCTAssertTrue(admittedAfterRetirement)
+        await oldPeer.close()
+    }
+
+    func testFreshPreparationRejectsActiveAndRecoveringMediaOwnership() async throws {
+        let fixture = makeFixture()
+        let viewModel = WorldwideSessionViewModel(audioLifecycle: fixture.controller)
+        let peer = try makeAudioRacePeer()
+        let screen = viewModel.debugInstallActiveScreenPresentationForTests(peer: peer)
+
+        let admittedWhileActive = await viewModel.admitFreshConnectionPreparation()
+        XCTAssertFalse(admittedWhileActive)
+        viewModel.debugMarkViewerTransportUncertainForAutomaticMicrophoneTests()
+        XCTAssertTrue(viewModel.screenPresentationShouldRemainMounted(screen.lease))
+        let admittedWhileRecovering = await viewModel.admitFreshConnectionPreparation()
+        XCTAssertFalse(admittedWhileRecovering)
+
+        viewModel.disconnect()
+        await peer.close()
+    }
+
+    func testCancelledFreshPreparationNeverEscapesRetirementBarrier() async throws {
+        let fixture = makeFixture()
+        let viewModel = WorldwideSessionViewModel(audioLifecycle: fixture.controller)
+        let oldPeer = try makeAudioRacePeer()
+        let retirementReached = expectation(description: "cancelled admission reached retirement")
+        let retirementGate = AudioNonCooperativeGate<Void>()
+        viewModel.debugInstallScreenSessionForTests(peer: oldPeer)
+        viewModel.debugInstallBeforeRetiredPeerClose {
+            retirementReached.fulfill()
+            await retirementGate.wait()
+        }
+        viewModel.disconnect()
+        await fulfillment(of: [retirementReached], timeout: 2)
+
+        let admission = Task { @MainActor in
+            await viewModel.admitFreshConnectionPreparation()
+        }
+        for _ in 0..<4 { await Task.yield() }
+        admission.cancel()
+        await retirementGate.open(())
+
+        let admittedAfterCancellation = await admission.value
+        XCTAssertFalse(admittedAfterCancellation)
+        await oldPeer.close()
+    }
+
     func testIdentityUpdateRepublishesNowPlayingMetadata() {
         let fixture = makeFixture()
         fixture.controller.prepare(serverName: "Mac mini")

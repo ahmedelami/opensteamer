@@ -711,6 +711,31 @@ final class WorldwideRemoteInputLifecycleTests: XCTestCase {
     }
 
     @MainActor
+    func testTerminalOrReplacementStateDismissesRetainedFullScreenViewer() {
+        XCTAssertFalse(
+            PlayerView.shouldDismissWorldwideScreen(
+                canViewScreen: false,
+                presentationIsCurrent: true,
+                shouldRemainMounted: true
+            )
+        )
+        XCTAssertTrue(
+            PlayerView.shouldDismissWorldwideScreen(
+                canViewScreen: false,
+                presentationIsCurrent: true,
+                shouldRemainMounted: false
+            )
+        )
+        XCTAssertTrue(
+            PlayerView.shouldDismissWorldwideScreen(
+                canViewScreen: true,
+                presentationIsCurrent: false,
+                shouldRemainMounted: false
+            )
+        )
+    }
+
+    @MainActor
     func testTransientInactiveKeepsRendererMountedBehindPrivacyCover() {
         XCTAssertTrue(
             WorldwideScreenViewerView.keepsScreenRendererMounted(
@@ -755,6 +780,433 @@ final class WorldwideRemoteInputLifecycleTests: XCTestCase {
         )
         XCTAssertFalse(videoView.debugPresentationCoverIsVisible)
         XCTAssertTrue(videoView.debugHasCurrentPresentedFrame)
+    }
+
+    @MainActor
+    func testAdaptiveFormatTransitionKeepsLastFrameVisibleWhileRevokingTouch() {
+        let videoView = WebRTCRemoteVideoView(frame: .zero)
+        var publishedSizes: [CGSize] = []
+        videoView.onVideoSizeChanged = { publishedSizes.append($0) }
+        videoView.debugInstallPresentedFrameForPrivacyCoverTests()
+
+        videoView.debugBeginFormatTransitionForContinuityTests()
+
+        XCTAssertFalse(videoView.debugPresentationCoverIsVisible)
+        XCTAssertTrue(videoView.debugHasCurrentPresentedFrame)
+        XCTAssertEqual(publishedSizes, [.zero])
+
+        videoView.debugInvalidateGeometryForContinuityTests()
+
+        XCTAssertTrue(videoView.debugPresentationCoverIsVisible)
+        XCTAssertFalse(videoView.debugHasCurrentPresentedFrame)
+        XCTAssertEqual(publishedSizes, [.zero, .zero])
+    }
+
+    @MainActor
+    func testTransportUncertaintyRetainsConfirmedPresentationAndRevokesInput() async throws {
+        let viewModel = WorldwideSessionViewModel()
+        let peer = try makeScreenPeer()
+        let fixture = viewModel.debugInstallActiveScreenPresentationForTests(peer: peer)
+
+        viewModel.debugMarkViewerTransportUncertainForAutomaticMicrophoneTests()
+
+        XCTAssertFalse(viewModel.canViewScreen)
+        XCTAssertFalse(viewModel.screenPresentationIsVisible(fixture.lease))
+        XCTAssertTrue(viewModel.screenPresentationShouldRemainMounted(fixture.lease))
+        XCTAssertFalse(viewModel.remoteInputIsAvailable(for: fixture.lease))
+        XCTAssertFalse(fixture.authorization.isValid)
+        XCTAssertEqual(
+            viewModel.debugScreenPresentationState.currentLease,
+            fixture.lease
+        )
+        XCTAssertNil(viewModel.debugScreenPresentationState.activeLease)
+        XCTAssertEqual(
+            viewModel.debugScreenPresentationState.recoveringLease,
+            fixture.lease
+        )
+
+        viewModel.retireScreenPresentationLease(fixture.lease)
+        XCTAssertFalse(viewModel.screenPresentationShouldRemainMounted(fixture.lease))
+        viewModel.disconnect()
+        await peer.close()
+    }
+
+    @MainActor
+    func testTransportRecoveryPreservesCompletedResumeFreshnessFence() async throws {
+        let viewModel = WorldwideSessionViewModel()
+        let peer = try makeScreenPeer()
+        let fixture = viewModel.debugInstallActiveScreenPresentationForTests(peer: peer)
+        let floor: UInt32 = 9_100
+        viewModel.debugInstallCompletedScreenMediaFenceForTests(
+            lease: fixture.lease,
+            minimumAcceptedRTPTimestamp: floor
+        )
+
+        viewModel.debugMarkViewerTransportUncertainForAutomaticMicrophoneTests()
+
+        let retainedFence = try XCTUnwrap(
+            viewModel.screenMediaViewerFence(for: fixture.lease)
+        )
+        XCTAssertFalse(retainedFence.forceCover)
+        XCTAssertEqual(retainedFence.minimumAcceptedRTPTimestamp, floor)
+        XCTAssertTrue(viewModel.screenPresentationShouldRemainMounted(fixture.lease))
+        viewModel.disconnect()
+        await peer.close()
+    }
+
+    @MainActor
+    func testTransportRecoveryRevealsForcedFenceOnlyAfterFreshCurrentFrame() async throws {
+        let viewModel = WorldwideSessionViewModel()
+        let peer = try makeScreenPeer()
+        let fixture = viewModel.debugInstallActiveScreenPresentationForTests(peer: peer)
+        let floor: UInt32 = 9_200
+        viewModel.debugInstallForcedScreenMediaFenceForTests(
+            lease: fixture.lease,
+            minimumAcceptedRTPTimestamp: floor
+        )
+        let transport = ScreenVisibilityTransportProbe()
+        viewModel.debugInstallScreenVisibilityRequestSender(transport.send)
+
+        viewModel.debugMarkViewerTransportUncertainForAutomaticMicrophoneTests()
+        await viewModel.debugMarkViewerTransportHealthyForAutomaticMicrophoneTests()
+        await transport.waitForRequestCount(1)
+
+        let showKey = WorldwideScreenVisibilityRequestKey(
+            sessionGeneration: fixture.lease.sessionGeneration,
+            requestID: 1_201
+        )
+        await transport.resolveRequest(at: 0, with: .success(showKey.requestID))
+        await viewModel.debugWaitForPendingScreenVisibilityRequest(showKey)
+        _ = await viewModel.debugDeliverControlAcknowledgement(
+            key: showKey,
+            state: .active,
+            sourcePeer: peer
+        )
+
+        let coveredAfterAcknowledgement = try XCTUnwrap(
+            viewModel.screenMediaViewerFence(for: fixture.lease)
+        )
+        XCTAssertTrue(coveredAfterAcknowledgement.forceCover)
+        XCTAssertEqual(
+            coveredAfterAcknowledgement.minimumAcceptedRTPTimestamp,
+            floor
+        )
+
+        viewModel.screenVideoFrameDidRender(
+            WebRTCVideoRenderObservation(
+                frameCount: 1,
+                timestampNanoseconds: 42,
+                width: 1_080,
+                height: 2_340,
+                contentDigest: 7,
+                contentSampleCount: 1,
+                contentChangeCount: 0
+            ),
+            for: fixture.lease
+        )
+
+        let revealedFence = try XCTUnwrap(
+            viewModel.screenMediaViewerFence(for: fixture.lease)
+        )
+        XCTAssertFalse(revealedFence.forceCover)
+        XCTAssertEqual(revealedFence.minimumAcceptedRTPTimestamp, floor)
+        XCTAssertNil(revealedFence.statusText)
+        viewModel.disconnect()
+        await peer.close()
+    }
+
+    @MainActor
+    func testFreshSuspensionCannotBeRevealedByPriorRecoveryFrame() async throws {
+        let viewModel = WorldwideSessionViewModel()
+        let peer = try makeScreenPeer()
+        let fixture = viewModel.debugInstallActiveScreenPresentationForTests(peer: peer)
+        viewModel.debugInstallForcedScreenMediaFenceForTests(
+            lease: fixture.lease,
+            minimumAcceptedRTPTimestamp: 9_200
+        )
+        let transport = ScreenVisibilityTransportProbe()
+        viewModel.debugInstallScreenVisibilityRequestSender(transport.send)
+
+        viewModel.debugMarkViewerTransportUncertainForAutomaticMicrophoneTests()
+        await viewModel.debugMarkViewerTransportHealthyForAutomaticMicrophoneTests()
+        await transport.waitForRequestCount(1)
+
+        let showKey = WorldwideScreenVisibilityRequestKey(
+            sessionGeneration: fixture.lease.sessionGeneration,
+            requestID: 1_201
+        )
+        await transport.resolveRequest(at: 0, with: .success(showKey.requestID))
+        await viewModel.debugWaitForPendingScreenVisibilityRequest(showKey)
+        _ = await viewModel.debugDeliverControlAcknowledgement(
+            key: showKey,
+            state: .active,
+            sourcePeer: peer
+        )
+        let recoveredFence = try XCTUnwrap(
+            viewModel.screenMediaViewerFence(for: fixture.lease)
+        )
+
+        viewModel.debugInstallForcedScreenMediaFenceForTests(
+            lease: fixture.lease,
+            minimumAcceptedRTPTimestamp: 9_300
+        )
+        let replacementFence = try XCTUnwrap(
+            viewModel.screenMediaViewerFence(for: fixture.lease)
+        )
+        XCTAssertNotEqual(replacementFence.coverID, recoveredFence.coverID)
+
+        viewModel.screenVideoFrameDidRender(
+            WebRTCVideoRenderObservation(
+                frameCount: 2,
+                timestampNanoseconds: 84,
+                width: 1_080,
+                height: 2_340,
+                contentDigest: 8,
+                contentSampleCount: 1,
+                contentChangeCount: 1
+            ),
+            for: fixture.lease
+        )
+
+        let retainedReplacementFence = try XCTUnwrap(
+            viewModel.screenMediaViewerFence(for: fixture.lease)
+        )
+        XCTAssertEqual(retainedReplacementFence.coverID, replacementFence.coverID)
+        XCTAssertTrue(retainedReplacementFence.forceCover)
+        XCTAssertEqual(
+            retainedReplacementFence.minimumAcceptedRTPTimestamp,
+            9_300
+        )
+        viewModel.disconnect()
+        await peer.close()
+    }
+
+    @MainActor
+    func testHealthyRecoveryAutomaticallyReissuesShowForRetainedLease() async throws {
+        let viewModel = WorldwideSessionViewModel()
+        let peer = try makeScreenPeer()
+        let fixture = viewModel.debugInstallActiveScreenPresentationForTests(peer: peer)
+        let transport = ScreenVisibilityTransportProbe()
+        viewModel.debugInstallScreenVisibilityRequestSender(transport.send)
+        viewModel.debugMarkViewerTransportUncertainForAutomaticMicrophoneTests()
+
+        await viewModel.debugMarkViewerTransportHealthyForAutomaticMicrophoneTests()
+        await transport.waitForRequestCount(1)
+        await viewModel.debugMarkViewerTransportHealthyForAutomaticMicrophoneTests()
+        for _ in 0..<4 { await Task.yield() }
+
+        XCTAssertEqual(transport.requests.count, 1)
+        XCTAssertTrue(transport.requests[0].isVisible)
+        XCTAssertEqual(transport.requests[0].lease, fixture.lease)
+        let showKey = WorldwideScreenVisibilityRequestKey(
+            sessionGeneration: fixture.lease.sessionGeneration,
+            requestID: 1_201
+        )
+        await transport.resolveRequest(at: 0, with: .success(showKey.requestID))
+        await viewModel.debugWaitForPendingScreenVisibilityRequest(showKey)
+        let authorization = await viewModel.debugDeliverControlAcknowledgement(
+            key: showKey,
+            state: .active,
+            inputCapability: WebRTCInputCapability(
+                inputSessionID: UUID(),
+                screenRequestID: showKey.requestID
+            ),
+            sourcePeer: peer
+        )
+        await Task.yield()
+
+        XCTAssertTrue(viewModel.screenPresentationIsVisible(fixture.lease))
+        XCTAssertTrue(viewModel.screenPresentationShouldRemainMounted(fixture.lease))
+        XCTAssertNil(viewModel.debugScreenPresentationState.recoveringLease)
+        XCTAssertEqual(viewModel.debugScreenPresentationState.activeLease, fixture.lease)
+        XCTAssertTrue(authorization?.isValid ?? false)
+        XCTAssertTrue(viewModel.remoteInputIsAvailable(for: fixture.lease))
+        XCTAssertEqual(transport.requests.count, 1)
+
+        viewModel.disconnect()
+        await peer.close()
+    }
+
+    @MainActor
+    func testRecoveryShowTimeoutHidesExactlyThenRetriesShow() async throws {
+        let viewModel = WorldwideSessionViewModel()
+        let peer = try makeScreenPeer()
+        let fixture = viewModel.debugInstallActiveScreenPresentationForTests(peer: peer)
+        let transport = ScreenVisibilityTransportProbe()
+        viewModel.debugInstallScreenVisibilityRequestSender(transport.send)
+        viewModel.debugMarkViewerTransportUncertainForAutomaticMicrophoneTests()
+        await viewModel.debugMarkViewerTransportHealthyForAutomaticMicrophoneTests()
+        await transport.waitForRequestCount(1)
+
+        let showKey = WorldwideScreenVisibilityRequestKey(
+            sessionGeneration: fixture.lease.sessionGeneration,
+            requestID: 1_201
+        )
+        await transport.resolveRequest(at: 0, with: .success(showKey.requestID))
+        await viewModel.debugWaitForPendingScreenVisibilityRequest(showKey)
+        viewModel.debugTriggerScreenVisibilityTimeout(key: showKey)
+        await transport.waitForRequestCount(2)
+
+        XCTAssertEqual(transport.requests.map(\.isVisible), [true, false])
+        XCTAssertEqual(transport.requests.map(\.lease), [fixture.lease, fixture.lease])
+        let hideKey = WorldwideScreenVisibilityRequestKey(
+            sessionGeneration: fixture.lease.sessionGeneration,
+            requestID: 1_202
+        )
+        await transport.resolveRequest(at: 1, with: .success(hideKey.requestID))
+        await viewModel.debugWaitForPendingScreenVisibilityRequest(hideKey)
+        await viewModel.debugDeliverControlAcknowledgement(
+            key: hideKey,
+            state: .inactive,
+            sourcePeer: peer
+        )
+        await transport.waitForRequestCount(3)
+
+        XCTAssertEqual(transport.requests.map(\.isVisible), [true, false, true])
+        let retryShowKey = WorldwideScreenVisibilityRequestKey(
+            sessionGeneration: fixture.lease.sessionGeneration,
+            requestID: 1_203
+        )
+        await transport.resolveRequest(at: 2, with: .success(retryShowKey.requestID))
+        await viewModel.debugWaitForPendingScreenVisibilityRequest(retryShowKey)
+        _ = await viewModel.debugDeliverControlAcknowledgement(
+            key: retryShowKey,
+            state: .active,
+            sourcePeer: peer
+        )
+
+        XCTAssertTrue(viewModel.screenPresentationShouldRemainMounted(fixture.lease))
+        XCTAssertTrue(viewModel.screenPresentationIsVisible(fixture.lease))
+        XCTAssertNil(viewModel.debugScreenPresentationState.recoveringLease)
+        XCTAssertTrue(viewModel.debugScreenPresentationState.remoteHideRequired)
+        viewModel.disconnect()
+        await peer.close()
+    }
+
+    @MainActor
+    func testRecoveryShowRetryExhaustionHidesExactlyThenRetiresViewer() async throws {
+        let viewModel = WorldwideSessionViewModel()
+        let peer = try makeScreenPeer()
+        let fixture = viewModel.debugInstallActiveScreenPresentationForTests(peer: peer)
+        let transport = ScreenVisibilityTransportProbe()
+        viewModel.debugInstallScreenVisibilityRequestSender(transport.send)
+        viewModel.debugMarkViewerTransportUncertainForAutomaticMicrophoneTests()
+        await viewModel.debugMarkViewerTransportHealthyForAutomaticMicrophoneTests()
+
+        for requestIndex in [0, 2] {
+            await transport.waitForRequestCount(requestIndex + 1)
+            let showKey = WorldwideScreenVisibilityRequestKey(
+                sessionGeneration: fixture.lease.sessionGeneration,
+                requestID: UInt64(1_201 + requestIndex)
+            )
+            await transport.resolveRequest(
+                at: requestIndex,
+                with: .success(showKey.requestID)
+            )
+            await viewModel.debugWaitForPendingScreenVisibilityRequest(showKey)
+            viewModel.debugTriggerScreenVisibilityTimeout(key: showKey)
+
+            await transport.waitForRequestCount(requestIndex + 2)
+            let hideKey = WorldwideScreenVisibilityRequestKey(
+                sessionGeneration: fixture.lease.sessionGeneration,
+                requestID: UInt64(1_202 + requestIndex)
+            )
+            await transport.resolveRequest(
+                at: requestIndex + 1,
+                with: .success(hideKey.requestID)
+            )
+            await viewModel.debugWaitForPendingScreenVisibilityRequest(hideKey)
+            await viewModel.debugDeliverControlAcknowledgement(
+                key: hideKey,
+                state: .inactive,
+                sourcePeer: peer
+            )
+        }
+        for _ in 0..<4 { await Task.yield() }
+
+        XCTAssertEqual(
+            transport.requests.map(\.isVisible),
+            [true, false, true, false]
+        )
+        XCTAssertFalse(viewModel.screenPresentationShouldRemainMounted(fixture.lease))
+        XCTAssertNil(viewModel.debugScreenPresentationState.currentLease)
+        XCTAssertNil(viewModel.debugScreenPresentationState.recoveringLease)
+        XCTAssertTrue(
+            PlayerView.shouldDismissWorldwideScreen(
+                canViewScreen: viewModel.canViewScreen,
+                presentationIsCurrent:
+                    viewModel.screenPresentationIsCurrent(fixture.lease),
+                shouldRemainMounted:
+                    viewModel.screenPresentationShouldRemainMounted(fixture.lease)
+            )
+        )
+        viewModel.disconnect()
+        await peer.close()
+    }
+
+    @MainActor
+    func testReplacementSessionCannotRestoreStaleRetainedLease() async throws {
+        let viewModel = WorldwideSessionViewModel()
+        let oldPeer = try makeScreenPeer()
+        let oldFixture = viewModel.debugInstallActiveScreenPresentationForTests(peer: oldPeer)
+        let transport = ScreenVisibilityTransportProbe()
+        viewModel.debugInstallScreenVisibilityRequestSender(transport.send)
+        viewModel.debugMarkViewerTransportUncertainForAutomaticMicrophoneTests()
+        XCTAssertTrue(viewModel.screenPresentationShouldRemainMounted(oldFixture.lease))
+
+        let replacementPeer = try makeScreenPeer()
+        viewModel.debugInstallScreenSessionForTests(
+            peer: replacementPeer,
+            generation: UUID()
+        )
+        await viewModel.debugMarkViewerTransportHealthyForAutomaticMicrophoneTests()
+        for _ in 0..<4 { await Task.yield() }
+
+        XCTAssertFalse(viewModel.screenPresentationShouldRemainMounted(oldFixture.lease))
+        XCTAssertNil(viewModel.debugScreenPresentationState.recoveringLease)
+        XCTAssertTrue(transport.requests.isEmpty)
+        viewModel.disconnect()
+        await oldPeer.close()
+        await replacementPeer.close()
+    }
+
+    @MainActor
+    func testTerminalFailureClearsRecoveringPresentation() async throws {
+        let viewModel = WorldwideSessionViewModel()
+        let peer = try makeScreenPeer()
+        let fixture = viewModel.debugInstallActiveScreenPresentationForTests(peer: peer)
+        viewModel.debugMarkViewerTransportUncertainForAutomaticMicrophoneTests()
+        XCTAssertTrue(viewModel.screenPresentationShouldRemainMounted(fixture.lease))
+
+        viewModel.debugFailSessionForTests("terminal")
+
+        XCTAssertFalse(viewModel.screenPresentationShouldRemainMounted(fixture.lease))
+        XCTAssertNil(viewModel.debugScreenPresentationState.currentLease)
+        XCTAssertNil(viewModel.debugScreenPresentationState.recoveringLease)
+        await peer.close()
+    }
+
+    @MainActor
+    func testBackgroundDuringRecoveryClearsRetentionAndPreventsAutomaticShow() async throws {
+        let viewModel = WorldwideSessionViewModel()
+        let peer = try makeScreenPeer()
+        let fixture = viewModel.debugInstallActiveScreenPresentationForTests(peer: peer)
+        let transport = ScreenVisibilityTransportProbe()
+        viewModel.debugInstallScreenVisibilityRequestSender(transport.send)
+        viewModel.handleAppBecameActive()
+        viewModel.debugMarkViewerTransportUncertainForAutomaticMicrophoneTests()
+        XCTAssertTrue(viewModel.screenPresentationShouldRemainMounted(fixture.lease))
+
+        viewModel.handleAppEnteredBackground()
+        await viewModel.debugMarkViewerTransportHealthyForAutomaticMicrophoneTests()
+        for _ in 0..<4 { await Task.yield() }
+
+        XCTAssertFalse(viewModel.screenPresentationShouldRemainMounted(fixture.lease))
+        XCTAssertNil(viewModel.debugScreenPresentationState.currentLease)
+        XCTAssertNil(viewModel.debugScreenPresentationState.recoveringLease)
+        XCTAssertTrue(transport.requests.isEmpty)
+        viewModel.disconnect()
+        await peer.close()
     }
 
     @MainActor
@@ -1724,7 +2176,7 @@ final class WorldwideSessionGenerationFenceTests: XCTestCase {
         )
         let renderer = ObservedVideoRenderer(
             downstream: SilentVideoRenderer(),
-            invalidatePresentation: { _ in },
+            invalidatePresentation: { _, _ in },
             publish: { _, _ in }
         )
         var fence = WebRTCVideoPresentationGenerationFence()
@@ -1791,6 +2243,19 @@ final class WorldwideSessionGenerationFenceTests: XCTestCase {
         XCTAssertEqual(cachedObservation, newObservation)
     }
 
+    func testNilNativeFrameDoesNotClearRetainedDrawable() {
+        let downstream = SilentVideoRenderer()
+        let renderer = ObservedVideoRenderer(
+            downstream: downstream,
+            invalidatePresentation: { _, _ in },
+            publish: { _, _ in }
+        )
+
+        renderer.renderFrame(nil)
+
+        XCTAssertEqual(downstream.renderedFrameCount, 0)
+    }
+
     func testNonzeroRotationFrameRevokesCachedTouchObservation() throws {
         let cachedObservation = WebRTCVideoRenderObservation(
             frameCount: 12,
@@ -1806,8 +2271,8 @@ final class WorldwideSessionGenerationFenceTests: XCTestCase {
         let downstream = OrderedVideoRenderer(orderingProbe: orderingProbe)
         let renderer = ObservedVideoRenderer(
             downstream: downstream,
-            invalidatePresentation: { generation in
-                orderingProbe.record(.invalidation(generation))
+            invalidatePresentation: { generation, invalidation in
+                orderingProbe.record(.invalidation(generation, invalidation))
                 observationCache.invalidate(generation: generation)
             },
             publish: { _, _ in
@@ -1844,7 +2309,10 @@ final class WorldwideSessionGenerationFenceTests: XCTestCase {
         renderer.renderFrame(frame)
 
         XCTAssertEqual(downstream.renderedFrameCount, 1)
-        XCTAssertEqual(orderingProbe.events, [.invalidation(2), .downstreamRender])
+        XCTAssertEqual(
+            orderingProbe.events,
+            [.invalidation(2, .invalidGeometry), .downstreamRender]
+        )
         XCTAssertEqual(observationCache.invalidatedGenerations, [2])
         XCTAssertEqual(observationCache.publicationCount, 0)
         XCTAssertNil(
@@ -2393,7 +2861,7 @@ private final class OrderedVideoRenderer: NSObject, LKRTCVideoRenderer {
 
 private final class VideoPresentationOrderingProbe: @unchecked Sendable {
     enum Event: Equatable {
-        case invalidation(UInt64)
+        case invalidation(UInt64, WebRTCVideoPresentationInvalidation)
         case downstreamRender
     }
 

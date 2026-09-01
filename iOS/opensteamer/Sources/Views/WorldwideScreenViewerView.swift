@@ -23,7 +23,7 @@ struct WorldwideScreenViewerView: View {
                 GeometryReader { geometry in
                     if keepsRemoteScreenRendererMounted {
                         WebRTCRemoteScreenView(
-                            track: viewModel.remoteVideoTrack,
+                            track: presentedRemoteVideoTrack,
                             forcePresentationCover:
                                 screenMediaFence?.forceCover == true,
                             forcePrivacyCover: requiresLocalPrivacyCover,
@@ -415,7 +415,11 @@ struct WorldwideScreenViewerView: View {
     }
 
     private var remoteVideoTrackIdentity: ObjectIdentifier? {
-        viewModel.remoteVideoTrack.map { ObjectIdentifier($0) }
+        presentedRemoteVideoTrack.map { ObjectIdentifier($0) }
+    }
+
+    private var presentedRemoteVideoTrack: WebRTCRemoteVideoTrack? {
+        viewModel.screenVideoTrack(for: lease)
     }
 
     static func renderedVideoSize(
@@ -435,7 +439,8 @@ struct WorldwideScreenViewerView: View {
     private var keepsRemoteScreenRendererMounted: Bool {
         Self.keepsScreenRendererMounted(
             allowsPresentation: allowsRemoteInputPresentation,
-            isScreenVisible: viewModel.screenPresentationIsVisible(lease)
+            isScreenVisible:
+                viewModel.screenPresentationShouldRemainMounted(lease)
         )
     }
 
@@ -443,7 +448,8 @@ struct WorldwideScreenViewerView: View {
         !Self.allowsScreenRendering(
             in: scenePhase,
             allowsPresentation: allowsRemoteInputPresentation,
-            isScreenVisible: viewModel.screenPresentationIsVisible(lease)
+            isScreenVisible:
+                viewModel.screenPresentationShouldRemainMounted(lease)
         )
     }
 

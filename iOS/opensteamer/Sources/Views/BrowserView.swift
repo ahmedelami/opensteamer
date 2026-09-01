@@ -622,11 +622,16 @@ struct BrowserView: View {
         }
 
         cancelWorldwidePreparation()
-        worldwideViewModel.beginFreshConnectionAttempt()
         let invitation = trimmedInvitationCode
         let generation = UUID()
         worldwidePreparationGeneration = generation
         worldwidePreparationTask = Task { @MainActor in
+            guard await admitWorldwidePreparation(generation: generation) else {
+                if worldwidePreparationGeneration == generation {
+                    worldwidePreparationTask = nil
+                }
+                return
+            }
             do {
                 let client = try await worldwideConnection.pairAndPrepareMediaSession(
                     invitationCode: invitation,
@@ -659,7 +664,6 @@ struct BrowserView: View {
         }
 
         cancelWorldwidePreparation()
-        worldwideViewModel.beginFreshConnectionAttempt()
         invitationCodeState.persistNow()
         let interruptedInvitation = trimmedInvitationCode
         let needsInterruptedRecovery =
@@ -668,6 +672,12 @@ struct BrowserView: View {
         let generation = UUID()
         worldwidePreparationGeneration = generation
         worldwidePreparationTask = Task { @MainActor in
+            guard await admitWorldwidePreparation(generation: generation) else {
+                if worldwidePreparationGeneration == generation {
+                    worldwidePreparationTask = nil
+                }
+                return
+            }
             do {
                 let client: RendezvousSignalingClient
                 if needsInterruptedRecovery {
@@ -701,6 +711,19 @@ struct BrowserView: View {
                 worldwidePreparationTask = nil
             }
         }
+    }
+
+    @MainActor
+    private func admitWorldwidePreparation(generation: UUID) async -> Bool {
+        guard await worldwideViewModel.admitFreshConnectionPreparation(),
+              !Task.isCancelled,
+              worldwidePreparationGeneration == generation else {
+            return false
+        }
+        worldwideViewModel.beginFreshConnectionAttempt()
+        return !worldwideViewModel.hasActiveSession
+            && worldwidePreparationGeneration == generation
+            && !Task.isCancelled
     }
 
     private func startPreparedWorldwideSession(

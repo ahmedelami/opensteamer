@@ -152,11 +152,30 @@ struct PlayerView: View {
                 showsMacScreen = false
             }
         }
-        .onChange(of: worldwideViewModel.canViewScreen) { _, canViewScreen in
-            if !canViewScreen, let lease = worldwideScreenLease {
+        .onChange(of: shouldDismissWorldwideScreen) { _, shouldDismiss in
+            if shouldDismiss, let lease = worldwideScreenLease {
                 dismissWorldwideScreen(lease)
             }
         }
+    }
+
+    private var shouldDismissWorldwideScreen: Bool {
+        guard let lease = worldwideScreenLease else { return false }
+        return Self.shouldDismissWorldwideScreen(
+            canViewScreen: worldwideViewModel.canViewScreen,
+            presentationIsCurrent:
+                worldwideViewModel.screenPresentationIsCurrent(lease),
+            shouldRemainMounted:
+                worldwideViewModel.screenPresentationShouldRemainMounted(lease)
+        )
+    }
+
+    static func shouldDismissWorldwideScreen(
+        canViewScreen: Bool,
+        presentationIsCurrent: Bool,
+        shouldRemainMounted: Bool
+    ) -> Bool {
+        !presentationIsCurrent || (!canViewScreen && !shouldRemainMounted)
     }
 
     private func dismissWorldwideScreen(_ lease: WorldwideScreenPresentationLease) {

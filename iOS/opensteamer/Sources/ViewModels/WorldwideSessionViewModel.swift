@@ -39,6 +39,28 @@ struct WorldwideScreenMediaViewerFence: Equatable, Sendable {
     let statusText: String?
 }
 
+/// Exact authority to reveal a privacy cover retained across one transport recovery. A later
+/// suspension on the same screen lease necessarily owns a different cover identity and must not
+/// be exposed by a delayed frame from the preceding recovery.
+private struct WorldwideScreenPresentationRecoveryRevealFence: Equatable {
+    let lease: WorldwideScreenPresentationLease
+    let coverID: UUID
+    let proofRequestRevision: UInt64
+
+    init(_ fence: WorldwideScreenMediaViewerFence) {
+        lease = fence.lease
+        coverID = fence.coverID
+        proofRequestRevision = fence.proofRequestRevision
+    }
+
+    func matches(_ fence: WorldwideScreenMediaViewerFence?) -> Bool {
+        guard let fence else { return false }
+        return fence.lease == lease
+            && fence.coverID == coverID
+            && fence.proofRequestRevision == proofRequestRevision
+    }
+}
+
 struct WorldwideScreenMediaPrimarySource: Equatable, Sendable {
     let receiverID: String
     let sourceID: UInt32
@@ -259,6 +281,7 @@ struct WorldwideScreenPresentationDebugState {
     let sessionGeneration: UUID
     let currentLease: WorldwideScreenPresentationLease?
     let activeLease: WorldwideScreenPresentationLease?
+    let recoveringLease: WorldwideScreenPresentationLease?
     let activeScreenRequestID: UInt64?
     let isScreenVisible: Bool
     let inputAvailable: Bool
@@ -616,6 +639,8 @@ final class WorldwideSessionViewModel: ObservableObject {
             advanceScreenLivenessGeneration(clearRenderObservation: true)
         }
     }
+    @Published private var recoveringScreenPresentationLease:
+        WorldwideScreenPresentationLease?
     @Published private(set) var remoteVideoTrack: WebRTCRemoteVideoTrack? {
         willSet {
             let currentIdentity = remoteVideoTrack.map { ObjectIdentifier($0) }
@@ -640,6 +665,10 @@ final class WorldwideSessionViewModel: ObservableObject {
         WorldwideScreenMediaViewerFence? {
         didSet {
             guard oldValue != screenMediaViewerFence else { return }
+            if let recoveryRevealFence = screenPresentationRevealAfterRecoveryFence,
+               !recoveryRevealFence.matches(screenMediaViewerFence) {
+                screenPresentationRevealAfterRecoveryFence = nil
+            }
             refreshScreenLivenessDiagnostic()
         }
     }
@@ -875,6 +904,10 @@ final class WorldwideSessionViewModel: ObservableObject {
     private var screenShowOperationByLeaseID: [UUID: UUID] = [:]
     private var screenVisibilityQueue: [QueuedScreenVisibilityOperation] = []
     private var screenVisibilityDrainTask: Task<Void, Never>?
+    private var screenPresentationRecoveryTask: Task<Void, Never>?
+    private var screenPresentationRecoveryAttemptID: UUID?
+    private var screenPresentationRevealAfterRecoveryFence:
+        WorldwideScreenPresentationRecoveryRevealFence?
     private var screenVisibilityQueueGeneration = UUID()
     private var acceptsActiveScreenAcknowledgement = false
     private var remoteHideRequired = false
@@ -1318,6 +1351,39 @@ final class WorldwideSessionViewModel: ObservableObject {
         guard !hasActiveSession else { return }
         resetPublishedSessionState()
         stateText = "Not connected"
+    }
+
+    /// Admits bootstrap/availability only after this process no longer owns media and the exact
+    /// preceding peer/signaling retirement has finished. This gate must run before availability
+    /// connects because the host may treat a new ready exchange as replacement authority.
+    func admitFreshConnectionPreparation() async -> Bool {
+        guard !hasActiveSession,
+              !isConnecting,
+              recoveringScreenPresentationLease == nil else {
+            return false
+        }
+
+        let expectedSessionGeneration = sessionGeneration
+        if let pendingRetirement = sessionRetirementTask {
+            let expectedRetirementGeneration = sessionRetirementGeneration
+            await pendingRetirement.value
+            guard !Task.isCancelled,
+                  sessionGeneration == expectedSessionGeneration,
+                  !hasActiveSession,
+                  !isConnecting,
+                  recoveringScreenPresentationLease == nil else {
+                return false
+            }
+            if sessionRetirementGeneration == expectedRetirementGeneration {
+                sessionRetirementTask = nil
+            }
+        }
+
+        return !Task.isCancelled
+            && sessionGeneration == expectedSessionGeneration
+            && !hasActiveSession
+            && !isConnecting
+            && recoveringScreenPresentationLease == nil
     }
 
     /// Keeps authenticated audio playout alive while independently closing the screen/input
@@ -2130,17 +2196,43 @@ final class WorldwideSessionViewModel: ObservableObject {
             && isScreenVisible
     }
 
+    func screenPresentationShouldRemainMounted(
+        _ lease: WorldwideScreenPresentationLease
+    ) -> Bool {
+        screenPresentationIsVisible(lease)
+            || (screenPresentationIsCurrent(lease)
+                && recoveringScreenPresentationLease == lease)
+    }
+
+    func screenVideoTrack(
+        for lease: WorldwideScreenPresentationLease
+    ) -> WebRTCRemoteVideoTrack? {
+        screenPresentationIsVisible(lease) ? remoteVideoTrack : nil
+    }
+
     func remoteInputIsAvailable(for lease: WorldwideScreenPresentationLease) -> Bool {
         screenPresentationIsVisible(lease) && isRemoteInputAvailable
     }
 
     func retireScreenPresentationLease(_ lease: WorldwideScreenPresentationLease) {
         guard currentScreenPresentationLease == lease else { return }
+        if recoveringScreenPresentationLease == lease {
+            recoveringScreenPresentationLease = nil
+            screenPresentationRecoveryTask?.cancel()
+            screenPresentationRecoveryTask = nil
+            screenPresentationRecoveryAttemptID = nil
+        }
+        if screenPresentationRevealAfterRecoveryFence?.lease == lease {
+            screenPresentationRevealAfterRecoveryFence = nil
+        }
         if screenMediaViewerAttempt?.lease == lease {
             cancelScreenMediaViewerSuspension(
                 reason: "The screen presentation lease was retired.",
                 notifyPeer: true
             )
+        }
+        if screenMediaViewerFence?.lease == lease {
+            screenMediaViewerFence = nil
         }
         revokeScreenPresentationLocally(for: lease, clearActiveOwnership: false)
         currentScreenPresentationLease = nil
@@ -2425,8 +2517,41 @@ final class WorldwideSessionViewModel: ObservableObject {
         for lease: WorldwideScreenPresentationLease
     ) {
         recordScreenVideoRenderObservation(observation, for: lease)
+        revealRecoveredScreenPresentationIfReady(for: lease)
         considerScreenMediaProofCandidate(observation, for: lease)
         validateScreenMediaSourceContinuity(for: lease)
+    }
+
+    /// A transport interruption may arrive while the negotiated bandwidth-suspension protocol has
+    /// an opaque privacy cover installed. Keep that cover through the fresh Show acknowledgement,
+    /// then remove it only when the replacement renderer binding presents its first current frame.
+    private func revealRecoveredScreenPresentationIfReady(
+        for lease: WorldwideScreenPresentationLease
+    ) {
+        guard let recoveryRevealFence = screenPresentationRevealAfterRecoveryFence,
+              recoveryRevealFence.lease == lease else { return }
+        // `WebRTCRemoteVideoView` publishes this callback only from its current, attached binding
+        // generation. Visibility therefore makes this the first admissible post-recovery frame;
+        // stale detached-renderer callbacks are rejected before they reach this boundary.
+        guard screenPresentationIsVisible(lease) else { return }
+        guard let currentFence = screenMediaViewerFence,
+              recoveryRevealFence.matches(currentFence),
+              currentFence.forceCover else {
+            screenPresentationRevealAfterRecoveryFence = nil
+            return
+        }
+        screenMediaViewerFence = WorldwideScreenMediaViewerFence(
+            lease: currentFence.lease,
+            coverID: currentFence.coverID,
+            forceCover: false,
+            minimumAcceptedRTPTimestamp:
+                currentFence.minimumAcceptedRTPTimestamp,
+            proofRTPTimestamps: [],
+            markerProof: nil,
+            proofRequestRevision: currentFence.proofRequestRevision,
+            statusText: nil
+        )
+        screenPresentationRevealAfterRecoveryFence = nil
     }
 
     func screenVideoMarkerFrameDidPresentForProof(
@@ -4518,7 +4643,6 @@ final class WorldwideSessionViewModel: ObservableObject {
                 iceIsConnected = true
                 await markViewerTransportHealthyIfPossible(state)
             case .disconnected, .failed:
-                iceIsConnected = false
                 markTransportUncertain("Recovering secure media")
                 await recoveryCoordinator?.iceStateChanged(state)
             case .closed:
@@ -4530,7 +4654,6 @@ final class WorldwideSessionViewModel: ObservableObject {
                     || isScreenVisible
                     || remoteInputCapability != nil
                 if crossedHealthyBoundary {
-                    iceIsConnected = false
                     markTransportUncertain("Recovering secure media")
                     await recoveryCoordinator?.iceStateChanged(.disconnected)
                 }
@@ -4540,14 +4663,17 @@ final class WorldwideSessionViewModel: ObservableObject {
             break
 
         case .dataChannelStateChanged(let state):
-            isControlChannelReady = state == .open
             if state == .open {
+                isControlChannelReady = true
                 await markViewerTransportHealthyIfPossible(.connected)
             } else if state == .closing || state == .closed {
                 // The Mac also stops capture on these states. A recovered channel therefore
                 // requires a fresh acknowledged Show instead of silently resuming video.
                 markTransportUncertain("Recovering secure media")
+                isControlChannelReady = false
                 await recoveryCoordinator?.iceStateChanged(.failed)
+            } else {
+                isControlChannelReady = false
             }
 
         case .controlRequestReceived:
@@ -4687,11 +4813,12 @@ final class WorldwideSessionViewModel: ObservableObject {
             let crossedHealthyBoundary = isPeerConnected
                 || isScreenVisible
                 || remoteInputCapability != nil
-            isPeerConnected = false
             if crossedHealthyBoundary {
                 markTransportUncertain("Recovering secure media")
+                isPeerConnected = false
                 await recoveryCoordinator?.iceStateChanged(.disconnected)
             } else {
+                isPeerConnected = false
                 stateText = "Connecting media"
             }
         case .connected:
@@ -4700,13 +4827,13 @@ final class WorldwideSessionViewModel: ObservableObject {
             await markViewerTransportHealthyIfPossible(.connected)
         case .disconnected:
             retireIOSHostedCallPlayoutAttempt()
-            isPeerConnected = false
             markTransportUncertain("Recovering secure media")
+            isPeerConnected = false
             await recoveryCoordinator?.iceStateChanged(.disconnected)
         case .failed:
             retireIOSHostedCallPlayoutAttempt()
-            isPeerConnected = false
             markTransportUncertain("Recovering secure media")
+            isPeerConnected = false
             await recoveryCoordinator?.iceStateChanged(.failed)
         case .closed:
             retireIOSHostedCallPlayoutAttempt()
@@ -7764,6 +7891,9 @@ final class WorldwideSessionViewModel: ObservableObject {
             remoteScreenOwnerLease = pending.lease
             activeScreenRequestID = pending.key.requestID
             isScreenVisible = true
+            if recoveringScreenPresentationLease == pending.lease {
+                recoveringScreenPresentationLease = nil
+            }
             acceptsActiveScreenAcknowledgement = false
             remoteHideRequired = true
             installRemoteInputCapability(
@@ -7903,7 +8033,10 @@ final class WorldwideSessionViewModel: ObservableObject {
         isPeerConnected = true
         isControlChannelReady = true
         isConnecting = false
-        resetScreenPresentationState(rotateQueueGeneration: true)
+        resetScreenPresentationState(
+            rotateQueueGeneration: true,
+            preservingRecoveryPresentation: true
+        )
         stateText = "Connected"
         // The authenticated, current-generation inactive acknowledgement is the recovery proof
         // that permits remote audio to leave the fail-closed mute gate.
@@ -7912,6 +8045,7 @@ final class WorldwideSessionViewModel: ObservableObject {
         establishAutomaticIPhoneMicrophoneIntentIfEligible()
         continueIPhoneMicrophoneEnablementIfPossible()
         await recoveryCoordinator?.iceStateChanged(.connected)
+        scheduleScreenPresentationRecoveryIfNeeded()
     }
 
     static func acknowledgementReachedVisibilityTarget(
@@ -8800,6 +8934,40 @@ final class WorldwideSessionViewModel: ObservableObject {
         debugScreenMediaCancellationObserver = observer
     }
 
+    func debugInstallCompletedScreenMediaFenceForTests(
+        lease: WorldwideScreenPresentationLease,
+        minimumAcceptedRTPTimestamp: UInt32
+    ) {
+        guard screenPresentationIsVisible(lease) else { return }
+        screenMediaViewerFence = WorldwideScreenMediaViewerFence(
+            lease: lease,
+            coverID: UUID(),
+            forceCover: false,
+            minimumAcceptedRTPTimestamp: minimumAcceptedRTPTimestamp,
+            proofRTPTimestamps: [],
+            markerProof: nil,
+            proofRequestRevision: 1,
+            statusText: nil
+        )
+    }
+
+    func debugInstallForcedScreenMediaFenceForTests(
+        lease: WorldwideScreenPresentationLease,
+        minimumAcceptedRTPTimestamp: UInt32
+    ) {
+        guard screenPresentationIsVisible(lease) else { return }
+        screenMediaViewerFence = WorldwideScreenMediaViewerFence(
+            lease: lease,
+            coverID: UUID(),
+            forceCover: true,
+            minimumAcceptedRTPTimestamp: minimumAcceptedRTPTimestamp,
+            proofRTPTimestamps: [],
+            markerProof: nil,
+            proofRequestRevision: 1,
+            statusText: "Screen paused for privacy"
+        )
+    }
+
     func debugInstallScreenLivenessUptimeClock(
         _ clock: @escaping @MainActor () -> UInt64
     ) {
@@ -8822,6 +8990,7 @@ final class WorldwideSessionViewModel: ObservableObject {
             sessionGeneration: sessionGeneration,
             currentLease: currentScreenPresentationLease,
             activeLease: activeScreenPresentationLease,
+            recoveringLease: recoveringScreenPresentationLease,
             activeScreenRequestID: activeScreenRequestID,
             isScreenVisible: isScreenVisible,
             inputAvailable: isRemoteInputAvailable,
@@ -9016,9 +9185,38 @@ final class WorldwideSessionViewModel: ObservableObject {
 
     private func resetScreenPresentationState(
         rotateQueueGeneration: Bool,
-        clearRequestHistory: Bool = false
+        clearRequestHistory: Bool = false,
+        preservingRecoveryPresentation: Bool = false
     ) {
-        retireScreenMediaViewerAttempt(preservingFence: false)
+        let recoveryLease: WorldwideScreenPresentationLease? = if
+            preservingRecoveryPresentation {
+            recoveringScreenPresentationLease
+                ?? {
+                    guard isScreenVisible,
+                          currentScreenPresentationLease
+                            == activeScreenPresentationLease else {
+                        return nil
+                    }
+                    return currentScreenPresentationLease
+                }()
+        } else {
+            nil
+        }
+        let recoveryRevealFence: WorldwideScreenPresentationRecoveryRevealFence? = if
+            let recoveryLease,
+            let screenMediaViewerFence,
+            screenMediaViewerFence.lease == recoveryLease,
+            screenMediaViewerFence.forceCover {
+            WorldwideScreenPresentationRecoveryRevealFence(screenMediaViewerFence)
+        } else {
+            nil
+        }
+        screenPresentationRecoveryTask?.cancel()
+        screenPresentationRecoveryTask = nil
+        screenPresentationRecoveryAttemptID = nil
+        recoveringScreenPresentationLease = nil
+        screenPresentationRevealAfterRecoveryFence = nil
+        retireScreenMediaViewerAttempt(preservingFence: recoveryLease != nil)
         activeScreenRequestID = nil
         controlAcknowledgementTimeoutTask?.cancel()
         controlAcknowledgementTimeoutTask = nil
@@ -9063,6 +9261,15 @@ final class WorldwideSessionViewModel: ObservableObject {
         debugCurrentScreenPresentationLease = nil
         debugActiveScreenPresentationLease = nil
         #endif
+        if let recoveryLease,
+           recoveryLease.sessionGeneration == sessionGeneration {
+            currentScreenPresentationLease = recoveryLease
+            recoveringScreenPresentationLease = recoveryLease
+            screenPresentationRevealAfterRecoveryFence = recoveryRevealFence
+            #if DEBUG
+            debugCurrentScreenPresentationLease = recoveryLease
+            #endif
+        }
         clearEarlyControlAcknowledgements()
         if clearRequestHistory {
             retiredScreenVisibilityRequestKeys.removeAll(keepingCapacity: false)
@@ -9092,6 +9299,80 @@ final class WorldwideSessionViewModel: ObservableObject {
         establishAutomaticIPhoneMicrophoneIntentIfEligible()
         continueIPhoneMicrophoneEnablementIfPossible()
         await recoveryCoordinator?.iceStateChanged(state)
+        scheduleScreenPresentationRecoveryIfNeeded()
+    }
+
+    private func scheduleScreenPresentationRecoveryIfNeeded() {
+        guard screenPresentationRecoveryTask == nil,
+              !recoveryProofRequired,
+              canViewScreen,
+              let recoveryLease = recoveringScreenPresentationLease,
+              screenPresentationIsCurrent(recoveryLease),
+              let expectedPeer = peer else {
+            return
+        }
+
+        let expectedGeneration = sessionGeneration
+        let attemptID = UUID()
+        screenPresentationRecoveryAttemptID = attemptID
+        stateText = "Restoring screen"
+        screenPresentationRecoveryTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer {
+                if self.screenPresentationRecoveryAttemptID == attemptID {
+                    self.screenPresentationRecoveryTask = nil
+                    self.screenPresentationRecoveryAttemptID = nil
+                }
+            }
+            let maximumShowAttempts = 2
+            for showAttempt in 1...maximumShowAttempts {
+                let restored = await self.setScreenVisible(true, for: recoveryLease)
+                guard self.screenPresentationRecoveryAttemptID == attemptID,
+                      self.sessionGeneration == expectedGeneration,
+                      self.peer === expectedPeer else {
+                    return
+                }
+                if restored {
+                    if self.recoveringScreenPresentationLease == recoveryLease {
+                        self.recoveringScreenPresentationLease = nil
+                    }
+                    return
+                }
+
+                guard self.canViewScreen,
+                      self.screenPresentationIsCurrent(recoveryLease),
+                      self.recoveringScreenPresentationLease == recoveryLease else {
+                    return
+                }
+                if self.screenPresentationNeedsRemoteHide(recoveryLease) {
+                    self.stateText = "Securing screen recovery"
+                    let hidden = await self.setScreenVisible(false, for: recoveryLease)
+                    guard self.screenPresentationRecoveryAttemptID == attemptID,
+                          self.sessionGeneration == expectedGeneration,
+                          self.peer === expectedPeer else {
+                        return
+                    }
+                    guard hidden else {
+                        if self.hasActiveSession {
+                            self.failSession(
+                                "The Mac may still be sharing its screen after recovery, so the session was closed for privacy.",
+                                generation: expectedGeneration
+                            )
+                        }
+                        return
+                    }
+                }
+
+                guard showAttempt < maximumShowAttempts else {
+                    self.lastError =
+                        "The Mac could not resume screen capture automatically."
+                    self.stateText = "Connected"
+                    self.retireScreenPresentationLease(recoveryLease)
+                    return
+                }
+                self.stateText = "Restoring screen"
+            }
+        }
     }
 
     private func recordViewerTransportHealthProof() {
@@ -9110,10 +9391,17 @@ final class WorldwideSessionViewModel: ObservableObject {
         _ state: String,
         requiresProof: Bool = false
     ) {
-        cancelScreenMediaViewerSuspension(
-            reason: "The secure media transport changed during screen resume.",
-            notifyPeer: true
-        )
+        if screenMediaViewerAttempt?.phase == .resumed {
+            // A completed resume may still carry an RTP freshness floor. Keep that non-covering
+            // fence with the retained drawable so transport recovery cannot reinstall black or
+            // admit packets older than the last proven presentation.
+            retireScreenMediaViewerAttempt(preservingFence: true)
+        } else {
+            cancelScreenMediaViewerSuspension(
+                reason: "The secure media transport changed during screen resume.",
+                notifyPeer: true
+            )
+        }
         transportAuthorizationGeneration = UUID()
         invalidateMacHostedCallEvidence(notifyLifecycle: false)
         retireIOSHostedCallPlayoutAttempt()
@@ -9135,7 +9423,10 @@ final class WorldwideSessionViewModel: ObservableObject {
         restartAnswerAwaitingSendEpoch = answerWasAwaitingSend
             ? recoveryProofEpoch
             : nil
-        resetScreenPresentationState(rotateQueueGeneration: true)
+        resetScreenPresentationState(
+            rotateQueueGeneration: true,
+            preservingRecoveryPresentation: true
+        )
         iceIsConnected = false
         stateText = state
     }
@@ -9268,6 +9559,17 @@ final class WorldwideSessionViewModel: ObservableObject {
     private func hideScreenForPassiveLifecycleIfNeeded() {
         guard let lease = currentScreenPresentationLease else {
             suspendRemoteInputPresentation()
+            return
+        }
+        if recoveringScreenPresentationLease == lease {
+            // Backgrounding is an explicit privacy boundary, not a recoverable transport gap.
+            // Retire the retained drawable and cancel any automatic Show before the app can
+            // become active again. If a Show already reached the transport, queue the matching
+            // fail-closed Hide first so capture cannot outlive the local presentation.
+            if screenPresentationNeedsRemoteHide(lease) {
+                _ = beginPassiveScreenTeardown(for: lease)
+            }
+            retireScreenPresentationLease(lease)
             return
         }
         guard screenPresentationNeedsRemoteHide(lease) else {
