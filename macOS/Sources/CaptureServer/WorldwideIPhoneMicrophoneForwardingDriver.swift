@@ -698,6 +698,7 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
         inboundMediaSampleSequence = Self.nextNonzero(
             inboundMediaSampleSequence
         )
+        let previousSample = latestInboundMediaSample
         let sample = InboundMediaSample(
             sequence: inboundMediaSampleSequence,
             peerGeneration: sourcePeerGeneration,
@@ -713,6 +714,12 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
               attempt.key.peerGeneration == sourcePeerGeneration,
               sample.trackGeneration == attempt.key.trackGeneration,
               sample.sequence > attempt.lastInboundMediaSampleSequence else {
+            if reviveSourceMediaStalledCandidateIfFresh(
+                previousSample: previousSample,
+                sample: sample
+            ) {
+                await drive(isolation: isolation)
+            }
             return
         }
 
@@ -1565,6 +1572,38 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
         history.mayRetry = false
         attemptHistory[key] = history
         redriveRequested = false
+    }
+
+    private func reviveSourceMediaStalledCandidateIfFresh(
+        previousSample: InboundMediaSample?,
+        sample: InboundMediaSample
+    ) -> Bool {
+        guard currentAttempt == nil,
+              lastFailureCategory == .sourceMediaStalled,
+              let candidate = currentCandidate(),
+              candidate.key.peerGeneration
+                == sample.peerGeneration,
+              candidate.key.trackGeneration
+                == sample.trackGeneration,
+              let previousSample,
+              previousSample.peerGeneration
+                == sample.peerGeneration,
+              previousSample.trackGeneration
+                == sample.trackGeneration,
+              sample.sequence > previousSample.sequence,
+              sample.watermark?.isContinuous(
+                from: previousSample.watermark
+              ) == true,
+              sample.watermark?.advances(
+                from: previousSample.watermark
+              ) == true else {
+            return false
+        }
+
+        attemptHistory.removeValue(forKey: candidate.key)
+        attemptedKeyOrder.removeAll { $0 == candidate.key }
+        redriveRequested = true
+        return true
     }
 
     private func disableCurrentTrack() {

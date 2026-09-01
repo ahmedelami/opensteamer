@@ -2418,6 +2418,7 @@ typedef struct ASLifecycleDiagnostics {
     BOOL _debugHasOutputRoute;
     BOOL _debugCaptureRouteIsBuiltInMicrophone;
     BOOL _debugFailNextHostedCallActivation;
+    BOOL _debugFailNextPeerRetirementTermination;
     BOOL _debugOwnsSessionActivation;
     NSUInteger _debugConfigurationOperationCount;
     BOOL _debugHasRecordedAudioPolicyConfiguration;
@@ -5411,6 +5412,7 @@ static OSStatus ASRemoteIOInput(
     _debugHasOutputRoute = NO;
     _debugCaptureRouteIsBuiltInMicrophone = NO;
     _debugFailNextHostedCallActivation = NO;
+    _debugFailNextPeerRetirementTermination = NO;
     _debugOwnsSessionActivation = NO;
     _debugConfigurationOperationCount = 0;
     _debugHasRecordedAudioPolicyConfiguration = NO;
@@ -6283,6 +6285,44 @@ static OSStatus ASRemoteIOInput(
                                           debugTopologyOverride:NO];
     }];
     return approved;
+}
+
+#if DEBUG
+- (void)debugFailNextPeerRetirementTerminationForTesting {
+    id<LKRTCAudioDeviceDelegate> delegate = self.delegate;
+    if (delegate == nil) {
+        _debugFailNextPeerRetirementTermination = YES;
+        return;
+    }
+    [delegate dispatchSync:^{
+        self->_debugFailNextPeerRetirementTermination = YES;
+    }];
+}
+#endif
+
+- (BOOL)terminateForPeerRetirement {
+    id<LKRTCAudioDeviceDelegate> delegate = self.delegate;
+    if (delegate == nil) {
+#if DEBUG
+        if (_debugFailNextPeerRetirementTermination) {
+            _debugFailNextPeerRetirementTermination = NO;
+            return NO;
+        }
+#endif
+        return !_initialized;
+    }
+
+    __block BOOL terminated = NO;
+    [delegate dispatchSync:^{
+        terminated = [self terminateDevice];
+#if DEBUG
+        if (self->_debugFailNextPeerRetirementTermination) {
+            self->_debugFailNextPeerRetirementTermination = NO;
+            terminated = NO;
+        }
+#endif
+    }];
+    return terminated;
 }
 
 - (BOOL)setMicrophoneAuthorization:

@@ -604,6 +604,10 @@ struct WorldwideIOSHostedCallPlayoutDebugProjection: Equatable {
 final class WorldwideSessionViewModel: ObservableObject {
     private static let macHostedCallChallengeAutomaticRetryDelay:
         Duration = .milliseconds(250)
+    private static let peerRetirementFailureMessage =
+        "The previous iPhone audio session could not be retired safely. Restart opensteamer before reconnecting."
+    private static let peerRetirementInProgressMessage =
+        "The previous iPhone audio session is still retiring. Try reconnecting in a moment."
     /// Never outrun the host's 60 Hz scroll budget during a sustained gesture.
     static let remoteScrollFlushInterval: Duration = .milliseconds(17)
 
@@ -758,7 +762,7 @@ final class WorldwideSessionViewModel: ObservableObject {
     /// Serializes process-global WebRTC audio ownership across peer replacement. A replacement
     /// session may be accepted immediately, but it cannot open the shared audio gate until every
     /// retiring peer has completed its terminal close.
-    private var sessionRetirementTask: Task<Void, Never>?
+    private var sessionRetirementTask: Task<Bool, Never>?
     private var sessionRetirementGeneration = UUID()
     private var peerEventTask: Task<Void, Never>?
     private var audioPlayoutProofTask: Task<Void, Never>?
@@ -1222,6 +1226,13 @@ final class WorldwideSessionViewModel: ObservableObject {
         beforeAudioActivation: @MainActor () -> Void = {}
     ) -> Bool {
         guard !isConnecting, !hasActiveSession else { return false }
+        if sessionRetirementTask == nil,
+           let retirementError = Self
+            .iOSPeerRetirementAdmissionErrorMessage() {
+            stateText = "Connection failed"
+            lastError = retirementError
+            return false
+        }
 
         // Validation is complete. Rotate every session-owned fence before lifecycle preparation so
         // a startup-connected-call authorization cannot bind to the retired media generation.
@@ -1258,24 +1269,60 @@ final class WorldwideSessionViewModel: ObservableObject {
         if let pendingRetirement = sessionRetirementTask {
             let retirementGeneration = sessionRetirementGeneration
             sessionTask = Task { @MainActor [weak self] in
-                await pendingRetirement.value
+                let retirementSucceeded = await pendingRetirement.value
                 guard let self,
                       !Task.isCancelled,
                       sessionGeneration == generation,
                       signaling != nil else { return }
+                guard retirementSucceeded else {
+                    failSession(
+                        Self.peerRetirementFailureMessage,
+                        generation: generation
+                    )
+                    return
+                }
                 if sessionRetirementGeneration == retirementGeneration {
                     sessionRetirementTask = nil
+                }
+                if let retirementError = Self
+                    .iOSPeerRetirementAdmissionErrorMessage() {
+                    failSession(
+                        retirementError,
+                        generation: generation
+                    )
+                    return
                 }
                 audioLifecycle.prepare(serverName: remoteDisplayName)
                 await runSession(client: client, generation: generation)
             }
         } else {
+            if let retirementError = Self
+                .iOSPeerRetirementAdmissionErrorMessage() {
+                failSession(
+                    retirementError,
+                    generation: generation
+                )
+                return true
+            }
             audioLifecycle.prepare(serverName: remoteDisplayName)
             sessionTask = Task { [weak self] in
                 await self?.runSession(client: client, generation: generation)
             }
         }
         return true
+    }
+
+    private static func iOSPeerRetirementAdmissionErrorMessage()
+        -> String? {
+        switch WebRTCPeer
+            .iOSAudioDeviceRetirementAdmissionState() {
+        case .available:
+            return nil
+        case .retirementInProgress:
+            return peerRetirementInProgressMessage
+        case .failed:
+            return peerRetirementFailureMessage
+        }
     }
 
     private func iOSPlayoutInputPolicyMatches(
@@ -1362,11 +1409,23 @@ final class WorldwideSessionViewModel: ObservableObject {
               recoveringScreenPresentationLease == nil else {
             return false
         }
+        if sessionRetirementTask == nil,
+           let retirementError = Self
+            .iOSPeerRetirementAdmissionErrorMessage() {
+            stateText = "Connection failed"
+            lastError = retirementError
+            return false
+        }
 
         let expectedSessionGeneration = sessionGeneration
         if let pendingRetirement = sessionRetirementTask {
             let expectedRetirementGeneration = sessionRetirementGeneration
-            await pendingRetirement.value
+            let retirementSucceeded = await pendingRetirement.value
+            guard retirementSucceeded else {
+                stateText = "Connection failed"
+                lastError = Self.peerRetirementFailureMessage
+                return false
+            }
             guard !Task.isCancelled,
                   sessionGeneration == expectedSessionGeneration,
                   !hasActiveSession,
@@ -1379,6 +1438,12 @@ final class WorldwideSessionViewModel: ObservableObject {
             }
         }
 
+        if let retirementError = Self
+            .iOSPeerRetirementAdmissionErrorMessage() {
+            stateText = "Connection failed"
+            lastError = retirementError
+            return false
+        }
         return !Task.isCancelled
             && sessionGeneration == expectedSessionGeneration
             && !hasActiveSession
@@ -5219,13 +5284,21 @@ final class WorldwideSessionViewModel: ObservableObject {
         nextICERestartRequestID = 1
 
         let retirementTask = Task { @MainActor in
-            await precedingRetirement?.value
+            let precedingRetirementSucceeded =
+                await precedingRetirement?.value ?? true
             #if DEBUG
             await beforeRetiredPeerClose?()
             #endif
-            await oldPeer?.close(reason: reason)
+            let peerRetirementSucceeded: Bool
+            if let oldPeer {
+                peerRetirementSucceeded = await oldPeer.close(reason: reason)
+            } else {
+                peerRetirementSucceeded = true
+            }
             await oldRecoveryCoordinator?.cancel()
             await oldSignaling?.close()
+            return precedingRetirementSucceeded
+                && peerRetirementSucceeded
         }
         sessionRetirementTask = retirementTask
     }

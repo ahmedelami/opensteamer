@@ -585,7 +585,15 @@ typedef NS_ENUM(NSInteger, ASIOSExpectedCategoryObservationTestScenario) {
                            recordingGeneration:(uint64_t)recordingGeneration
     NS_SWIFT_NAME(approveStagedMicrophoneAuthorization(_:recordingGeneration:));
 
+/// Synchronously retires this peer-owned ADM on its serialized WebRTC device queue. YES proves
+/// RemoteIO, authorization gates, AVAudioSession ownership, callbacks, and the delegate reached
+/// their terminal state. NO means native teardown or session deactivation failed and replacement
+/// audio ownership must remain barred.
+- (BOOL)terminateForPeerRetirement
+    NS_SWIFT_NAME(terminateForPeerRetirement());
+
 #if DEBUG
+- (void)debugFailNextPeerRetirementTerminationForTesting;
 - (void)debugInstallMicrophoneAuthorizationForTesting:
     (ASIOSMicrophoneAuthorization *_Nullable)authorization;
 - (BOOL)debugPublishCurrentMicrophoneAuthorizationForTesting;

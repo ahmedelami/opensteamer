@@ -66,8 +66,8 @@ public enum WebRTCDataChannelState: String, Codable, Sendable {
     case closed
 }
 
-/// Typed native boundary for a staged iPhone microphone request. Only the first six reasons are
-/// eligible for one bounded audio-recovery retry; lifecycle and authorization reasons remain
+/// Typed native boundary for a staged iPhone microphone request. Only the startup/recovery reasons
+/// are eligible for one bounded audio-recovery retry; lifecycle and authorization reasons remain
 /// fail-closed until their owning boundary changes.
 public enum WebRTCIOSMicrophoneStageFailureReason:
     String,
@@ -80,6 +80,8 @@ public enum WebRTCIOSMicrophoneStageFailureReason:
     case nativeRecoveryRequired
     case topologyRebuildFailed
     case topologyStillNotStaged
+    case captureDeliveryDidNotStart
+    case outboundRTPDidNotStart
     case hostedCall
     case interrupted
     case explicitResumeRequired
@@ -95,7 +97,9 @@ public enum WebRTCIOSMicrophoneStageFailureReason:
              .playoutNotReady,
              .nativeRecoveryRequired,
              .topologyRebuildFailed,
-             .topologyStillNotStaged:
+             .topologyStillNotStaged,
+             .captureDeliveryDidNotStart,
+             .outboundRTPDidNotStart:
             true
         case .hostedCall,
              .interrupted,
@@ -118,6 +122,8 @@ public enum WebRTCIOSMicrophoneStageFailureReason:
              .nativeRecoveryRequired,
              .topologyRebuildFailed,
              .topologyStillNotStaged,
+             .captureDeliveryDidNotStart,
+             .outboundRTPDidNotStart,
              .authorizationInvalid,
              .recordingGenerationBindFailed,
              .deviceUnavailable,

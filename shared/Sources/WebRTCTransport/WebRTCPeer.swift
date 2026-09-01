@@ -8,6 +8,180 @@ import IOSWebRTCAudioDeviceShim
 import Foundation
 import RemoteSessionCore
 
+#if os(iOS)
+public enum WebRTCIOSAudioDeviceRetirementAdmissionState:
+    Equatable,
+    Sendable
+{
+    case available
+    case retirementInProgress
+    case failed
+}
+
+private final class WebRTCIOSAudioDeviceRetirementHandle:
+    @unchecked Sendable
+{
+    private final class ProcessState: @unchecked Sendable {
+        private let lock = NSLock()
+        private var retirementFailureIsLatched = false
+        private var retirementInProgressCount = 0
+        #if DEBUG
+        private var retirementAttemptCount: UInt64 = 0
+        private var retirementFailureCount: UInt64 = 0
+        #endif
+
+        func makeDeviceAndHandle() throws -> (
+            device: ASIOSStereoPlayoutAudioDevice,
+            handle: WebRTCIOSAudioDeviceRetirementHandle
+        ) {
+            try lock.withLock {
+                switch admissionStateLocked() {
+                case .available:
+                    break
+                case .retirementInProgress:
+                    throw WebRTCTransportError.nativeFailure(
+                        WebRTCIOSAudioDeviceRetirementHandle
+                            .processRetirementInProgressMessage
+                    )
+                case .failed:
+                    throw WebRTCTransportError.nativeFailure(
+                        WebRTCIOSAudioDeviceRetirementHandle
+                            .processRetirementFailureMessage
+                    )
+                }
+                let device = ASIOSStereoPlayoutAudioDevice()
+                return (
+                    device,
+                    WebRTCIOSAudioDeviceRetirementHandle(device: device)
+                )
+            }
+        }
+
+        func freshConnectionPreparationState()
+            -> WebRTCIOSAudioDeviceRetirementAdmissionState {
+            lock.withLock {
+                admissionStateLocked()
+            }
+        }
+
+        private func admissionStateLocked()
+            -> WebRTCIOSAudioDeviceRetirementAdmissionState {
+            if retirementFailureIsLatched {
+                return .failed
+            }
+            if retirementInProgressCount > 0 {
+                return .retirementInProgress
+            }
+            return .available
+        }
+
+        func retire(
+            _ operation: () -> Bool
+        ) -> Bool {
+            lock.withLock {
+                retirementInProgressCount += 1
+            }
+            let succeeded = operation()
+            return lock.withLock {
+                retirementInProgressCount -= 1
+                #if DEBUG
+                retirementAttemptCount &+= 1
+                if !succeeded {
+                    retirementFailureCount &+= 1
+                }
+                #endif
+                if !succeeded {
+                    retirementFailureIsLatched = true
+                }
+                return succeeded
+            }
+        }
+
+        #if DEBUG
+        func debugSnapshot()
+            -> WebRTCIOSPeerRetirementDebugSnapshot {
+            lock.withLock {
+                WebRTCIOSPeerRetirementDebugSnapshot(
+                    retirementAttemptCount: retirementAttemptCount,
+                    retirementFailureCount: retirementFailureCount,
+                    processFailureIsLatched:
+                        retirementFailureIsLatched
+                )
+            }
+        }
+
+        func debugResetFailureLatch() {
+            lock.withLock {
+                retirementFailureIsLatched = false
+            }
+        }
+        #endif
+    }
+
+    fileprivate static let processRetirementFailureMessage =
+        "A previous iPhone WebRTC audio device could not be retired safely. Restart opensteamer before reconnecting."
+    fileprivate static let processRetirementInProgressMessage =
+        "The previous iPhone WebRTC audio device is still retiring. Try reconnecting in a moment."
+    private static let processState = ProcessState()
+
+    private let device: ASIOSStereoPlayoutAudioDevice
+    private let lock = NSLock()
+    private var retirementResult: Bool?
+
+    private init(device: ASIOSStereoPlayoutAudioDevice) {
+        self.device = device
+    }
+
+    static func makeDeviceAndHandle() throws -> (
+        device: ASIOSStereoPlayoutAudioDevice,
+        handle: WebRTCIOSAudioDeviceRetirementHandle
+    ) {
+        try processState.makeDeviceAndHandle()
+    }
+
+    static func freshConnectionPreparationState()
+        -> WebRTCIOSAudioDeviceRetirementAdmissionState {
+        processState.freshConnectionPreparationState()
+    }
+
+    func retire() -> Bool {
+        lock.withLock {
+            if let retirementResult {
+                return retirementResult
+            }
+            let result = Self.processState.retire {
+                device.terminateForPeerRetirement()
+            }
+            retirementResult = result
+            return result
+        }
+    }
+
+    deinit {
+        _ = retire()
+    }
+
+    #if DEBUG
+    static func debugSnapshot()
+        -> WebRTCIOSPeerRetirementDebugSnapshot {
+        processState.debugSnapshot()
+    }
+
+    static func debugResetFailureLatch() {
+        processState.debugResetFailureLatch()
+    }
+    #endif
+}
+
+#if DEBUG
+struct WebRTCIOSPeerRetirementDebugSnapshot: Equatable, Sendable {
+    let retirementAttemptCount: UInt64
+    let retirementFailureCount: UInt64
+    let processFailureIsLatched: Bool
+}
+#endif
+#endif
+
 /// The non-sensitive portion of an input request needed after its one network delivery.
 ///
 /// Do not add the action or encoded request here: committed text may contain credentials.
@@ -204,6 +378,13 @@ private struct WebRTCIPhoneMicrophoneSenderBinding {
     let localTrack: LKRTCAudioTrack
 }
 
+#if DEBUG && os(macOS)
+private struct WebRTCIPhoneMicrophoneOutboundRTPDebugCapture {
+    let sender: LKRTCRtpSender
+    let identity: WebRTCIPhoneMicrophoneOutboundRTPIdentity
+}
+#endif
+
 struct WebRTCIPhoneMicrophoneSenderStatisticsValidation: Equatable {
     let peerEpoch: UUID
     let bindingGeneration: UInt64
@@ -229,6 +410,161 @@ struct WebRTCIPhoneMicrophoneSenderStatisticsSamplingResult: Equatable {
     let statistics: WebRTCIPhoneMicrophoneSenderStatistics?
     let baseline: WebRTCIPhoneMicrophoneSenderStatisticsBaseline
     let requiresAdvancingEvidence: Bool
+}
+
+struct WebRTCIPhoneMicrophoneNativeDeliveryProgress: Equatable {
+    let realtimeAdmissionCount: UInt64
+    let deliveryCallbackCount: UInt64
+    let deliveredFrameCount: UInt64
+}
+
+enum WebRTCIPhoneMicrophoneNativeDeliveryProgressResult:
+    Equatable {
+    case waiting
+    case satisfied
+    case regressed
+}
+
+struct WebRTCIPhoneMicrophoneNativeDeliveryProgressTracker {
+    private let baseline:
+        WebRTCIPhoneMicrophoneNativeDeliveryProgress
+    private var firstAdvancingSample:
+        WebRTCIPhoneMicrophoneNativeDeliveryProgress?
+
+    init(
+        baseline: WebRTCIPhoneMicrophoneNativeDeliveryProgress
+    ) {
+        self.baseline = baseline
+    }
+
+    mutating func observe(
+        _ sample: WebRTCIPhoneMicrophoneNativeDeliveryProgress
+    ) -> WebRTCIPhoneMicrophoneNativeDeliveryProgressResult {
+        guard !Self.regressed(previous: baseline, current: sample) else {
+            firstAdvancingSample = nil
+            return .regressed
+        }
+        guard Self.advances(previous: baseline, current: sample) else {
+            firstAdvancingSample = nil
+            return .waiting
+        }
+        guard let firstAdvancingSample else {
+            self.firstAdvancingSample = sample
+            return .waiting
+        }
+        guard !Self.regressed(
+            previous: firstAdvancingSample,
+            current: sample
+        ) else {
+            self.firstAdvancingSample = nil
+            return .regressed
+        }
+        guard Self.advances(
+            previous: firstAdvancingSample,
+            current: sample
+        ) else {
+            return .waiting
+        }
+        return .satisfied
+    }
+
+    private static func advances(
+        previous: WebRTCIPhoneMicrophoneNativeDeliveryProgress,
+        current: WebRTCIPhoneMicrophoneNativeDeliveryProgress
+    ) -> Bool {
+        current.realtimeAdmissionCount
+                > previous.realtimeAdmissionCount
+            && current.deliveryCallbackCount
+                > previous.deliveryCallbackCount
+            && current.deliveredFrameCount
+                > previous.deliveredFrameCount
+    }
+
+    private static func regressed(
+        previous: WebRTCIPhoneMicrophoneNativeDeliveryProgress,
+        current: WebRTCIPhoneMicrophoneNativeDeliveryProgress
+    ) -> Bool {
+        current.realtimeAdmissionCount
+                < previous.realtimeAdmissionCount
+            || current.deliveryCallbackCount
+                < previous.deliveryCallbackCount
+            || current.deliveredFrameCount
+                < previous.deliveredFrameCount
+    }
+}
+
+struct WebRTCIPhoneMicrophoneOutboundRTPIdentity: Equatable {
+    let peerEpoch: UUID
+    let bindingGeneration: UInt64
+    let negotiationEpoch: UInt64
+    let trackGeneration: UInt64
+    let senderID: String
+    let localTrackID: String
+    let mid: String
+}
+
+struct WebRTCIPhoneMicrophoneOutboundRTPProgress: Equatable {
+    let identity: WebRTCIPhoneMicrophoneOutboundRTPIdentity
+    let outboundRTPRecordIDs: [String]
+    let packetsSent: UInt64
+    let bytesSent: UInt64
+}
+
+struct WebRTCIPhoneMicrophoneOutboundRTPAdvancement: Equatable {
+    let baseline: WebRTCIPhoneMicrophoneOutboundRTPProgress
+    let current: WebRTCIPhoneMicrophoneOutboundRTPProgress
+}
+
+enum WebRTCIPhoneMicrophoneOutboundRTPProgressResult: Equatable {
+    case waiting
+    case satisfied(WebRTCIPhoneMicrophoneOutboundRTPAdvancement)
+    case invalidated
+}
+
+/// Requires one exact-sender baseline and a later report where both the RTP packet and byte
+/// counters advance. A replacement peer, sender, encoding record, or regressed counter cannot
+/// satisfy a prior attempt; its owner must begin a fresh bounded admission instead.
+struct WebRTCIPhoneMicrophoneOutboundRTPProgressTracker {
+    private var baseline:
+        WebRTCIPhoneMicrophoneOutboundRTPProgress?
+
+    mutating func observe(
+        _ sample: WebRTCIPhoneMicrophoneOutboundRTPProgress
+    ) -> WebRTCIPhoneMicrophoneOutboundRTPProgressResult {
+        guard !sample.identity.senderID.isEmpty,
+              !sample.identity.localTrackID.isEmpty,
+              !sample.identity.mid.isEmpty,
+              !sample.outboundRTPRecordIDs.isEmpty,
+              sample.outboundRTPRecordIDs.allSatisfy({ !$0.isEmpty }),
+              Set(sample.outboundRTPRecordIDs).count
+                == sample.outboundRTPRecordIDs.count,
+              sample.bytesSent >= sample.packetsSent else {
+            return .invalidated
+        }
+
+        guard let baseline else {
+            self.baseline = sample
+            return .waiting
+        }
+        guard sample.identity == baseline.identity,
+              sample.outboundRTPRecordIDs
+                == baseline.outboundRTPRecordIDs,
+              sample.packetsSent >= baseline.packetsSent,
+              sample.bytesSent >= baseline.bytesSent else {
+            self.baseline = nil
+            return .invalidated
+        }
+        guard sample.packetsSent > baseline.packetsSent,
+              sample.bytesSent > baseline.bytesSent else {
+            return .waiting
+        }
+        return .satisfied(
+            WebRTCIPhoneMicrophoneOutboundRTPAdvancement(
+                baseline: baseline,
+                current: sample
+            )
+        )
+    }
 }
 
 enum WebRTCIPhoneMicrophoneSenderStatisticsSampler {
@@ -2194,6 +2530,8 @@ public actor WebRTCPeer {
     #endif
     #if os(iOS)
     private let iOSStereoPlayoutAudioDevice: ASIOSStereoPlayoutAudioDevice?
+    private nonisolated let iOSAudioDeviceRetirementHandle:
+        WebRTCIOSAudioDeviceRetirementHandle?
     private let iPhoneMicrophoneTerminalCleanupOwnerEpoch = UUID()
     private var iPhoneMicrophoneTerminalCleanupHasStarted = false
     private var activeIPhoneMicrophoneAuthorization: WebRTCIOSMicrophoneAuthorization?
@@ -2351,6 +2689,16 @@ public actor WebRTCPeer {
 
     /// Builds the native factory, role-appropriate audio device, media tracks, and control lane.
     public init(configuration: WebRTCTransportConfiguration) throws {
+        #if os(iOS)
+        var constructionRetirementHandle:
+            WebRTCIOSAudioDeviceRetirementHandle? = nil
+        var constructionCompleted = false
+        defer {
+            if !constructionCompleted {
+                _ = constructionRetirementHandle?.retire()
+            }
+        }
+        #endif
         guard WebRTCRuntime.isInitialized else {
             throw WebRTCTransportError.nativeFailure("WebRTC SSL initialization failed.")
         }
@@ -2471,9 +2819,15 @@ public actor WebRTCPeer {
         }
         #elseif os(iOS)
         let stereoPlayoutDevice: ASIOSStereoPlayoutAudioDevice?
+        let audioDeviceRetirementHandle:
+            WebRTCIOSAudioDeviceRetirementHandle?
         if configuration.role == .viewer {
-            let device = ASIOSStereoPlayoutAudioDevice()
+            let ownedDevice = try WebRTCIOSAudioDeviceRetirementHandle
+                .makeDeviceAndHandle()
+            constructionRetirementHandle = ownedDevice.handle
+            let device = ownedDevice.device
             stereoPlayoutDevice = device
+            audioDeviceRetirementHandle = ownedDevice.handle
             nativeFactory = LKRTCPeerConnectionFactory(
                 encoderFactory: encoderFactory,
                 decoderFactory: decoderFactory,
@@ -2481,6 +2835,7 @@ public actor WebRTCPeer {
             )
         } else {
             stereoPlayoutDevice = nil
+            audioDeviceRetirementHandle = nil
             nativeFactory = LKRTCPeerConnectionFactory(
                 audioDeviceModuleType: .audioEngine,
                 bypassVoiceProcessing: true,
@@ -2490,6 +2845,8 @@ public actor WebRTCPeer {
             )
         }
         iOSStereoPlayoutAudioDevice = stereoPlayoutDevice
+        iOSAudioDeviceRetirementHandle =
+            audioDeviceRetirementHandle
         #else
         nativeFactory = LKRTCPeerConnectionFactory(
             audioDeviceModuleType: .audioEngine,
@@ -2755,6 +3112,9 @@ public actor WebRTCPeer {
                 "The screen-video encoder event bridge was already installed."
             )
         }
+        #if os(iOS)
+        constructionCompleted = true
+        #endif
     }
 
     deinit {
@@ -2766,6 +3126,9 @@ public actor WebRTCPeer {
         screenClientDiagnosticsEventContinuation.finish()
         delegateProxy.close()
         peerConnection.close()
+        #if os(iOS)
+        _ = iOSAudioDeviceRetirementHandle?.retire()
+        #endif
         eventContinuation.finish()
     }
 
@@ -3491,6 +3854,191 @@ public actor WebRTCPeer {
         return macStereoAudioDevice.pullHeadlessPlayoutFrames(UInt(frameCount))
     }
 
+    /// Delivers one real custom-ADM input callback so loopback tests exercise libwebrtc's actual
+    /// encoder and sender statistics instead of substituting synthetic counter values.
+    func deliverHeadlessMacIPhoneMicrophoneFramesForTesting(
+        _ interleavedStereoSamples: [Int16],
+        frameCount: Int
+    ) -> Bool {
+        guard role == .viewer,
+              frameCount > 0,
+              interleavedStereoSamples.count == frameCount * 2,
+              let macStereoAudioDevice else {
+            return false
+        }
+        return interleavedStereoSamples.withUnsafeBufferPointer {
+            guard let baseAddress = $0.baseAddress else { return false }
+            return macStereoAudioDevice.deliverInterleavedStereoInt16(
+                baseAddress,
+                frameCount: UInt(frameCount)
+            )
+        }
+    }
+
+    private func currentHeadlessMacIPhoneMicrophoneOutboundRTPCapture()
+        -> WebRTCIPhoneMicrophoneOutboundRTPDebugCapture? {
+        guard role == .viewer,
+              !isClosed,
+              localIPhoneMicrophoneTrack?.isEnabled == true,
+              rawIPhoneMicrophoneProcessingIsLive(),
+              let binding = iPhoneMicrophoneSenderBinding,
+              binding.negotiationEpoch == negotiationEpoch,
+              iPhoneMicrophoneSenderOwnsLocalTrack(
+                expectedNegotiationEpoch: negotiationEpoch
+              ),
+              let transceiver =
+                currentIPhoneMicrophoneSenderTransceiver(
+                    for: binding
+                ) else {
+            return nil
+        }
+        let sender = transceiver.sender
+        guard (sender.senderId as String) == binding.senderID else {
+            return nil
+        }
+        return WebRTCIPhoneMicrophoneOutboundRTPDebugCapture(
+            sender: sender,
+            identity: WebRTCIPhoneMicrophoneOutboundRTPIdentity(
+                peerEpoch: iPhoneMicrophonePeerEpoch,
+                bindingGeneration: binding.generation,
+                negotiationEpoch: binding.negotiationEpoch,
+                trackGeneration: binding.trackGeneration,
+                senderID: binding.senderID,
+                localTrackID: binding.localTrackID,
+                mid: binding.mid
+            )
+        )
+    }
+
+    private func sampleHeadlessMacIPhoneMicrophoneOutboundRTPProgress(
+        callbackTimeout: Duration
+    ) async -> WebRTCIPhoneMicrophoneOutboundRTPProgress? {
+        guard callbackTimeout > .zero,
+              let captured =
+                currentHeadlessMacIPhoneMicrophoneOutboundRTPCapture() else {
+            return nil
+        }
+        let reportCapture: WebRTCIPhoneMicrophoneSenderStatisticsReportCapture? =
+            await withCheckedContinuation { continuation in
+                let resolver = WebRTCOneShotContinuation(
+                    continuation
+                )
+                peerConnection.statistics(for: captured.sender) { report in
+                    resolver.resolve(
+                        WebRTCIPhoneMicrophoneSenderStatisticsReportCapture(
+                            parsed:
+                                WebRTCStatisticsParser
+                                    .parseIPhoneMicrophoneSender(
+                                        report,
+                                        expectedSenderID:
+                                            captured.identity.senderID,
+                                        expectedTrackID:
+                                            captured.identity.localTrackID,
+                                        expectedMID:
+                                            captured.identity.mid
+                                    ),
+                            callbackCompletedAt: Date()
+                        )
+                    )
+                }
+                Task.detached {
+                    try? await Task.sleep(for: callbackTimeout)
+                    resolver.resolve(nil)
+                }
+            }
+        guard let parsed = reportCapture?.parsed,
+              let current =
+                currentHeadlessMacIPhoneMicrophoneOutboundRTPCapture(),
+              current.identity == captured.identity,
+              !parsed.outboundRTPRecordIDs.isEmpty,
+              parsed.outboundRTPRecordIDs.allSatisfy({ !$0.isEmpty }),
+              Set(parsed.outboundRTPRecordIDs).count
+                == parsed.outboundRTPRecordIDs.count,
+              parsed.packetsSent <= UInt64(Int64.max),
+              parsed.bytesSent <= UInt64(Int64.max),
+              parsed.bytesSent >= parsed.packetsSent else {
+            return nil
+        }
+        return WebRTCIPhoneMicrophoneOutboundRTPProgress(
+            identity: current.identity,
+            outboundRTPRecordIDs:
+                parsed.outboundRTPRecordIDs.sorted(),
+            packetsSent: parsed.packetsSent,
+            bytesSent: parsed.bytesSent
+        )
+    }
+
+    /// Runs the same exact-identity packet/byte advancement proof used by iOS production
+    /// admission, but against the hardware-independent Mac custom ADM and genuine loopback RTP.
+    func awaitHeadlessMacIPhoneMicrophoneOutboundRTPForTesting(
+        timeout: Duration,
+        callbackTimeout: Duration = .milliseconds(200)
+    ) async throws -> WebRTCIPhoneMicrophoneOutboundRTPAdvancement {
+        try ensureOpen()
+        guard role == .viewer,
+              timeout > .zero,
+              callbackTimeout > .zero else {
+            throw WebRTCTransportError.invalidRole
+        }
+        let expectedNegotiationEpoch = negotiationEpoch
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        var tracker =
+            WebRTCIPhoneMicrophoneOutboundRTPProgressTracker()
+        do {
+            while true {
+                try Task.checkCancellation()
+                guard !isClosed,
+                      negotiationEpoch == expectedNegotiationEpoch,
+                      localIPhoneMicrophoneTrack?.isEnabled == true,
+                      rawIPhoneMicrophoneProcessingIsLive(),
+                      iPhoneMicrophoneSenderOwnsLocalTrack(
+                        expectedNegotiationEpoch:
+                            expectedNegotiationEpoch
+                      ) else {
+                    throw WebRTCTransportError.transportNotHealthy
+                }
+                let sample =
+                    await sampleHeadlessMacIPhoneMicrophoneOutboundRTPProgress(
+                        callbackTimeout: callbackTimeout
+                    )
+                guard !isClosed,
+                      negotiationEpoch == expectedNegotiationEpoch,
+                      localIPhoneMicrophoneTrack?.isEnabled == true,
+                      rawIPhoneMicrophoneProcessingIsLive(),
+                      iPhoneMicrophoneSenderOwnsLocalTrack(
+                        expectedNegotiationEpoch:
+                            expectedNegotiationEpoch
+                      ) else {
+                    throw WebRTCTransportError.transportNotHealthy
+                }
+                if let sample {
+                    switch tracker.observe(sample) {
+                    case .satisfied(let advancement):
+                        return advancement
+                    case .invalidated:
+                        throw WebRTCTransportError.transportNotHealthy
+                    case .waiting:
+                        break
+                    }
+                }
+                guard clock.now < deadline else {
+                    throw WebRTCTransportError
+                        .iPhoneMicrophoneStageFailed(
+                            reason: .outboundRTPDidNotStart,
+                            message:
+                                "The headless exact microphone sender did not advance outbound RTP before its bounded test deadline."
+                        )
+                }
+                try await Task.sleep(for: .milliseconds(25))
+            }
+        } catch {
+            localIPhoneMicrophoneTrack?.isEnabled = false
+            macStereoAudioDevice?.revokeRecordingAdmission()
+            throw error
+        }
+    }
+
     var iPhoneMicrophoneReceiverIDForTesting: String? {
         role == .host ? iPhoneMicrophoneReceiverID : nil
     }
@@ -3609,6 +4157,10 @@ public actor WebRTCPeer {
 
     var isClosedForTesting: Bool {
         isClosed
+    }
+
+    var isTransportHealthyForMediaForTesting: Bool {
+        isTransportHealthyForMedia()
     }
 
     var isSystemAudioEnabledForTesting: Bool {
@@ -4848,6 +5400,38 @@ public actor WebRTCPeer {
                   ) else {
                 throw WebRTCTransportError.transportNotHealthy
             }
+
+            try await awaitApprovedIPhoneMicrophoneDelivery(
+                authorization: authorization,
+                recordingGeneration: recordingGeneration,
+                policyGeneration: policyGeneration,
+                expectedNegotiationEpoch:
+                    admissionNegotiationEpoch,
+                requiresHealthyTransport:
+                    requiresHealthyTransport,
+                baseline:
+                    WebRTCIPhoneMicrophoneNativeDeliveryProgress(
+                        realtimeAdmissionCount:
+                            stagedDiagnostics
+                                .microphoneRealtimeAdmissionCount,
+                        deliveryCallbackCount:
+                            stagedDiagnostics
+                                .microphoneDeliveryCallbackCount,
+                        deliveredFrameCount:
+                            stagedDiagnostics
+                                .microphoneDeliveredFrameCount
+                    )
+            )
+
+            _ = try await awaitApprovedIPhoneMicrophoneOutboundRTP(
+                authorization: authorization,
+                recordingGeneration: recordingGeneration,
+                policyGeneration: policyGeneration,
+                expectedNegotiationEpoch:
+                    admissionNegotiationEpoch,
+                requiresHealthyTransport:
+                    requiresHealthyTransport
+            )
 
             iPhoneMicrophoneNativeTeardownPending = false
             iPhoneMicrophoneNativeTeardownAuthorizationIdentity = nil
@@ -6135,6 +6719,15 @@ public actor WebRTCPeer {
     /// native recording generation remains current after the asynchronous callback.
     public func iPhoneMicrophoneSenderStatistics()
         async -> WebRTCIPhoneMicrophoneSenderStatistics? {
+        await sampleIPhoneMicrophoneSenderStatistics(
+            callbackTimeout: .seconds(1)
+        )
+    }
+
+    private func sampleIPhoneMicrophoneSenderStatistics(
+        callbackTimeout: Duration
+    ) async -> WebRTCIPhoneMicrophoneSenderStatistics? {
+        guard callbackTimeout > .zero else { return nil }
         guard let captured =
             currentIPhoneMicrophoneSenderStatisticsCapture() else {
             return nil
@@ -6164,7 +6757,7 @@ public actor WebRTCPeer {
                     )
                 }
                 Task.detached {
-                    try? await Task.sleep(for: .seconds(1))
+                    try? await Task.sleep(for: callbackTimeout)
                     resolver.resolve(nil)
                 }
             }
@@ -6201,6 +6794,35 @@ public actor WebRTCPeer {
         lastIPhoneMicrophoneSenderStatistics =
             samplingResult.statistics
         return samplingResult.statistics
+    }
+
+    private func sampleApprovedIPhoneMicrophoneOutboundRTPProgress(
+        callbackTimeout: Duration
+    ) async -> WebRTCIPhoneMicrophoneOutboundRTPProgress? {
+        guard let statistics =
+                await sampleIPhoneMicrophoneSenderStatistics(
+                    callbackTimeout: callbackTimeout
+                ),
+              let baseline =
+                iPhoneMicrophoneSenderStatisticsBaseline,
+              baseline.statistics == statistics else {
+            return nil
+        }
+        let validation = baseline.validation
+        return WebRTCIPhoneMicrophoneOutboundRTPProgress(
+            identity: WebRTCIPhoneMicrophoneOutboundRTPIdentity(
+                peerEpoch: validation.peerEpoch,
+                bindingGeneration: validation.bindingGeneration,
+                negotiationEpoch: validation.negotiationEpoch,
+                trackGeneration: validation.trackGeneration,
+                senderID: validation.senderID,
+                localTrackID: validation.localTrackID,
+                mid: validation.mid
+            ),
+            outboundRTPRecordIDs: baseline.outboundRTPRecordIDs,
+            packetsSent: statistics.packetsSent,
+            bytesSent: statistics.bytesSent
+        )
     }
 
     private func makeIPhoneMicrophoneSenderDiagnostics(
@@ -6500,14 +7122,30 @@ public actor WebRTCPeer {
         _ = await collectStatistics(publishEvent: true)
     }
 
-    /// Revokes every media/input gate and idempotently releases the native peer.
-    public func close(reason: RemoteSessionEndReason = .normal) {
-        guard !isClosed else { return }
+    /// Revokes every media/input gate and idempotently releases the native peer. The result remains
+    /// false when the peer-owned iOS audio device could not reach its terminal native boundary.
+    @discardableResult
+    public func close(reason: RemoteSessionEndReason = .normal) -> Bool {
+        guard !isClosed else {
+            return retireOwnedAudioDeviceForPeerClosure()
+        }
         ensureDelegateEventLoop()
         emit(.outboundSignal(.end(reason)))
         emit(.ended(reason))
-        closeTransport()
+        return closeTransport()
     }
+
+    #if os(iOS)
+    /// A failed peer retirement poisons process-global iOS audio ownership until app restart.
+    /// Connection preparation checks this before availability can grant replacement authority;
+    /// the native-device factory repeats the same check while holding the process lock.
+    public static func
+        iOSAudioDeviceRetirementAdmissionState()
+        -> WebRTCIOSAudioDeviceRetirementAdmissionState {
+        WebRTCIOSAudioDeviceRetirementHandle
+            .freshConnectionPreparationState()
+    }
+    #endif
 
     private func ensureDelegateEventLoop() {
         if delegateEventTask == nil {
@@ -6742,6 +7380,7 @@ public actor WebRTCPeer {
         pendingRemoteCandidates.removeAll(keepingCapacity: false)
         delegateProxy.close()
         peerConnection.close()
+        _ = retireOwnedAudioDeviceForPeerClosure()
         eventContinuation.finish()
         _ = reason // Retain a debugger-visible reason without attempting another lossy event.
     }
@@ -8531,6 +9170,220 @@ public actor WebRTCPeer {
         }
     }
 
+    #if os(iOS)
+    private func awaitApprovedIPhoneMicrophoneDelivery(
+        authorization: WebRTCIOSMicrophoneAuthorization,
+        recordingGeneration: UInt64,
+        policyGeneration: UInt64,
+        expectedNegotiationEpoch: UInt64,
+        requiresHealthyTransport: Bool,
+        baseline: WebRTCIPhoneMicrophoneNativeDeliveryProgress
+    ) async throws {
+        guard let device = iOSStereoPlayoutAudioDevice else {
+            throw WebRTCTransportError.iPhoneMicrophoneStageFailed(
+                reason: .deviceUnavailable,
+                message:
+                    "The iPhone microphone audio device retired before capture publication."
+            )
+        }
+
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .milliseconds(750))
+        var tracker =
+            WebRTCIPhoneMicrophoneNativeDeliveryProgressTracker(
+                baseline: baseline
+            )
+        var latest = baseline
+
+        while true {
+            try Task.checkCancellation()
+            guard authorization.isValid else {
+                throw WebRTCTransportError
+                    .audioAuthorizationRevoked
+            }
+            guard !isClosed,
+                  iPhoneMicrophonePolicyGeneration
+                    == policyGeneration,
+                  activeIPhoneMicrophoneAuthorization
+                    === authorization,
+                  authorization.recordingGeneration
+                    == recordingGeneration,
+                  iPhoneMicrophoneNativeRecordingGeneration
+                    == recordingGeneration,
+                  negotiationEpoch == expectedNegotiationEpoch,
+                  localIPhoneMicrophoneTrack?.isEnabled == true,
+                  iPhoneMicrophoneSenderOwnsLocalTrack(
+                    expectedNegotiationEpoch:
+                        expectedNegotiationEpoch
+                  ),
+                  rawIPhoneMicrophoneProcessingIsLive(),
+                  !requiresHealthyTransport
+                    || isTransportHealthyForMedia(),
+                  iPhoneMicrophoneNativeApprovalIsCurrent(
+                    authorization: authorization,
+                    recordingGeneration: recordingGeneration
+                  ) else {
+                throw WebRTCTransportError.transportNotHealthy
+            }
+
+            let diagnostics = device.diagnostics
+            latest = WebRTCIPhoneMicrophoneNativeDeliveryProgress(
+                realtimeAdmissionCount:
+                    diagnostics.microphoneRealtimeAdmissionCount,
+                deliveryCallbackCount:
+                    diagnostics.microphoneDeliveryCallbackCount,
+                deliveredFrameCount:
+                    diagnostics.microphoneDeliveredFrameCount
+            )
+            switch tracker.observe(latest) {
+            case .satisfied:
+                return
+            case .regressed:
+                throw WebRTCTransportError.transportNotHealthy
+            case .waiting:
+                break
+            }
+            guard clock.now < deadline else {
+                throw WebRTCTransportError
+                    .iPhoneMicrophoneStageFailed(
+                        reason: .captureDeliveryDidNotStart,
+                        message:
+                            "The approved iPhone microphone generation did not produce continuing captured PCM "
+                                + "within 750 ms "
+                                + "(baselineAdmissions=\(baseline.realtimeAdmissionCount), "
+                                + "baselineCallbacks=\(baseline.deliveryCallbackCount), "
+                                + "baselineFrames=\(baseline.deliveredFrameCount), "
+                                + "admissions=\(latest.realtimeAdmissionCount), "
+                                + "callbacks=\(latest.deliveryCallbackCount), "
+                                + "frames=\(latest.deliveredFrameCount))."
+                    )
+            }
+            try await Task.sleep(for: .milliseconds(25))
+        }
+    }
+
+    /// Native delivery callbacks prove that PCM crossed the custom ADM boundary. They do not
+    /// prove that the exact negotiated sender packetized anything. Start from a post-approval
+    /// sender-scoped baseline, then require both outbound RTP counters to advance while every
+    /// peer, binding, policy, authorization, route, and recording generation remains unchanged.
+    private func awaitApprovedIPhoneMicrophoneOutboundRTP(
+        authorization: WebRTCIOSMicrophoneAuthorization,
+        recordingGeneration: UInt64,
+        policyGeneration: UInt64,
+        expectedNegotiationEpoch: UInt64,
+        requiresHealthyTransport: Bool,
+        timeout: Duration = .seconds(2),
+        callbackTimeout: Duration = .milliseconds(200)
+    ) async throws -> WebRTCIPhoneMicrophoneOutboundRTPAdvancement {
+        precondition(timeout > .zero)
+        precondition(callbackTimeout > .zero)
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        var tracker =
+            WebRTCIPhoneMicrophoneOutboundRTPProgressTracker()
+        var latest:
+            WebRTCIPhoneMicrophoneOutboundRTPProgress?
+
+        while true {
+            try Task.checkCancellation()
+            guard authorization.isValid else {
+                throw WebRTCTransportError
+                    .audioAuthorizationRevoked
+            }
+            guard !isClosed,
+                  iPhoneMicrophonePolicyGeneration
+                    == policyGeneration,
+                  activeIPhoneMicrophoneAuthorization
+                    === authorization,
+                  authorization.recordingGeneration
+                    == recordingGeneration,
+                  iPhoneMicrophoneNativeRecordingGeneration
+                    == recordingGeneration,
+                  negotiationEpoch == expectedNegotiationEpoch,
+                  localIPhoneMicrophoneTrack?.isEnabled == true,
+                  iPhoneMicrophoneSenderOwnsLocalTrack(
+                    expectedNegotiationEpoch:
+                        expectedNegotiationEpoch
+                  ),
+                  rawIPhoneMicrophoneProcessingIsLive(),
+                  !requiresHealthyTransport
+                    || isTransportHealthyForMedia(),
+                  iPhoneMicrophoneNativeApprovalIsCurrent(
+                    authorization: authorization,
+                    recordingGeneration: recordingGeneration
+                  ) else {
+                throw WebRTCTransportError.transportNotHealthy
+            }
+
+            let sample =
+                await sampleApprovedIPhoneMicrophoneOutboundRTPProgress(
+                    callbackTimeout: callbackTimeout
+                )
+
+            // The statistics callback crosses native queues. Re-prove the exact admission after
+            // it returns before accepting counters captured by that asynchronous request.
+            guard authorization.isValid,
+                  !isClosed,
+                  iPhoneMicrophonePolicyGeneration
+                    == policyGeneration,
+                  activeIPhoneMicrophoneAuthorization
+                    === authorization,
+                  authorization.recordingGeneration
+                    == recordingGeneration,
+                  iPhoneMicrophoneNativeRecordingGeneration
+                    == recordingGeneration,
+                  negotiationEpoch == expectedNegotiationEpoch,
+                  localIPhoneMicrophoneTrack?.isEnabled == true,
+                  iPhoneMicrophoneSenderOwnsLocalTrack(
+                    expectedNegotiationEpoch:
+                        expectedNegotiationEpoch
+                  ),
+                  rawIPhoneMicrophoneProcessingIsLive(),
+                  !requiresHealthyTransport
+                    || isTransportHealthyForMedia(),
+                  iPhoneMicrophoneNativeApprovalIsCurrent(
+                    authorization: authorization,
+                    recordingGeneration: recordingGeneration
+                  ) else {
+                throw WebRTCTransportError.transportNotHealthy
+            }
+
+            if let sample {
+                latest = sample
+                switch tracker.observe(sample) {
+                case .satisfied(let advancement):
+                    return advancement
+                case .invalidated:
+                    throw WebRTCTransportError.transportNotHealthy
+                case .waiting:
+                    break
+                }
+            }
+
+            guard clock.now < deadline else {
+                let latestDescription: String
+                if let latest {
+                    latestDescription =
+                        "sender=\(latest.identity.senderID), "
+                            + "records=\(latest.outboundRTPRecordIDs), "
+                            + "packets=\(latest.packetsSent), "
+                            + "bytes=\(latest.bytesSent)"
+                } else {
+                    latestDescription = "no exact-sender report"
+                }
+                throw WebRTCTransportError
+                    .iPhoneMicrophoneStageFailed(
+                        reason: .outboundRTPDidNotStart,
+                        message:
+                            "The approved iPhone microphone generation produced native PCM but its exact sender did not advance outbound RTP "
+                                + "within the bounded startup deadline (\(latestDescription))."
+                    )
+            }
+            try await Task.sleep(for: .milliseconds(25))
+        }
+    }
+    #endif
+
     #if DEBUG && os(macOS)
     private func awaitHeadlessMacIPhoneMicrophoneRecordingGeneration(
         expectedNegotiationEpoch: UInt64,
@@ -9013,8 +9866,11 @@ public actor WebRTCPeer {
         if isClosed { throw WebRTCTransportError.transportClosed }
     }
 
-    private func closeTransport() {
-        guard !isClosed else { return }
+    @discardableResult
+    private func closeTransport() -> Bool {
+        guard !isClosed else {
+            return retireOwnedAudioDeviceForPeerClosure()
+        }
         resetMacHostedCallEvidenceTransportState()
         suspendSystemAudioForTransportUncertainty()
         forceIPhoneMicrophoneNativeTeardown()
@@ -9030,7 +9886,9 @@ public actor WebRTCPeer {
         invalidateScreenVideoEncodingTransactions()
         localVideoTrack?.isEnabled = false
         invalidateInputSession(reason: "WebRTC transport closed.")
-        guard !isClosed else { return }
+        guard !isClosed else {
+            return retireOwnedAudioDeviceForPeerClosure()
+        }
         isClosed = true
         statisticsTask?.cancel()
         statisticsTask = nil
@@ -9054,10 +9912,33 @@ public actor WebRTCPeer {
         pendingRemoteCandidates.removeAll(keepingCapacity: false)
         delegateProxy.close()
         peerConnection.close()
+        let retirementSucceeded = retireOwnedAudioDeviceForPeerClosure()
         eventContinuation.finish()
+        return retirementSucceeded
+    }
+
+    /// `RTCPeerConnection.close()` does not retire the factory-owned custom ADM. The immutable
+    /// handle shares one latched native result with deinit, so a later idempotent `close()` cannot
+    /// turn a failed teardown into a successful replacement barrier.
+    private func retireOwnedAudioDeviceForPeerClosure() -> Bool {
+        #if os(iOS)
+        return iOSAudioDeviceRetirementHandle?.retire() ?? true
+        #else
+        return true
+        #endif
     }
 
     #if DEBUG && os(iOS)
+    static func debugIOSPeerRetirementSnapshotForTesting()
+        -> WebRTCIOSPeerRetirementDebugSnapshot {
+        WebRTCIOSAudioDeviceRetirementHandle.debugSnapshot()
+    }
+
+    static func debugResetIOSPeerRetirementFailureForTesting() {
+        WebRTCIOSAudioDeviceRetirementHandle
+            .debugResetFailureLatch()
+    }
+
     private var debugIPhoneMicrophonePreSuspensionHandlerHook:
         (@Sendable @MainActor (
             WebRTCIOSMicrophoneRetirementContext
@@ -9087,6 +9968,11 @@ public actor WebRTCPeer {
     ) {
         debugIPhoneMicrophoneStageFailureDiagnostics = diagnostics
         debugIPhoneMicrophoneStageFailureReason = reason
+    }
+
+    func debugFailNextIOSPeerRetirementTerminationForTesting() {
+        iOSStereoPlayoutAudioDevice?
+            .debugFailNextPeerRetirementTerminationForTesting()
     }
 
     func debugEnableIPhoneMicrophoneThroughNativeStageForTesting(

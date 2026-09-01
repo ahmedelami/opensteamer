@@ -3031,7 +3031,7 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         await session.peer.close()
     }
 
-    func testRetryableNativeMicrophoneStartupFailureRecoversAndCommitsAutomatically()
+    func testOutboundRTPStartupStallRecoversAndCommitsAutomatically()
         async throws {
         let session = try makeAutomaticMicrophonePolicyFixture(
             provenance: .authenticatedPairedCoordinatorHandoff,
@@ -3068,8 +3068,9 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
                         session.fixture.playback.recoverCount
                     firstEnableFailed.fulfill()
                     throw WebRTCTransportError.iPhoneMicrophoneStageFailed(
-                        reason: .playoutNotReady,
-                        message: "The native microphone path was not ready."
+                        reason: .outboundRTPDidNotStart,
+                        message:
+                            "Native microphone PCM advanced but the exact sender's outbound RTP stalled."
                     )
                 }
                 nativeAuthorization = authorization
@@ -3172,7 +3173,7 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         await session.peer.close()
     }
 
-    func testRetryableNativeMicrophoneStartupGetsOneRecoveryPerTransportBinding()
+    func testOutboundRTPStartupStallGetsOneRecoveryPerTransportBinding()
         async throws {
         let session = try makeAutomaticMicrophonePolicyFixture(
             provenance: .authenticatedPairedCoordinatorHandoff,
@@ -3226,8 +3227,9 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
                     return
                 }
                 throw WebRTCTransportError.iPhoneMicrophoneStageFailed(
-                    reason: .topologyStillNotStaged,
-                    message: "The microphone topology remained unstaged."
+                    reason: .outboundRTPDidNotStart,
+                    message:
+                        "Native microphone PCM advanced but the exact sender's outbound RTP remained stalled."
                 )
             },
             disable: { authorization, _ in
@@ -10305,6 +10307,11 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
             )
         )
         XCTAssertTrue(viewModel.hasActiveSession)
+        XCTAssertEqual(viewModel.stateText, "Connecting securely")
+        XCTAssertNil(
+            viewModel.lastError,
+            "A known local retirement must remain a wait barrier, not surface the process-wide restart-only poison."
+        )
         XCTAssertEqual(
             fixture.playback.activateCount,
             activationCountBeforeReplacement,
@@ -10323,9 +10330,261 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
             fixture.playback.activateCount,
             activationCountBeforeReplacement + 1
         )
+        XCTAssertNil(viewModel.lastError)
 
         viewModel.disconnect()
         await oldPeer.close()
+    }
+
+    func testPeerCloseSynchronouslyTerminatesOwnedIOSAudioDevice()
+        async throws {
+        let peer = try makeAudioRacePeer()
+        let beforeDiagnostics = await peer.iOSPlayoutDiagnostics()
+        let before = try XCTUnwrap(beforeDiagnostics)
+        XCTAssertTrue(before.initialized)
+
+        let retirementSucceeded = await peer.close()
+        XCTAssertTrue(retirementSucceeded)
+
+        let retiredDiagnostics = await peer.iOSPlayoutDiagnostics()
+        let retired = try XCTUnwrap(retiredDiagnostics)
+        XCTAssertFalse(retired.initialized)
+        XCTAssertFalse(retired.playoutInitialized)
+        XCTAssertFalse(retired.playing)
+        XCTAssertFalse(retired.sessionActive)
+        XCTAssertFalse(retired.remoteIOCreated)
+        XCTAssertFalse(retired.inputBusEnabled)
+        XCTAssertFalse(retired.outputBusEnabled)
+    }
+
+    func testPeerDeinitSynchronouslyTerminatesOwnedIOSAudioDevice()
+        async throws {
+        WebRTCPeer.debugResetIOSPeerRetirementFailureForTesting()
+        defer {
+            WebRTCPeer
+                .debugResetIOSPeerRetirementFailureForTesting()
+        }
+        let before = WebRTCPeer
+            .debugIOSPeerRetirementSnapshotForTesting()
+
+        let initialized = try await releaseAudioRacePeerWithoutClose()
+        XCTAssertTrue(initialized.initialized)
+
+        let retired = WebRTCPeer
+            .debugIOSPeerRetirementSnapshotForTesting()
+        XCTAssertEqual(
+            retired.retirementAttemptCount,
+            before.retirementAttemptCount + 1
+        )
+        XCTAssertEqual(
+            retired.retirementFailureCount,
+            before.retirementFailureCount
+        )
+        XCTAssertFalse(retired.processFailureIsLatched)
+
+        let replacement = try makeAudioRacePeer()
+        let replacementRetired = await replacement.close()
+        XCTAssertTrue(replacementRetired)
+    }
+
+    func testFailedPeerConstructionRetiresOwnedIOSAudioDeviceBeforeUnwind()
+        async throws {
+        WebRTCPeer.debugResetIOSPeerRetirementFailureForTesting()
+        defer {
+            WebRTCPeer
+                .debugResetIOSPeerRetirementFailureForTesting()
+        }
+        let before = WebRTCPeer
+            .debugIOSPeerRetirementSnapshotForTesting()
+
+        XCTAssertThrowsError(
+            try WebRTCPeer(
+                configuration: WebRTCTransportConfiguration(
+                    role: .viewer,
+                    iceServers: [],
+                    maximumVideoBitrate: 0
+                )
+            )
+        ) { error in
+            guard let transportError = error as? WebRTCTransportError,
+                  case .nativeFailure(let message) = transportError else {
+                XCTFail("Unexpected construction error: \(error)")
+                return
+            }
+            XCTAssertTrue(message.contains("bandwidth ceiling"))
+        }
+
+        let after = WebRTCPeer
+            .debugIOSPeerRetirementSnapshotForTesting()
+        XCTAssertEqual(
+            after.retirementAttemptCount,
+            before.retirementAttemptCount + 1
+        )
+        XCTAssertEqual(
+            after.retirementFailureCount,
+            before.retirementFailureCount
+        )
+        XCTAssertFalse(after.processFailureIsLatched)
+
+        let replacement = try makeAudioRacePeer()
+        let replacementRetired = await replacement.close()
+        XCTAssertTrue(replacementRetired)
+    }
+
+    func testFailedPeerDeinitPoisonsFreshProcessAudioPeerUntilDebugReset()
+        async throws {
+        WebRTCPeer.debugResetIOSPeerRetirementFailureForTesting()
+        defer {
+            WebRTCPeer
+                .debugResetIOSPeerRetirementFailureForTesting()
+        }
+        let before = WebRTCPeer
+            .debugIOSPeerRetirementSnapshotForTesting()
+
+        _ = try await releaseAudioRacePeerWithoutClose(
+            failingRetirement: true
+        )
+
+        let retired = WebRTCPeer
+            .debugIOSPeerRetirementSnapshotForTesting()
+        XCTAssertEqual(
+            retired.retirementAttemptCount,
+            before.retirementAttemptCount + 1
+        )
+        XCTAssertEqual(
+            retired.retirementFailureCount,
+            before.retirementFailureCount + 1
+        )
+        XCTAssertTrue(retired.processFailureIsLatched)
+        XCTAssertEqual(
+            WebRTCPeer
+                .iOSAudioDeviceRetirementAdmissionState(),
+            .failed
+        )
+        let poisonedFixture = makeFixture()
+        let poisonedViewModel = WorldwideSessionViewModel(
+            audioLifecycle: poisonedFixture.controller
+        )
+        let poisonedPreparationWasAdmitted = await poisonedViewModel
+            .admitFreshConnectionPreparation()
+        XCTAssertFalse(poisonedPreparationWasAdmitted)
+        XCTAssertEqual(poisonedFixture.playback.activateCount, 0)
+        XCTAssertEqual(poisonedViewModel.stateText, "Connection failed")
+        XCTAssertEqual(
+            poisonedViewModel.lastError,
+            "The previous iPhone audio session could not be retired safely. Restart opensteamer before reconnecting."
+        )
+        let invitation = try RemoteInvitationCode.generate()
+        XCTAssertFalse(
+            poisonedViewModel.debugConnectWithInvitationForTests(
+                invitationCode: invitation.exportedCode,
+                debugEndpointOverride: "ws://127.0.0.1:9"
+            )
+        )
+        XCTAssertEqual(
+            poisonedFixture.playback.activateCount,
+            0,
+            "The direct media connect path must consult the deinit-only poison before preparing process-global audio."
+        )
+        XCTAssertThrowsError(try makeAudioRacePeer()) { error in
+            guard let transportError = error as? WebRTCTransportError,
+                  case .nativeFailure(let message) = transportError else {
+                XCTFail("Unexpected fresh-peer error: \(error)")
+                return
+            }
+            XCTAssertTrue(message.contains("Restart opensteamer"))
+        }
+
+        WebRTCPeer.debugResetIOSPeerRetirementFailureForTesting()
+        XCTAssertEqual(
+            WebRTCPeer
+                .iOSAudioDeviceRetirementAdmissionState(),
+            .available
+        )
+        let replacement = try makeAudioRacePeer()
+        let replacementRetired = await replacement.close()
+        XCTAssertTrue(replacementRetired)
+    }
+
+    func testFailedPeerAudioDeviceTerminationKeepsFreshPreparationClosed()
+        async throws {
+        WebRTCPeer.debugResetIOSPeerRetirementFailureForTesting()
+        defer {
+            WebRTCPeer
+                .debugResetIOSPeerRetirementFailureForTesting()
+        }
+        let fixture = makeFixture()
+        let viewModel = WorldwideSessionViewModel(
+            audioLifecycle: fixture.controller
+        )
+        let oldPeer = try makeAudioRacePeer()
+        await oldPeer
+            .debugFailNextIOSPeerRetirementTerminationForTesting()
+        viewModel.debugInstallScreenSessionForTests(peer: oldPeer)
+        let activationCountBeforeRetirement =
+            fixture.playback.activateCount
+
+        viewModel.disconnect()
+        let admitted = await viewModel
+            .admitFreshConnectionPreparation()
+
+        XCTAssertFalse(admitted)
+        XCTAssertEqual(
+            fixture.playback.activateCount,
+            activationCountBeforeRetirement,
+            "A failed native peer retirement must not reopen process-global audio ownership."
+        )
+        XCTAssertEqual(viewModel.stateText, "Connection failed")
+        XCTAssertEqual(
+            viewModel.lastError,
+            "The previous iPhone audio session could not be retired safely. Restart opensteamer before reconnecting."
+        )
+
+        let retiredDiagnostics = await oldPeer.iOSPlayoutDiagnostics()
+        let retired = try XCTUnwrap(retiredDiagnostics)
+        XCTAssertFalse(retired.initialized)
+        XCTAssertFalse(retired.sessionActive)
+        XCTAssertFalse(retired.remoteIOCreated)
+
+        let repeatedRetirementSucceeded = await oldPeer.close()
+        XCTAssertFalse(
+            repeatedRetirementSucceeded,
+            "Idempotent close must retain the first failed native retirement result even though lifecycle flags were cleared."
+        )
+
+        var replacementSessionRunCount = 0
+        viewModel.debugInstallSessionRunner {
+            replacementSessionRunCount += 1
+        }
+        let invitation = try RemoteInvitationCode.generate()
+        XCTAssertTrue(
+            viewModel.debugConnectWithInvitationForTests(
+                invitationCode: invitation.exportedCode,
+                debugEndpointOverride: "ws://127.0.0.1:9"
+            )
+        )
+        for _ in 0..<100 {
+            if viewModel.stateText == "Connection failed" {
+                break
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(replacementSessionRunCount, 0)
+        XCTAssertFalse(viewModel.hasActiveSession)
+        XCTAssertEqual(
+            fixture.playback.activateCount,
+            activationCountBeforeRetirement
+        )
+        XCTAssertEqual(viewModel.stateText, "Connection failed")
+        XCTAssertEqual(
+            viewModel.lastError,
+            "The previous iPhone audio session could not be retired safely. Restart opensteamer before reconnecting."
+        )
+
+        let admittedOnRetry = await viewModel
+            .admitFreshConnectionPreparation()
+        XCTAssertFalse(admittedOnRetry)
+        XCTAssertEqual(viewModel.stateText, "Connection failed")
     }
 
     func testFreshPreparationWaitsForExactRetiredPeerClose() async throws {
@@ -13259,6 +13518,26 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         try WebRTCPeer(
             configuration: WebRTCTransportConfiguration(role: .viewer, iceServers: [])
         )
+    }
+
+    private func releaseAudioRacePeerWithoutClose(
+        failingRetirement: Bool = false
+    ) async throws -> WebRTCIOSPlayoutDiagnostics {
+        var peer: WebRTCPeer? = try makeAudioRacePeer()
+        weak let weakPeer = peer
+        if failingRetirement {
+            await peer?
+                .debugFailNextIOSPeerRetirementTerminationForTesting()
+        }
+        let diagnosticsSnapshot = await peer?
+            .iOSPlayoutDiagnostics()
+        let diagnostics = try XCTUnwrap(diagnosticsSnapshot)
+        peer = nil
+        XCTAssertNil(
+            weakPeer,
+            "An unclosed peer must synchronously finish deinit retirement when its last owner releases it."
+        )
+        return diagnostics
     }
 
     private func makePreparedProofViewModel() -> (
