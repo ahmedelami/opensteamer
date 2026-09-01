@@ -195,7 +195,7 @@ let package = Package(
         ),
         .testTarget(
             name: "CaptureServerTests",
-            dependencies: ["CaptureServer"],
+            dependencies: ["CaptureServer", "WebRTCTransport"],
             path: "macOS/Tests/CaptureServerTests"
         ),
         .testTarget(

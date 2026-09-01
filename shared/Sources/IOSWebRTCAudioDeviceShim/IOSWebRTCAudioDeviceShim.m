@@ -54,6 +54,87 @@ static const uint64_t ASWaveformShapeMinimumSampleCount = 16;
 // still detecting every reset of the 997/1499 Hz 10 ms challenge blocks.
 static const uint64_t ASBoundaryJumpToMeanDerivativePercent = 175;
 
+#if DEBUG
+static BOOL ASDebugPeerRetirementTerminationBlockArmed = NO;
+static BOOL ASDebugPeerRetirementTerminationBlockEntered = NO;
+static BOOL ASDebugPeerRetirementTerminationBlockReleased = NO;
+
+static NSCondition *ASDebugPeerRetirementTerminationBlockCondition(void) {
+    static NSCondition *condition;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        condition = [[NSCondition alloc] init];
+    });
+    return condition;
+}
+
+static BOOL ASDebugArmPeerRetirementTerminationBlock(void) {
+    NSCondition *condition = ASDebugPeerRetirementTerminationBlockCondition();
+    [condition lock];
+    BOOL armed = !ASDebugPeerRetirementTerminationBlockArmed
+        && !ASDebugPeerRetirementTerminationBlockEntered;
+    if (armed) {
+        ASDebugPeerRetirementTerminationBlockArmed = YES;
+        ASDebugPeerRetirementTerminationBlockReleased = NO;
+    }
+    [condition unlock];
+    return armed;
+}
+
+static BOOL ASDebugWaitForPeerRetirementTerminationBlock(
+    NSTimeInterval timeout
+) {
+    NSCondition *condition = ASDebugPeerRetirementTerminationBlockCondition();
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:MAX(timeout, 0)];
+    [condition lock];
+    while (!ASDebugPeerRetirementTerminationBlockEntered) {
+        if (![condition waitUntilDate:deadline]) {
+            break;
+        }
+    }
+    BOOL entered = ASDebugPeerRetirementTerminationBlockEntered;
+    [condition unlock];
+    return entered;
+}
+
+static void ASDebugReleasePeerRetirementTerminationBlock(void) {
+    NSCondition *condition = ASDebugPeerRetirementTerminationBlockCondition();
+    [condition lock];
+    if (ASDebugPeerRetirementTerminationBlockEntered) {
+        ASDebugPeerRetirementTerminationBlockReleased = YES;
+        [condition broadcast];
+    } else if (ASDebugPeerRetirementTerminationBlockArmed) {
+        ASDebugPeerRetirementTerminationBlockArmed = NO;
+        ASDebugPeerRetirementTerminationBlockReleased = NO;
+        [condition broadcast];
+    }
+    [condition unlock];
+}
+
+static void ASDebugBlockPeerRetirementTerminationIfArmed(void) {
+    NSCondition *condition = ASDebugPeerRetirementTerminationBlockCondition();
+    [condition lock];
+    if (!ASDebugPeerRetirementTerminationBlockArmed) {
+        [condition unlock];
+        return;
+    }
+
+    ASDebugPeerRetirementTerminationBlockArmed = NO;
+    ASDebugPeerRetirementTerminationBlockEntered = YES;
+    [condition broadcast];
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:10.0];
+    while (!ASDebugPeerRetirementTerminationBlockReleased) {
+        if (![condition waitUntilDate:deadline]) {
+            break;
+        }
+    }
+    ASDebugPeerRetirementTerminationBlockEntered = NO;
+    ASDebugPeerRetirementTerminationBlockReleased = NO;
+    [condition broadcast];
+    [condition unlock];
+}
+#endif
+
 __attribute__((noreturn))
 static void ASFailRealtimeGateInvariant(void);
 
@@ -6288,6 +6369,19 @@ static OSStatus ASRemoteIOInput(
 }
 
 #if DEBUG
++ (BOOL)debugArmNextPeerRetirementTerminationBlockForTesting {
+    return ASDebugArmPeerRetirementTerminationBlock();
+}
+
++ (BOOL)debugWaitForPeerRetirementTerminationBlockForTestingWithTimeout:
+    (NSTimeInterval)timeout {
+    return ASDebugWaitForPeerRetirementTerminationBlock(timeout);
+}
+
++ (void)debugReleasePeerRetirementTerminationBlockForTesting {
+    ASDebugReleasePeerRetirementTerminationBlock();
+}
+
 - (void)debugFailNextPeerRetirementTerminationForTesting {
     id<LKRTCAudioDeviceDelegate> delegate = self.delegate;
     if (delegate == nil) {
@@ -6314,6 +6408,9 @@ static OSStatus ASRemoteIOInput(
 
     __block BOOL terminated = NO;
     [delegate dispatchSync:^{
+#if DEBUG
+        ASDebugBlockPeerRetirementTerminationIfArmed();
+#endif
         terminated = [self terminateDevice];
 #if DEBUG
         if (self->_debugFailNextPeerRetirementTermination) {

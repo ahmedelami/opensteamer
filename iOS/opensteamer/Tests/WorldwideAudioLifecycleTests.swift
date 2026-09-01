@@ -10357,6 +10357,105 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         XCTAssertFalse(retired.outputBusEnabled)
     }
 
+    func testProcessGlobalRetirementAdmissionRejectsReplacementDuringNativeTermination()
+        async throws {
+        WebRTCPeer.debugResetIOSPeerRetirementFailureForTesting()
+        defer {
+            WebRTCPeer
+                .debugReleaseIOSPeerRetirementTerminationBlockForTesting()
+            WebRTCPeer
+                .debugResetIOSPeerRetirementFailureForTesting()
+        }
+        let before = WebRTCPeer
+            .debugIOSPeerRetirementSnapshotForTesting()
+        let retiringPeer = try makeAudioRacePeer()
+        let diagnostics = await retiringPeer.iOSPlayoutDiagnostics()
+        let beforeDiagnostics = try XCTUnwrap(diagnostics)
+        XCTAssertTrue(
+            beforeDiagnostics.initialized,
+            "The retirement interlock must exercise an initialized, delegate-backed native device."
+        )
+        guard WebRTCPeer
+            .debugArmNextIOSPeerRetirementTerminationBlockForTesting() else {
+            XCTFail("The native retirement block must be idle before this test.")
+            return
+        }
+        WebRTCPeer
+            .debugReleaseIOSPeerRetirementTerminationBlockForTesting()
+        guard WebRTCPeer
+            .debugArmNextIOSPeerRetirementTerminationBlockForTesting() else {
+            XCTFail(
+                "Releasing the armed block before native entry must disarm it."
+            )
+            return
+        }
+
+        let retirement = Task.detached {
+            await retiringPeer.close()
+        }
+        let nativeTerminationIsBlocked = await Task.detached {
+            WebRTCPeer
+                .debugWaitForIOSPeerRetirementTerminationBlockForTesting(
+                    timeout: 2
+                )
+        }.value
+        guard nativeTerminationIsBlocked else {
+            WebRTCPeer
+                .debugReleaseIOSPeerRetirementTerminationBlockForTesting()
+            _ = await retirement.value
+            XCTFail("Native peer retirement did not enter the deterministic block.")
+            return
+        }
+
+        XCTAssertEqual(
+            WebRTCPeer.iOSAudioDeviceRetirementAdmissionState(),
+            .retirementInProgress
+        )
+        let during = WebRTCPeer
+            .debugIOSPeerRetirementSnapshotForTesting()
+        XCTAssertEqual(
+            during.retirementAttemptCount,
+            before.retirementAttemptCount,
+            "A blocked native termination is in progress, not yet completed."
+        )
+        XCTAssertEqual(
+            during.retirementFailureCount,
+            before.retirementFailureCount
+        )
+        XCTAssertThrowsError(try makeAudioRacePeer()) { error in
+            guard let transportError = error as? WebRTCTransportError,
+                  case .nativeFailure(let message) = transportError else {
+                XCTFail("Unexpected replacement-peer error: \(error)")
+                return
+            }
+            XCTAssertTrue(message.contains("still retiring"))
+        }
+
+        WebRTCPeer
+            .debugReleaseIOSPeerRetirementTerminationBlockForTesting()
+        let retirementSucceeded = await retirement.value
+        XCTAssertTrue(retirementSucceeded)
+        XCTAssertEqual(
+            WebRTCPeer.iOSAudioDeviceRetirementAdmissionState(),
+            .available
+        )
+        let after = WebRTCPeer
+            .debugIOSPeerRetirementSnapshotForTesting()
+        XCTAssertEqual(
+            after.retirementAttemptCount,
+            before.retirementAttemptCount + 1
+        )
+        XCTAssertEqual(
+            after.retirementFailureCount,
+            before.retirementFailureCount
+        )
+        XCTAssertFalse(after.processFailureIsLatched)
+
+        let replacement = try makeAudioRacePeer()
+        let replacementRetired = await replacement.close()
+        XCTAssertTrue(replacementRetired)
+    }
+
     func testPeerDeinitSynchronouslyTerminatesOwnedIOSAudioDevice()
         async throws {
         WebRTCPeer.debugResetIOSPeerRetirementFailureForTesting()

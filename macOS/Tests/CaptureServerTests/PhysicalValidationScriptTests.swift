@@ -918,7 +918,8 @@ final class PhysicalValidationScriptTests: XCTestCase {
         let status = try String(contentsOf: statusURL, encoding: .utf8)
         XCTAssertEqual(
             status,
-            "status=pending\nconnections=2\nrestarts=1\ndetail=runtime self-test\n"
+            "status=pending\nconnections=2\nproofs=0\nbound_proofs=0\n" +
+                "restarts=1\ndetail=runtime self-test\n"
         )
         for relativePath in staleEvidence {
             XCTAssertFalse(
@@ -979,6 +980,9 @@ final class PhysicalValidationScriptTests: XCTestCase {
             "WebRTC route - host restart reconnect 1",
             "WebRTC route - host restart reconnect 2",
             "WebRTC route - host restart reconnect 3",
+            "Raw iPhone microphone continuity - host restart reconnect 1",
+            "Raw iPhone microphone continuity - host restart reconnect 2",
+            "Raw iPhone microphone continuity - host restart reconnect 3",
             "test iPhone Direct route before host restart 1",
             "test iPhone Direct route before host restart 2",
             "test iPhone Direct route before host restart 3",
@@ -986,8 +990,11 @@ final class PhysicalValidationScriptTests: XCTestCase {
             "test iPhone recovered in same process 2",
             "test iPhone recovered in same process 3",
             "WebRTC route - before explicit disconnect",
+            "Raw iPhone microphone continuity - before explicit disconnect",
             "WebRTC route - same-process reconnect after explicit disconnect",
+            "Raw iPhone microphone continuity - same-process reconnect after explicit disconnect",
             "WebRTC route - cold-launch saved-pair reconnect",
+            "Raw iPhone microphone continuity - cold-launch saved-pair reconnect",
             "Background native audio continuity evidence",
             "WebRTC route - after background audio proof",
             "test iPhone live Mac screen with authenticated input capability",
@@ -998,20 +1005,44 @@ final class PhysicalValidationScriptTests: XCTestCase {
         ]
         let criticalAttachmentMappings: [AttachmentMapping] = [
             ("restart-1", "WebRTC route - host restart reconnect 1"),
+            (
+                "restart-1",
+                "Raw iPhone microphone continuity - host restart reconnect 1"
+            ),
             ("restart-1", "test iPhone Direct route before host restart 1"),
             ("restart-1", "test iPhone recovered in same process 1"),
             ("restart-2", "WebRTC route - host restart reconnect 2"),
+            (
+                "restart-2",
+                "Raw iPhone microphone continuity - host restart reconnect 2"
+            ),
             ("restart-2", "test iPhone Direct route before host restart 2"),
             ("restart-2", "test iPhone recovered in same process 2"),
             ("restart-3", "WebRTC route - host restart reconnect 3"),
+            (
+                "restart-3",
+                "Raw iPhone microphone continuity - host restart reconnect 3"
+            ),
             ("restart-3", "test iPhone Direct route before host restart 3"),
             ("restart-3", "test iPhone recovered in same process 3"),
             ("explicit", "WebRTC route - before explicit disconnect"),
             (
                 "explicit",
+                "Raw iPhone microphone continuity - before explicit disconnect"
+            ),
+            (
+                "explicit",
                 "WebRTC route - same-process reconnect after explicit disconnect"
             ),
+            (
+                "explicit",
+                "Raw iPhone microphone continuity - same-process reconnect after explicit disconnect"
+            ),
             ("cold", "WebRTC route - cold-launch saved-pair reconnect"),
+            (
+                "cold",
+                "Raw iPhone microphone continuity - cold-launch saved-pair reconnect"
+            ),
             ("cold", "WebRTC route - after background audio proof"),
             ("cold", "WebRTC route - after hiding the cold-launch Mac screen"),
             ("background", "Background native audio continuity evidence"),
@@ -5712,14 +5743,67 @@ final class PhysicalValidationScriptTests: XCTestCase {
         try assertReconnectProvenanceSelfTestPasses("same-inode-rewrite")
     }
 
-    func testReconnectRejectsReusedPIDAndAcceptsFourGloballyUniquePIDs() throws {
+    func testReconnectRejectsReusedPIDAndAcceptsSixAuditedConnections() throws {
         try assertReconnectProvenanceSelfTestPasses("reused-pid")
         try assertReconnectProvenanceSelfTestPasses("unique-pids")
+    }
+
+    func testReconnectRawMicrophoneProofInterlockMutationsInRealZsh() throws {
+        for scenario in [
+            "proof-missing",
+            "proof-duplicate",
+            "proof-reused-uuid",
+            "proof-reused-fingerprint",
+            "proof-out-of-order",
+            "proof-zero-generation",
+            "proof-max-generation",
+            "proof-max-plus-one-generation",
+            "proof-timeout",
+            "proof-projection-command-failure",
+            "proof-projection-noisy",
+            "proof-all-six",
+        ] {
+            try assertReconnectProvenanceSelfTestPasses(scenario)
+        }
+    }
+
+    func testReconnectFinalWatcherWaitCoversVerifierStabilityWindow() throws {
+        try assertReconnectProvenanceSelfTestPasses("watcher-final-delay")
+    }
+
+    func testReconnectRawMicrophoneProofTimeoutCannotUndercutPhysicalCeiling() throws {
+        let artifactDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("opensteamer-proof-timeout-bound-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: artifactDirectory) }
+        let result = try runPhysicalDriverSelfTest(
+            physicalDrivers[2],
+            mode: "host-provenance-proof-all-six",
+            artifactDirectory: artifactDirectory,
+            timeout: 5,
+            additionalEnvironment: [
+                "OPENSTEAMER_RECONNECT_RAW_MICROPHONE_PROOF_TIMEOUT_SECONDS": "59",
+            ]
+        )
+
+        XCTAssertTrue(result.exitedWithinDeadline, result.diagnostic)
+        XCTAssertEqual(result.terminationStatus, 2, result.diagnostic)
+        XCTAssertTrue(
+            result.diagnostic.contains(
+                "OPENSTEAMER_RECONNECT_RAW_MICROPHONE_PROOF_TIMEOUT_SECONDS " +
+                    "must be between 60 and 120."
+            ),
+            result.diagnostic
+        )
     }
 
     func testReconnectFinalAuditRejectsLateLineWithoutPostEndKickstart() throws {
         try assertReconnectProvenanceSelfTestPasses("final-audit-mismatch")
         try assertReconnectProvenanceSelfTestPasses("final-partial-mismatch")
+        try assertReconnectProvenanceSelfTestPasses(
+            "final-events-reused-generation-pid"
+        )
+        try assertReconnectProvenanceSelfTestPasses("final-events-final-pid-drift")
+        try assertReconnectProvenanceSelfTestPasses("final-events-host-log-mismatch")
     }
 
     func testCoherentLogSnapshotRejectsRewriteDuringOpenedDescriptorRead() throws {
@@ -6777,7 +6861,7 @@ final class PhysicalValidationScriptTests: XCTestCase {
             physicalDrivers[2],
             mode: "host-provenance-\(scenario)",
             artifactDirectory: artifactDirectory,
-            timeout: 8
+            timeout: scenario == "watcher-final-delay" ? 20 : 8
         )
 
         XCTAssertTrue(result.exitedWithinDeadline, result.diagnostic)

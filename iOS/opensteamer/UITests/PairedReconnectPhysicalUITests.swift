@@ -32,6 +32,36 @@ final class PairedReconnectPhysicalUITests: XCTestCase {
         let sampleLog: String
     }
 
+    /// Lifecycle identity for one density-checked raw-microphone sender window. UUID-backed
+    /// ownership must rotate across connections; the numeric generations remain part of the
+    /// fingerprint because they identify the exact peer-local negotiation and native recording
+    /// authorization even when a newly constructed peer legitimately starts its counters at one.
+    private struct ReconnectRawMicrophoneFingerprint: Hashable {
+        let sessionGeneration: UUID
+        let windowGeneration: UUID
+        let transportAuthorizationGeneration: UUID
+        let audioPolicyGeneration: UUID
+        let negotiationEpoch: UInt64
+        let bindingGeneration: UInt64
+        let trackGeneration: UInt64
+        let microphonePolicyGeneration: UInt64
+        let recordingGeneration: UInt64
+
+        init(snapshot: PhysicalRawMicrophoneSnapshot) {
+            sessionGeneration = snapshot.sessionGeneration
+            windowGeneration = snapshot.windowGeneration
+            transportAuthorizationGeneration =
+                snapshot.transportAuthorizationGeneration
+            audioPolicyGeneration = snapshot.audioPolicyGeneration
+            negotiationEpoch = snapshot.negotiationEpoch
+            bindingGeneration = snapshot.bindingGeneration
+            trackGeneration = snapshot.trackGeneration
+            microphonePolicyGeneration =
+                snapshot.microphonePolicyGeneration
+            recordingGeneration = snapshot.recordingGeneration
+        }
+    }
+
     /// Route and final monotonic audio snapshot from one verified playback window.
     private struct LivePlaybackEvidence {
         let route: String
@@ -67,6 +97,11 @@ final class PairedReconnectPhysicalUITests: XCTestCase {
     // permits one ordinary publication interval without allowing a late burst to launder a stall.
     private let maximumAudioOracleProgressGap: TimeInterval = 1.5
     private let maximumRawMicrophoneOracleProgressGap: TimeInterval = 1.5
+    // The host churn worker blocks on this test's per-connection proof marker before restarting.
+    // Require two fresh one-second sender-statistics windows within a bounded UI-side wait so every
+    // replacement peer proves microphone delivery before the marker permits intentional teardown.
+    private let reconnectRawMicrophoneTimeout: TimeInterval = 6
+    private let reconnectRawMicrophoneContinuityDuration: TimeInterval = 2
     // At a 60 fps source, a 750 ms decoded-frame stall is already user-visible.
     private let maximumVideoOracleProgressGap: TimeInterval = 0.75
     private let backgroundEvidenceDuration: TimeInterval = 35
@@ -721,6 +756,11 @@ final class PairedReconnectPhysicalUITests: XCTestCase {
     /// connected. Keeping this app process alive across all three host failures is important: a
     /// terminate/relaunch-only test discards the in-memory media error that caused the regression.
     func testThreeSameProcessHostRestartsThenColdRelaunchPreservePairing() throws {
+        var previousRawMicrophoneFingerprint:
+            ReconnectRawMicrophoneFingerprint?
+        var observedRawMicrophoneFingerprints:
+            Set<ReconnectRawMicrophoneFingerprint> = []
+
         hardLaunch()
         let expectedPairFingerprint = try currentPairFingerprint()
         assertSavedPairIsIdleWithoutHistoricalError(
@@ -740,6 +780,18 @@ final class PairedReconnectPhysicalUITests: XCTestCase {
                     playback.route,
                     phase: "host restart reconnect \(attempt)",
                     to: activity
+                )
+                let rawMicrophoneEvidence =
+                    try requireReconnectRawMicrophone(
+                        playback: playback,
+                        phase: "host restart reconnect \(attempt)",
+                        activity: activity
+                    )
+                try acceptFreshReconnectRawMicrophoneProof(
+                    rawMicrophoneEvidence,
+                    ordinal: attempt,
+                    previous: &previousRawMicrophoneFingerprint,
+                    observed: &observedRawMicrophoneFingerprints
                 )
 
                 let liveAttachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
@@ -772,6 +824,18 @@ final class PairedReconnectPhysicalUITests: XCTestCase {
                 phase: "before explicit disconnect",
                 to: activity
             )
+            let firstRawMicrophoneEvidence =
+                try requireReconnectRawMicrophone(
+                    playback: firstPlayback,
+                    phase: "before explicit disconnect",
+                    activity: activity
+                )
+            try acceptFreshReconnectRawMicrophoneProof(
+                firstRawMicrophoneEvidence,
+                ordinal: 4,
+                previous: &previousRawMicrophoneFingerprint,
+                observed: &observedRawMicrophoneFingerprints
+            )
             app.buttons["disconnectWorldwide"].tap()
             XCTAssertTrue(
                 waitForHostFailureToReturnToSavedPair(timeout: 45),
@@ -788,6 +852,18 @@ final class PairedReconnectPhysicalUITests: XCTestCase {
                 reconnectedPlayback.route,
                 phase: "same-process reconnect after explicit disconnect",
                 to: activity
+            )
+            let reconnectedRawMicrophoneEvidence =
+                try requireReconnectRawMicrophone(
+                    playback: reconnectedPlayback,
+                    phase: "same-process reconnect after explicit disconnect",
+                    activity: activity
+                )
+            try acceptFreshReconnectRawMicrophoneProof(
+                reconnectedRawMicrophoneEvidence,
+                ordinal: 5,
+                previous: &previousRawMicrophoneFingerprint,
+                observed: &observedRawMicrophoneFingerprints
             )
             app.buttons["disconnectWorldwide"].tap()
             XCTAssertTrue(
@@ -814,6 +890,18 @@ final class PairedReconnectPhysicalUITests: XCTestCase {
                 playback.route,
                 phase: "cold-launch saved-pair reconnect",
                 to: activity
+            )
+            let rawMicrophoneEvidence =
+                try requireReconnectRawMicrophone(
+                    playback: playback,
+                    phase: "cold-launch saved-pair reconnect",
+                    activity: activity
+                )
+            try acceptFreshReconnectRawMicrophoneProof(
+                rawMicrophoneEvidence,
+                ordinal: 6,
+                previous: &previousRawMicrophoneFingerprint,
+                observed: &observedRawMicrophoneFingerprints
             )
 
             playback = try XCTContext.runActivity(
@@ -855,6 +943,11 @@ final class PairedReconnectPhysicalUITests: XCTestCase {
                 expectedPairFingerprint: expectedPairFingerprint
             )
         }
+        XCTAssertEqual(
+            observedRawMicrophoneFingerprints.count,
+            6,
+            "The reconnect gate did not retain six distinct raw-microphone lifecycle fingerprints."
+        )
         app.terminate()
     }
 
@@ -949,6 +1042,141 @@ final class PairedReconnectPhysicalUITests: XCTestCase {
             waitForStableLivePlaybackWithoutError(timeout: 45, stableFor: 2),
             "\(phase) did not sustain an active Connected session with native audio Playing and a Direct or TURN relay route. Last observation: \(livePlaybackObservation)"
         )
+    }
+
+    private func requireReconnectRawMicrophone(
+        playback: LivePlaybackEvidence,
+        phase: String,
+        activity: XCTActivity
+    ) throws -> LiveRawMicrophoneEvidence {
+        XCTAssertEqual(
+            element("worldwideMicrophoneState").value as? String,
+            "On",
+            "\(phase) did not automatically enable the iPhone microphone."
+        )
+        let evidence = try XCTUnwrap(
+            waitForStableRawIPhoneMicrophone(
+                timeout: reconnectRawMicrophoneTimeout,
+                stableFor: reconnectRawMicrophoneContinuityDuration,
+                expectedSessionGeneration:
+                    playback.finalAudioSnapshot.sessionGeneration
+            ),
+            "\(phase) did not prove fresh raw microphone delivery and exact outbound RTP before the next lifecycle boundary. Last observation: \(liveRawMicrophoneObservation)"
+        )
+        XCTAssertEqual(
+            evidence.initialSnapshot.sessionGeneration,
+            evidence.finalSnapshot.sessionGeneration
+        )
+        XCTAssertEqual(
+            evidence.initialSnapshot.windowGeneration,
+            evidence.finalSnapshot.windowGeneration
+        )
+        XCTAssertGreaterThanOrEqual(evidence.advancementObservations, 2)
+        XCTAssertGreaterThan(
+            evidence.finalSnapshot.deliveryCallbackCount,
+            evidence.initialSnapshot.deliveryCallbackCount
+        )
+        XCTAssertGreaterThan(
+            evidence.finalSnapshot.deliveredFrameCount,
+            evidence.initialSnapshot.deliveredFrameCount
+        )
+        XCTAssertGreaterThan(
+            evidence.finalSnapshot.packetsSent,
+            evidence.initialSnapshot.packetsSent
+        )
+        XCTAssertGreaterThan(
+            evidence.finalSnapshot.bytesSent,
+            evidence.initialSnapshot.bytesSent
+        )
+
+        let attachment = XCTAttachment(
+            string:
+                "phase=\(phase)\n"
+                    + "session=\(evidence.finalSnapshot.sessionGeneration)\n"
+                    + "window=\(evidence.finalSnapshot.windowGeneration)\n"
+                    + "recording=\(evidence.finalSnapshot.recordingGeneration)\n"
+                    + "continuityDurationNs=\(evidence.continuityDurationNs)\n"
+                    + "advancementObservations=\(evidence.advancementObservations)\n"
+                    + evidence.sampleLog
+        )
+        attachment.name = "Raw iPhone microphone continuity - \(phase)"
+        attachment.lifetime = .keepAlways
+        activity.add(attachment)
+        return evidence
+    }
+
+    private func acceptFreshReconnectRawMicrophoneProof(
+        _ evidence: LiveRawMicrophoneEvidence,
+        ordinal: Int,
+        previous: inout ReconnectRawMicrophoneFingerprint?,
+        observed: inout Set<ReconnectRawMicrophoneFingerprint>
+    ) throws {
+        guard ordinal == observed.count + 1, (1...6).contains(ordinal) else {
+            XCTFail(
+                "Raw-microphone lifecycle proof ordinal \(ordinal) was out of sequence."
+            )
+            throw PhysicalValidationError.oracleRejected
+        }
+
+        let fingerprint = ReconnectRawMicrophoneFingerprint(
+            snapshot: evidence.finalSnapshot
+        )
+        if let previous {
+            guard fingerprint.sessionGeneration
+                    != previous.sessionGeneration,
+                  fingerprint.windowGeneration
+                    != previous.windowGeneration,
+                  fingerprint.transportAuthorizationGeneration
+                    != previous.transportAuthorizationGeneration,
+                  fingerprint.audioPolicyGeneration
+                    != previous.audioPolicyGeneration else {
+                XCTFail(
+                    "Raw-microphone lifecycle proof \(ordinal) reused its preceding session, sender window, transport authorization, or audio-policy identity."
+                )
+                throw PhysicalValidationError.oracleRejected
+            }
+        }
+        guard !observed.contains(where: {
+                $0.sessionGeneration == fingerprint.sessionGeneration
+              }),
+              !observed.contains(where: {
+                $0.windowGeneration == fingerprint.windowGeneration
+              }),
+              !observed.contains(where: {
+                $0.transportAuthorizationGeneration
+                    == fingerprint.transportAuthorizationGeneration
+              }),
+              !observed.contains(where: {
+                $0.audioPolicyGeneration
+                    == fingerprint.audioPolicyGeneration
+              }) else {
+            XCTFail(
+                "Raw-microphone lifecycle proof \(ordinal) reused a session, sender window, transport authorization, or audio-policy identity from an earlier connection."
+            )
+            throw PhysicalValidationError.oracleRejected
+        }
+        guard observed.insert(fingerprint).inserted else {
+            XCTFail(
+                "Raw-microphone lifecycle proof \(ordinal) reused an earlier complete sender fingerprint."
+            )
+            throw PhysicalValidationError.oracleRejected
+        }
+        previous = fingerprint
+
+        let snapshot = evidence.finalSnapshot
+        let line =
+            "OPENSTEAMER_RECONNECT_RAW_MICROPHONE_PROOF_V1"
+                + " ordinal=\(ordinal)"
+                + " session=\(snapshot.sessionGeneration.uuidString.lowercased())"
+                + " window=\(snapshot.windowGeneration.uuidString.lowercased())"
+                + " transport=\(snapshot.transportAuthorizationGeneration.uuidString.lowercased())"
+                + " audioPolicy=\(snapshot.audioPolicyGeneration.uuidString.lowercased())"
+                + " negotiation=\(snapshot.negotiationEpoch)"
+                + " binding=\(snapshot.bindingGeneration)"
+                + " track=\(snapshot.trackGeneration)"
+                + " micPolicy=\(snapshot.microphonePolicyGeneration)"
+                + " recording=\(snapshot.recordingGeneration)\n"
+        FileHandle.standardOutput.write(Data(line.utf8))
     }
 
     private func waitForStableLivePlaybackWithoutError(

@@ -298,8 +298,12 @@ HOST_INSTALLED_LAUNCH_AGENT="/Users/ahmed/Library/LaunchAgents/${HOST_LABEL}.pli
 HOST_EXECUTABLE="${SAFE_HOST_EXECUTABLE}"
 HOST_LOCK_DIRECTORY="/Users/ahmed/Library/Application Support/com.elamin.AudioStreamer.CaptureServer.runtime"
 HOST_LOCK_FILE="${HOST_LOCK_DIRECTORY}/worldwide-host.lock"
-HOST_RESTART_DELAY_SECONDS=${OPENSTEAMER_HOST_RESTART_DELAY_SECONDS:-8}
 HOST_CONNECTION_WAIT_TIMEOUT_SECONDS=${OPENSTEAMER_HOST_CONNECTION_WAIT_TIMEOUT_SECONDS:-90}
+RECONNECT_RAW_MICROPHONE_PROOF_TIMEOUT_SECONDS=${OPENSTEAMER_RECONNECT_RAW_MICROPHONE_PROOF_TIMEOUT_SECONDS:-60}
+RECONNECT_PROOF_MAX_APPEND_BYTES=65536
+RECONNECT_PROOF_MAX_PARTIAL_BYTES=4096
+RECONNECT_PROOF_FINAL_AUDIT_TIMEOUT_SECONDS=5
+HOST_FINAL_WATCHER_WAIT_TIMEOUT_SECONDS=30
 HOST_CHURN_LOCK_ATTEMPTS=${OPENSTEAMER_HOST_CHURN_LOCK_ATTEMPTS:-600}
 
 function require_exact_safe_host_mutation_identity() {
@@ -350,6 +354,12 @@ DEVICE_COMMAND_TIMEOUT_SECONDS=${OPENSTEAMER_DEVICE_COMMAND_TIMEOUT_SECONDS:-15}
 DEVICE_LOCK_POLL_SECONDS=${OPENSTEAMER_DEVICE_LOCK_POLL_SECONDS:-5}
 HOST_EVENTS="${RECONNECT_PHASE_DIR}/host-restart-events.log"
 HOST_STATUS="${RECONNECT_PHASE_DIR}/host-restart-status.txt"
+RECONNECT_XCODEBUILD_LIVE_STDOUT="${RECONNECT_PHASE_DIR}/xcodebuild-live-stdout.txt"
+RECONNECT_XCODEBUILD_LIVE_STDERR="${RECONNECT_PHASE_DIR}/xcodebuild-live-stderr.txt"
+RECONNECT_RAW_MICROPHONE_PROOF_STREAM="${RECONNECT_PHASE_DIR}/raw-microphone-proof-stream.txt"
+RECONNECT_PROOF_STDOUT_APPEND_CHUNK="${RECONNECT_PHASE_DIR}/xcodebuild-proof-appended.bin"
+RECONNECT_PROOF_STDOUT_COMPLETED_LINES="${RECONNECT_PHASE_DIR}/xcodebuild-proof-completed.txt"
+RECONNECT_PROOF_STDOUT_PARTIAL_LINE="${RECONNECT_PHASE_DIR}/xcodebuild-proof-partial.bin"
 HOST_BUILD_STDOUT="${ARTIFACT_DIR}/host-build-stdout.txt"
 HOST_BUILD_STDERR="${ARTIFACT_DIR}/host-build-stderr.txt"
 HOST_DEPLOYMENT_MANIFEST="${ARTIFACT_DIR}/host-deployment.txt"
@@ -495,6 +505,13 @@ XCODEBUILD_GROUP_ISOLATED=0
 XCODEBUILD_GROUP_HANDLE=""
 XCODEBUILD_WATCHDOG_PID=""
 XCODEBUILD_LIVE_STDOUT=""
+RECONNECT_PROOF_STDOUT_ID=""
+RECONNECT_PROOF_STDOUT_OFFSET=0
+RECONNECT_PROOF_STDOUT_DIGEST=""
+OPENSTEAMER_RECONNECT_PROOF_COUNT=0
+OPENSTEAMER_RECONNECT_BOUND_PROOF_COUNT=0
+OPENSTEAMER_RECONNECT_PROOF_ERROR=""
+OPENSTEAMER_RECONNECT_PROOF_DEADLINE_NS=0
 BLACKHOLE_PROBE_PID=""
 BLACKHOLE_PROBE_STATUS=""
 BLACKHOLE_PROBE_STARTED_SECONDS=0
@@ -1368,11 +1385,11 @@ trap opensteamer_exit_on_interrupt INT
 trap opensteamer_exit_on_termination TERM
 
 opensteamer_require_positive_integer \
-  OPENSTEAMER_HOST_RESTART_DELAY_SECONDS \
-  "${HOST_RESTART_DELAY_SECONDS}"
-opensteamer_require_positive_integer \
   OPENSTEAMER_HOST_CONNECTION_WAIT_TIMEOUT_SECONDS \
   "${HOST_CONNECTION_WAIT_TIMEOUT_SECONDS}"
+opensteamer_require_positive_integer \
+  OPENSTEAMER_RECONNECT_RAW_MICROPHONE_PROOF_TIMEOUT_SECONDS \
+  "${RECONNECT_RAW_MICROPHONE_PROOF_TIMEOUT_SECONDS}"
 opensteamer_require_positive_integer \
   OPENSTEAMER_HOST_CHURN_LOCK_ATTEMPTS \
   "${HOST_CHURN_LOCK_ATTEMPTS}"
@@ -1424,6 +1441,11 @@ opensteamer_require_positive_integer \
 opensteamer_require_positive_integer \
   OPENSTEAMER_DEVICE_LOCK_POLL_SECONDS \
   "${DEVICE_LOCK_POLL_SECONDS}"
+if (( RECONNECT_RAW_MICROPHONE_PROOF_TIMEOUT_SECONDS < 60 \
+    || RECONNECT_RAW_MICROPHONE_PROOF_TIMEOUT_SECONDS > 120 )); then
+  echo "OPENSTEAMER_RECONNECT_RAW_MICROPHONE_PROOF_TIMEOUT_SECONDS must be between 60 and 120." >&2
+  exit 2
+fi
 if (( BLACKHOLE_PROBE_TIMEOUT_SECONDS < 8 \
     || BLACKHOLE_PROBE_TIMEOUT_SECONDS > 120 )); then
   echo "OPENSTEAMER_BLACKHOLE_PROBE_TIMEOUT_SECONDS must be between 8 and 120." >&2
@@ -1498,6 +1520,12 @@ rm -rf \
   "${LEGACY_DEVICE_LOCKED_MARKER}" \
   "${HOST_EVENTS}" \
   "${HOST_STATUS}" \
+  "${RECONNECT_XCODEBUILD_LIVE_STDOUT}" \
+  "${RECONNECT_XCODEBUILD_LIVE_STDERR}" \
+  "${RECONNECT_RAW_MICROPHONE_PROOF_STREAM}" \
+  "${RECONNECT_PROOF_STDOUT_APPEND_CHUNK}" \
+  "${RECONNECT_PROOF_STDOUT_COMPLETED_LINES}" \
+  "${RECONNECT_PROOF_STDOUT_PARTIAL_LINE}" \
   "${HOST_BUILD_STDOUT}" \
   "${HOST_BUILD_STDERR}" \
   "${HOST_DEPLOYMENT_MANIFEST}" \
@@ -1685,6 +1713,10 @@ function validate_required_physical_activities_json() {
           $matches[0];
           "WebRTC route - host restart reconnect " + $attempt
         ) and
+        one_named_attachment(
+          $matches[0];
+          "Raw iPhone microphone continuity - host restart reconnect " + $attempt
+        ) and
         one_matching_attachment(
           $matches[0];
           "^test iPhone (Direct|TURN relay) route before host restart " + $attempt + "$"
@@ -1700,6 +1732,10 @@ function validate_required_physical_activities_json() {
         one_named_attachment(
           $matches[0];
           "WebRTC route - cold-launch saved-pair reconnect"
+        ) and
+        one_named_attachment(
+          $matches[0];
+          "Raw iPhone microphone continuity - cold-launch saved-pair reconnect"
         ) and
         one_named_attachment(
           $matches[0];
@@ -1737,7 +1773,9 @@ function validate_required_physical_activities_json() {
         "Explicit disconnect and same-process reconnect";
         [
           "WebRTC route - before explicit disconnect",
-          "WebRTC route - same-process reconnect after explicit disconnect"
+          "Raw iPhone microphone continuity - before explicit disconnect",
+          "WebRTC route - same-process reconnect after explicit disconnect",
+          "Raw iPhone microphone continuity - same-process reconnect after explicit disconnect"
         ]
       ) and
       one_cold_launch_activity($root_activities))
@@ -2818,12 +2856,397 @@ function wait_for_replacement_host_pid() {
   return 1
 }
 
-function wait_before_host_restart() {
-  if [[ "${OPENSTEAMER_SCRIPT_SELF_TEST:-}" == host-provenance-* ]]; then
-    sleep 0.15
+function parse_reconnect_raw_microphone_proof_line() {
+  local line=$1
+  local parsed
+  local -a values
+
+  parsed=$(LC_ALL=C /usr/bin/awk '
+    function valid_uuid(value, compact) {
+      if (length(value) != 36 || substr(value, 9, 1) != "-" ||
+          substr(value, 14, 1) != "-" || substr(value, 19, 1) != "-" ||
+          substr(value, 24, 1) != "-") return 0
+      compact=value
+      gsub(/-/, "", compact)
+      return length(compact) == 32 && compact !~ /[^0-9a-f]/
+    }
+    function valid_uint64(value, maximum, digit_index, digit, maximum_digit) {
+      if (value !~ /^[1-9][0-9]*$/) return 0
+      if (length(value) < 20) return 1
+      if (length(value) > 20) return 0
+      maximum="18446744073709551615"
+      for (digit_index=1; digit_index<=20; digit_index += 1) {
+        digit=substr(value, digit_index, 1) + 0
+        maximum_digit=substr(maximum, digit_index, 1) + 0
+        if (digit < maximum_digit) return 1
+        if (digit > maximum_digit) return 0
+      }
+      return 1
+    }
+    function field(token, expected, parts, count) {
+      count=split(token, parts, "=")
+      if (count != 2 || parts[1] != expected || parts[2] == "") {
+        invalid=1
+        return ""
+      }
+      return parts[2]
+    }
+    {
+      records += 1
+      if (NF != 11 || $1 != "OPENSTEAMER_RECONNECT_RAW_MICROPHONE_PROOF_V1") {
+        invalid=1
+        next
+      }
+      ordinal=field($2, "ordinal")
+      session=field($3, "session")
+      window=field($4, "window")
+      transport=field($5, "transport")
+      audio_policy=field($6, "audioPolicy")
+      negotiation=field($7, "negotiation")
+      binding=field($8, "binding")
+      track=field($9, "track")
+      mic_policy=field($10, "micPolicy")
+      recording=field($11, "recording")
+      canonical="OPENSTEAMER_RECONNECT_RAW_MICROPHONE_PROOF_V1" \
+        " ordinal=" ordinal " session=" session " window=" window \
+        " transport=" transport " audioPolicy=" audio_policy \
+        " negotiation=" negotiation \
+        " binding=" binding " track=" track " micPolicy=" mic_policy \
+        " recording=" recording
+      if ($0 != canonical || ordinal !~ /^[1-6]$/ ||
+          !valid_uuid(session) || !valid_uuid(window) ||
+          !valid_uuid(transport) || !valid_uuid(audio_policy) ||
+          !valid_uint64(negotiation) ||
+          !valid_uint64(binding) || !valid_uint64(track) ||
+          !valid_uint64(mic_policy) || !valid_uint64(recording)) invalid=1
+    }
+    END {
+      if (records != 1 || invalid) exit 65
+      print ordinal
+      print session
+      print window
+      print transport
+      print audio_policy
+      print negotiation
+      print binding
+      print track
+      print mic_policy
+      print recording
+    }
+  ' <<< "${line}") || return 1
+  values=("${(@f)parsed}")
+  (( ${#values[@]} == 10 )) || return 1
+  OPENSTEAMER_PARSED_PROOF_ORDINAL=${values[1]}
+  OPENSTEAMER_PARSED_PROOF_SESSION=${values[2]}
+  OPENSTEAMER_PARSED_PROOF_WINDOW=${values[3]}
+  OPENSTEAMER_PARSED_PROOF_TRANSPORT=${values[4]}
+  OPENSTEAMER_PARSED_PROOF_AUDIO_POLICY=${values[5]}
+  OPENSTEAMER_PARSED_PROOF_NEGOTIATION=${values[6]}
+  OPENSTEAMER_PARSED_PROOF_BINDING=${values[7]}
+  OPENSTEAMER_PARSED_PROOF_TRACK=${values[8]}
+  OPENSTEAMER_PARSED_PROOF_MIC_POLICY=${values[9]}
+  OPENSTEAMER_PARSED_PROOF_RECORDING=${values[10]}
+}
+
+function cleanup_reconnect_raw_microphone_proof_parser() {
+  /bin/rm -f \
+    "${RECONNECT_PROOF_STDOUT_APPEND_CHUNK}" \
+    "${RECONNECT_PROOF_STDOUT_COMPLETED_LINES}" \
+    "${RECONNECT_PROOF_STDOUT_PARTIAL_LINE}"
+}
+
+function reconnect_raw_microphone_proof_deadline_after_seconds() {
+  local timeout_seconds=$1
+  local current_ns
+  local timeout_ns
+
+  current_ns=$(current_monotonic_time_ns) || return $?
+  [[ -n "${current_ns}" && "${current_ns}" != *[^0-9]* ]] || return 1
+  timeout_ns=$((timeout_seconds * 1000000000))
+  (( timeout_seconds > 0 && timeout_ns > 0 \
+      && current_ns < 9223372036854775807 - timeout_ns )) || return 1
+  print -r -- "$((current_ns + timeout_ns))"
+}
+
+function capture_bounded_reconnect_raw_microphone_proof_snapshot() {
+  local deadline_ns=$1
+  local metadata
+  local snapshot_status
+  local -a metadata_lines
+
+  /bin/rm -f "${RECONNECT_PROOF_STDOUT_APPEND_CHUNK}" || return $?
+  if metadata=$(opensteamer_run_physical_validation_oracle \
+      log-snapshot-bounded \
+      "${RECONNECT_RAW_MICROPHONE_PROOF_STREAM}" \
+      "${RECONNECT_PROOF_STDOUT_ID:--}" \
+      "${RECONNECT_PROOF_STDOUT_OFFSET}" \
+      "${RECONNECT_PROOF_STDOUT_DIGEST}" \
+      "${RECONNECT_PROOF_STDOUT_APPEND_CHUNK}" \
+      "${deadline_ns}" \
+      "${RECONNECT_PROOF_MAX_APPEND_BYTES}"); then
+    snapshot_status=0
   else
-    sleep "${HOST_RESTART_DELAY_SECONDS}"
+    snapshot_status=$?
   fi
+  if (( snapshot_status != 0 )); then
+    /bin/rm -f "${RECONNECT_PROOF_STDOUT_APPEND_CHUNK}" || true
+    return "${snapshot_status}"
+  fi
+  metadata_lines=("${(@f)metadata}")
+  if (( ${#metadata_lines[@]} != 4 )) \
+      || [[ -z "${metadata_lines[1]}" \
+          || "${metadata_lines[2]}" == *[^0-9]* \
+          || "${metadata_lines[3]}" == *[^0-9a-f]* \
+          || ${#metadata_lines[3]} != 64 \
+          || ( "${metadata_lines[4]}" != "0" \
+            && "${metadata_lines[4]}" != "1" ) ]]; then
+    /bin/rm -f "${RECONNECT_PROOF_STDOUT_APPEND_CHUNK}" || true
+    return 1
+  fi
+  OPENSTEAMER_PROOF_SNAPSHOT_ID=${metadata_lines[1]}
+  OPENSTEAMER_PROOF_SNAPSHOT_OFFSET=${metadata_lines[2]}
+  OPENSTEAMER_PROOF_SNAPSHOT_DIGEST=${metadata_lines[3]}
+}
+
+function split_bounded_reconnect_raw_microphone_proof_lines() {
+  local deadline_ns=$1
+
+  opensteamer_run_physical_validation_oracle \
+    split-lines-bounded \
+    "${RECONNECT_PROOF_STDOUT_APPEND_CHUNK}" \
+    "${RECONNECT_PROOF_STDOUT_PARTIAL_LINE}" \
+    "${RECONNECT_PROOF_STDOUT_COMPLETED_LINES}" \
+    "${deadline_ns}" \
+    "${RECONNECT_PROOF_MAX_APPEND_BYTES}" \
+    "${RECONNECT_PROOF_MAX_PARTIAL_BYTES}"
+}
+
+# `churn_host_after_live_connections` owns the arrays referenced here. zsh's dynamic function
+# scope keeps them private to the isolated worker while allowing this parser to commit one exact
+# append-only batch without serializing lifecycle identity through temporary shell source.
+function audit_new_reconnect_raw_microphone_proofs() {
+  local deadline_ns=$1
+  local force_snapshot=${2:-0}
+  local line
+  local next_ordinal
+  local fingerprint
+  local observed_value
+  local snapshot_id
+  local snapshot_offset
+  local snapshot_digest
+  local stream_size
+  local snapshot_status
+
+  OPENSTEAMER_RECONNECT_PROOF_ERROR=""
+  [[ -n "${deadline_ns}" && "${deadline_ns}" != *[^0-9]* \
+      && ( "${force_snapshot}" == "0" || "${force_snapshot}" == "1" ) \
+      && -f "${RECONNECT_RAW_MICROPHONE_PROOF_STREAM}" \
+      && ! -L "${RECONNECT_RAW_MICROPHONE_PROOF_STREAM}" ]] || {
+    OPENSTEAMER_RECONNECT_PROOF_ERROR=\
+"bounded raw microphone proof stream inputs were invalid"
+    return 1
+  }
+  stream_size=$(
+    /usr/bin/stat -f '%z' "${RECONNECT_RAW_MICROPHONE_PROOF_STREAM}"
+  ) || return $?
+  [[ -n "${stream_size}" && "${stream_size}" != *[^0-9]* ]] || return 1
+  if (( stream_size < RECONNECT_PROOF_STDOUT_OFFSET \
+      || stream_size - RECONNECT_PROOF_STDOUT_OFFSET \
+        > RECONNECT_PROOF_MAX_APPEND_BYTES )); then
+    OPENSTEAMER_RECONNECT_PROOF_ERROR=\
+"bounded raw microphone proof stream exceeded its pinned append contract"
+    return 1
+  fi
+  if (( stream_size == RECONNECT_PROOF_STDOUT_OFFSET && force_snapshot == 0 )); then
+    OPENSTEAMER_RECONNECT_PROOF_COUNT=${proofs}
+    return 0
+  fi
+  if capture_bounded_reconnect_raw_microphone_proof_snapshot \
+      "${deadline_ns}"; then
+    snapshot_status=0
+  else
+    snapshot_status=$?
+  fi
+  if (( snapshot_status != 0 )); then
+    OPENSTEAMER_RECONNECT_PROOF_ERROR=\
+"bounded raw microphone proof stream snapshot failed"
+    return "${snapshot_status}"
+  fi
+  snapshot_id=${OPENSTEAMER_PROOF_SNAPSHOT_ID}
+  snapshot_offset=${OPENSTEAMER_PROOF_SNAPSHOT_OFFSET}
+  snapshot_digest=${OPENSTEAMER_PROOF_SNAPSHOT_DIGEST}
+  if split_bounded_reconnect_raw_microphone_proof_lines \
+      "${deadline_ns}"; then
+    snapshot_status=0
+  else
+    snapshot_status=$?
+  fi
+  if (( snapshot_status != 0 )); then
+    OPENSTEAMER_RECONNECT_PROOF_ERROR=\
+"bounded raw microphone proof stream could not be split"
+    return "${snapshot_status}"
+  fi
+
+  while IFS= read -r line; do
+    [[ "${line}" == *"OPENSTEAMER_RECONNECT_RAW_MICROPHONE_PROOF_V1"* ]] \
+      || continue
+    if ! parse_reconnect_raw_microphone_proof_line "${line}"; then
+      OPENSTEAMER_RECONNECT_PROOF_ERROR=\
+"malformed raw microphone proof in authenticated proof stream"
+      return 1
+    fi
+    next_ordinal=$((proofs + 1))
+    if (( OPENSTEAMER_PARSED_PROOF_ORDINAL <= proofs )); then
+      OPENSTEAMER_RECONNECT_PROOF_ERROR=\
+"duplicate raw microphone proof ordinal ${OPENSTEAMER_PARSED_PROOF_ORDINAL}"
+      return 1
+    fi
+    if (( OPENSTEAMER_PARSED_PROOF_ORDINAL != next_ordinal )); then
+      OPENSTEAMER_RECONNECT_PROOF_ERROR=\
+"out-of-order raw microphone proof ordinal ${OPENSTEAMER_PARSED_PROOF_ORDINAL}; expected ${next_ordinal}"
+      return 1
+    fi
+    fingerprint=\
+"${OPENSTEAMER_PARSED_PROOF_SESSION}|${OPENSTEAMER_PARSED_PROOF_WINDOW}|${OPENSTEAMER_PARSED_PROOF_TRANSPORT}|${OPENSTEAMER_PARSED_PROOF_AUDIO_POLICY}|${OPENSTEAMER_PARSED_PROOF_NEGOTIATION}|${OPENSTEAMER_PARSED_PROOF_BINDING}|${OPENSTEAMER_PARSED_PROOF_TRACK}|${OPENSTEAMER_PARSED_PROOF_MIC_POLICY}|${OPENSTEAMER_PARSED_PROOF_RECORDING}"
+    for observed_value in "${observed_fingerprints[@]}"; do
+      if [[ "${observed_value}" == "${fingerprint}" ]]; then
+        OPENSTEAMER_RECONNECT_PROOF_ERROR=\
+"raw microphone proof ${next_ordinal} reused a complete lifecycle fingerprint"
+        return 1
+      fi
+    done
+    for observed_value in "${observed_sessions[@]}"; do
+      if [[ "${observed_value}" == "${OPENSTEAMER_PARSED_PROOF_SESSION}" ]]; then
+        OPENSTEAMER_RECONNECT_PROOF_ERROR=\
+"raw microphone proof ${next_ordinal} reused a session UUID"
+        return 1
+      fi
+    done
+    for observed_value in "${observed_windows[@]}"; do
+      if [[ "${observed_value}" == "${OPENSTEAMER_PARSED_PROOF_WINDOW}" ]]; then
+        OPENSTEAMER_RECONNECT_PROOF_ERROR=\
+"raw microphone proof ${next_ordinal} reused a window UUID"
+        return 1
+      fi
+    done
+    for observed_value in "${observed_transports[@]}"; do
+      if [[ "${observed_value}" == "${OPENSTEAMER_PARSED_PROOF_TRANSPORT}" ]]; then
+        OPENSTEAMER_RECONNECT_PROOF_ERROR=\
+"raw microphone proof ${next_ordinal} reused a transport UUID"
+        return 1
+      fi
+    done
+    for observed_value in "${observed_audio_policies[@]}"; do
+      if [[ "${observed_value}" == "${OPENSTEAMER_PARSED_PROOF_AUDIO_POLICY}" ]]; then
+        OPENSTEAMER_RECONNECT_PROOF_ERROR=\
+"raw microphone proof ${next_ordinal} reused an audio-policy UUID"
+        return 1
+      fi
+    done
+    proofs=${next_ordinal}
+    observed_sessions+=("${OPENSTEAMER_PARSED_PROOF_SESSION}")
+    observed_windows+=("${OPENSTEAMER_PARSED_PROOF_WINDOW}")
+    observed_transports+=("${OPENSTEAMER_PARSED_PROOF_TRANSPORT}")
+    observed_audio_policies+=("${OPENSTEAMER_PARSED_PROOF_AUDIO_POLICY}")
+    observed_fingerprints+=("${fingerprint}")
+    proof_records[${proofs}]=${line}
+  done < "${RECONNECT_PROOF_STDOUT_COMPLETED_LINES}"
+
+  RECONNECT_PROOF_STDOUT_ID=${snapshot_id}
+  RECONNECT_PROOF_STDOUT_OFFSET=${snapshot_offset}
+  RECONNECT_PROOF_STDOUT_DIGEST=${snapshot_digest}
+  OPENSTEAMER_RECONNECT_PROOF_COUNT=${proofs}
+  /bin/rm -f \
+    "${RECONNECT_PROOF_STDOUT_APPEND_CHUNK}" \
+    "${RECONNECT_PROOF_STDOUT_COMPLETED_LINES}"
+}
+
+function bind_available_reconnect_raw_microphone_proofs() {
+  local ordinal
+
+  while (( bound_proofs < proofs && bound_proofs < connections )); do
+    ordinal=$((bound_proofs + 1))
+    [[ -n "${proof_records[${ordinal}]-}" \
+        && -n "${audited_connection_host_pids[${ordinal}]-}" \
+        && -n "${audited_connection_records[${ordinal}]-}" ]] || return 1
+    print -r -- \
+      "proof=${ordinal} connection=${ordinal} observed_at=$(date -u +%FT%TZ) host_pid=${audited_connection_host_pids[${ordinal}]} host_log=${audited_connection_records[${ordinal}]} raw_microphone=${proof_records[${ordinal}]}" \
+      >> "${HOST_EVENTS}" || return $?
+    bound_proofs=${ordinal}
+  done
+  OPENSTEAMER_RECONNECT_BOUND_PROOF_COUNT=${bound_proofs}
+}
+
+function wait_for_reconnect_raw_microphone_proof_before_restart() {
+  local expected_ordinal=$1
+  local expected_host_pid=$2
+  local new_connections
+  local first_connection_number
+  local current_ns
+  local proof_audit_status
+
+  OPENSTEAMER_RECONNECT_PROOF_DEADLINE_NS=$(
+    reconnect_raw_microphone_proof_deadline_after_seconds \
+      "${RECONNECT_RAW_MICROPHONE_PROOF_TIMEOUT_SECONDS}"
+  ) || return $?
+
+  while true; do
+    current_ns=$(current_monotonic_time_ns) || return $?
+    if (( current_ns >= OPENSTEAMER_RECONNECT_PROOF_DEADLINE_NS )); then
+      OPENSTEAMER_RECONNECT_PROOF_ERROR=\
+"timed out waiting ${RECONNECT_RAW_MICROPHONE_PROOF_TIMEOUT_SECONDS}s for raw microphone proof ${expected_ordinal}"
+      return 1
+    fi
+    if ! audit_new_host_log_records "${expected_host_pid}"; then
+      OPENSTEAMER_RECONNECT_PROOF_ERROR=\
+"host log or PID provenance changed while waiting for raw microphone proof ${expected_ordinal}"
+      return 1
+    fi
+    new_connections=${OPENSTEAMER_NEW_HOST_CONNECTIONS}
+    if (( new_connections > 0 )); then
+      first_connection_number=$((connections + 1))
+      record_audited_host_connections \
+        "${first_connection_number}" "${OPENSTEAMER_CURRENT_HOST_PID}"
+      connections=$((connections + new_connections))
+    fi
+    if (( connections != expected_ordinal )); then
+      OPENSTEAMER_RECONNECT_PROOF_ERROR=\
+"raw microphone proof ${expected_ordinal} did not retain one independently audited connection"
+      return 1
+    fi
+    if audit_new_reconnect_raw_microphone_proofs \
+        "${OPENSTEAMER_RECONNECT_PROOF_DEADLINE_NS}"; then
+      proof_audit_status=0
+    else
+      proof_audit_status=$?
+    fi
+    if (( proof_audit_status != 0 )); then
+      if (( proof_audit_status == 124 )); then
+        OPENSTEAMER_RECONNECT_PROOF_ERROR=\
+"timed out waiting ${RECONNECT_RAW_MICROPHONE_PROOF_TIMEOUT_SECONDS}s for raw microphone proof ${expected_ordinal}"
+      fi
+      return "${proof_audit_status}"
+    fi
+    if (( proofs > connections )); then
+      OPENSTEAMER_RECONNECT_PROOF_ERROR=\
+"raw microphone proof ${proofs} preceded its corresponding audited host connection"
+      return 1
+    fi
+    bind_available_reconnect_raw_microphone_proofs || {
+      OPENSTEAMER_RECONNECT_PROOF_ERROR=\
+"raw microphone proof ${expected_ordinal} could not bind to its audited host connection"
+      return 1
+    }
+    if ! kill -0 "${XCODEBUILD_PID}" 2>/dev/null; then
+      OPENSTEAMER_RECONNECT_PROOF_ERROR=\
+"xcodebuild ended before raw microphone proof ${expected_ordinal} could authorize restart"
+      return 1
+    fi
+    if (( bound_proofs == expected_ordinal )); then
+      return 0
+    fi
+    sleep 0.05
+  done
 }
 
 function write_host_status() {
@@ -2838,10 +3261,171 @@ function write_host_status() {
   {
     print -r -- "status=${gate_state}"
     print -r -- "connections=${connections}"
+    print -r -- "proofs=${OPENSTEAMER_RECONNECT_PROOF_COUNT}"
+    print -r -- "bound_proofs=${OPENSTEAMER_RECONNECT_BOUND_PROOF_COUNT}"
     print -r -- "restarts=${restarts}"
     print -r -- "detail=${detail}"
   } > "${temporary_status}"
   mv "${temporary_status}" "${HOST_STATUS}"
+}
+
+function validate_final_reconnect_host_status() {
+  LC_ALL=C /usr/bin/awk '
+    NR == 1 { if ($0 != "status=passed") invalid=1; next }
+    NR == 2 { if ($0 != "connections=6") invalid=1; next }
+    NR == 3 { if ($0 != "proofs=6") invalid=1; next }
+    NR == 4 { if ($0 != "bound_proofs=6") invalid=1; next }
+    NR == 5 { if ($0 != "restarts=3") invalid=1; next }
+    NR == 6 {
+      if ($0 != "detail=audited six live connections, bound six fresh raw microphone proofs, and verified three globally unique host replacements") invalid=1
+      next
+    }
+    NR > 6 { invalid=1 }
+    END { if (invalid || NR != 6) exit 65 }
+  ' "${HOST_STATUS}"
+}
+
+function validate_final_reconnect_host_events() {
+  local line
+  local remainder
+  local event_number
+  local event_pid
+  local event_log
+  local raw_proof
+  local fingerprint
+  local observed_value
+  local connection_count=0
+  local proof_count=0
+  local restart_count=0
+  local -a connection_pids=()
+  local -a connection_logs=()
+  local -a proof_pids=()
+  local -a proof_host_logs=()
+  local -a restart_old_pids=()
+  local -a restart_new_pids=()
+  local -a final_sessions=()
+  local -a final_windows=()
+  local -a final_transports=()
+  local -a final_audio_policies=()
+  local -a final_fingerprints=()
+  local -A final_generation_pids=()
+
+  [[ -f "${HOST_EVENTS}" && ! -L "${HOST_EVENTS}" ]] || return 1
+  while IFS= read -r line; do
+    case "${line}" in
+      connection=*)
+        connection_count=$((connection_count + 1))
+        remainder=${line#connection=}
+        event_number=${remainder%% *}
+        [[ "${event_number}" == "${connection_count}" \
+            && "${line}" == \
+              "connection=${connection_count} observed_at="*" host_pid="*" log="* ]] \
+          || return 1
+        remainder=${line#* host_pid=}
+        [[ "${remainder}" != "${line}" ]] || return 1
+        event_pid=${remainder%% *}
+        [[ -n "${event_pid}" && "${event_pid}" != *[^0-9]* ]] \
+          && (( event_pid > 0 )) || return 1
+        connection_pids[${connection_count}]=${event_pid}
+        event_log=${line#* log=}
+        [[ "${event_log}" != "${line}" && -n "${event_log}" ]] || return 1
+        connection_logs[${connection_count}]=${event_log}
+        ;;
+      proof=*)
+        proof_count=$((proof_count + 1))
+        [[ "${line}" == \
+          "proof=${proof_count} connection=${proof_count} observed_at="*\
+" host_pid="*" host_log="*" raw_microphone="* ]] || return 1
+        remainder=${line#* host_pid=}
+        [[ "${remainder}" != "${line}" ]] || return 1
+        event_pid=${remainder%% *}
+        [[ -n "${event_pid}" && "${event_pid}" != *[^0-9]* ]] \
+          && (( event_pid > 0 )) || return 1
+        remainder=${line#* host_log=}
+        [[ "${remainder}" != "${line}" \
+            && "${remainder}" == *" raw_microphone="* ]] || return 1
+        event_log=${remainder%% raw_microphone=*}
+        [[ -n "${event_log}" ]] || return 1
+        raw_proof=${line#* raw_microphone=}
+        [[ "${raw_proof}" != "${line}" ]] || return 1
+        parse_reconnect_raw_microphone_proof_line "${raw_proof}" || return 1
+        (( OPENSTEAMER_PARSED_PROOF_ORDINAL == proof_count )) || return 1
+        for observed_value in "${final_sessions[@]}"; do
+          [[ "${observed_value}" != "${OPENSTEAMER_PARSED_PROOF_SESSION}" ]] \
+            || return 1
+        done
+        for observed_value in "${final_windows[@]}"; do
+          [[ "${observed_value}" != "${OPENSTEAMER_PARSED_PROOF_WINDOW}" ]] \
+            || return 1
+        done
+        for observed_value in "${final_transports[@]}"; do
+          [[ "${observed_value}" != "${OPENSTEAMER_PARSED_PROOF_TRANSPORT}" ]] \
+            || return 1
+        done
+        for observed_value in "${final_audio_policies[@]}"; do
+          [[ "${observed_value}" != "${OPENSTEAMER_PARSED_PROOF_AUDIO_POLICY}" ]] \
+            || return 1
+        done
+        fingerprint=\
+"${OPENSTEAMER_PARSED_PROOF_SESSION}|${OPENSTEAMER_PARSED_PROOF_WINDOW}|${OPENSTEAMER_PARSED_PROOF_TRANSPORT}|${OPENSTEAMER_PARSED_PROOF_AUDIO_POLICY}|${OPENSTEAMER_PARSED_PROOF_NEGOTIATION}|${OPENSTEAMER_PARSED_PROOF_BINDING}|${OPENSTEAMER_PARSED_PROOF_TRACK}|${OPENSTEAMER_PARSED_PROOF_MIC_POLICY}|${OPENSTEAMER_PARSED_PROOF_RECORDING}"
+        for observed_value in "${final_fingerprints[@]}"; do
+          [[ "${observed_value}" != "${fingerprint}" ]] || return 1
+        done
+        final_sessions+=("${OPENSTEAMER_PARSED_PROOF_SESSION}")
+        final_windows+=("${OPENSTEAMER_PARSED_PROOF_WINDOW}")
+        final_transports+=("${OPENSTEAMER_PARSED_PROOF_TRANSPORT}")
+        final_audio_policies+=("${OPENSTEAMER_PARSED_PROOF_AUDIO_POLICY}")
+        final_fingerprints+=("${fingerprint}")
+        proof_pids[${proof_count}]=${event_pid}
+        proof_host_logs[${proof_count}]=${event_log}
+        ;;
+      restart=*)
+        restart_count=$((restart_count + 1))
+        [[ "${line}" == \
+          "restart=${restart_count} completed_at="*" old_pid="*" new_pid="* ]] \
+          || return 1
+        remainder=${line#* old_pid=}
+        [[ "${remainder}" != "${line}" ]] || return 1
+        restart_old_pids[${restart_count}]=${remainder%% *}
+        remainder=${line#* new_pid=}
+        [[ "${remainder}" != "${line}" ]] || return 1
+        restart_new_pids[${restart_count}]=${remainder%% *}
+        [[ "${restart_old_pids[${restart_count}]}" != *[^0-9]* \
+            && "${restart_new_pids[${restart_count}]}" != *[^0-9]* ]] \
+          || return 1
+        ;;
+      *)
+        return 1
+        ;;
+    esac
+  done < "${HOST_EVENTS}"
+
+  (( connection_count == 6 && proof_count == 6 && restart_count == 3 )) \
+    || return 1
+  for event_number in {1..6}; do
+    [[ "${proof_pids[${event_number}]}" \
+          == "${connection_pids[${event_number}]}" \
+        && "${proof_host_logs[${event_number}]}" \
+          == "${connection_logs[${event_number}]}" ]] || return 1
+  done
+  for event_number in {1..3}; do
+    [[ "${restart_old_pids[${event_number}]}" \
+          == "${connection_pids[${event_number}]}" \
+        && "${restart_new_pids[${event_number}]}" \
+          == "${connection_pids[$((event_number + 1))]}" ]] || return 1
+  done
+  for event_number in {1..4}; do
+    event_pid=${connection_pids[${event_number}]}
+    [[ -z "${final_generation_pids[${event_pid}]-}" ]] || return 1
+    final_generation_pids[${event_pid}]=1
+  done
+  [[ "${connection_pids[5]}" == "${connection_pids[4]}" \
+      && "${connection_pids[6]}" == "${connection_pids[4]}" ]] || return 1
+}
+
+function validate_final_reconnect_host_evidence() {
+  validate_final_reconnect_host_status \
+    && validate_final_reconnect_host_events
 }
 
 function acquire_host_churn_lock() {
@@ -2903,11 +3487,25 @@ function start_host_churn_worker() {
     HOST_LOG_START_ID
     HOST_LOG_START_OFFSET
     HOST_LOG_START_DIGEST
+    RECONNECT_RAW_MICROPHONE_PROOF_STREAM
+    RECONNECT_PROOF_MAX_APPEND_BYTES
+    RECONNECT_PROOF_MAX_PARTIAL_BYTES
+    RECONNECT_PROOF_FINAL_AUDIT_TIMEOUT_SECONDS
+    RECONNECT_PROOF_STDOUT_APPEND_CHUNK
+    RECONNECT_PROOF_STDOUT_COMPLETED_LINES
+    RECONNECT_PROOF_STDOUT_PARTIAL_LINE
+    RECONNECT_PROOF_STDOUT_ID
+    RECONNECT_PROOF_STDOUT_OFFSET
+    RECONNECT_PROOF_STDOUT_DIGEST
+    OPENSTEAMER_RECONNECT_PROOF_COUNT
+    OPENSTEAMER_RECONNECT_BOUND_PROOF_COUNT
+    OPENSTEAMER_RECONNECT_PROOF_ERROR
+    OPENSTEAMER_RECONNECT_PROOF_DEADLINE_NS
     EXPECTED_INITIAL_HOST_PID
     XCODEBUILD_PID
     UI_TEST_TIMEOUT_SECONDS
     HOST_CONNECTION_WAIT_TIMEOUT_SECONDS
-    HOST_RESTART_DELAY_SECONDS
+    RECONNECT_RAW_MICROPHONE_PROOF_TIMEOUT_SECONDS
     EXPECTED_MAC_HOST_TEAM_ID
     MAC_HOST_DEPLOYMENT_VERIFIER
     MAC_HOST_LAUNCH_STATE_VERIFIER
@@ -2956,7 +3554,15 @@ function start_host_churn_worker() {
     verify_host_deployment_snapshot
     require_exact_safe_host_mutation_identity
     kickstart_host_service
-    wait_before_host_restart
+    current_monotonic_time_ns
+    parse_reconnect_raw_microphone_proof_line
+    cleanup_reconnect_raw_microphone_proof_parser
+    reconnect_raw_microphone_proof_deadline_after_seconds
+    capture_bounded_reconnect_raw_microphone_proof_snapshot
+    split_bounded_reconnect_raw_microphone_proof_lines
+    audit_new_reconnect_raw_microphone_proofs
+    bind_available_reconnect_raw_microphone_proofs
+    wait_for_reconnect_raw_microphone_proof_before_restart
     write_host_status
     acquire_host_churn_lock
     release_host_churn_lock
@@ -3355,6 +3961,52 @@ function start_isolated_validation_process_capturing_output() {
   : > "${standard_error}" || return $?
   opensteamer_start_isolated_validation_process "$@" \
     > "${standard_output}" 2> "${standard_error}"
+}
+
+# Keep complete xcodebuild diagnostics while projecting only marker-candidate records into the
+# small authenticated stream consumed by the host worker. The pipeline and command run inside the
+# isolated group, and pipefail preserves either an xcodebuild or projection write failure.
+function start_reconnect_validation_process_capturing_proof_stream() {
+  local standard_output=$1
+  local standard_error=$2
+  local proof_stream=$3
+  shift 3
+
+  : > "${standard_output}" || return $?
+  : > "${standard_error}" || return $?
+  : > "${proof_stream}" || return $?
+  opensteamer_start_isolated_validation_process \
+    /bin/zsh -c '
+set -eu -o pipefail
+standard_output=$1
+standard_error=$2
+proof_stream=$3
+shift 3
+exec 2>> "${standard_error}"
+"$@" | while true; do
+  line=""
+  if IFS= read -r line; then
+    complete_line=1
+  else
+    complete_line=0
+    [[ -n "${line}" ]] || break
+  fi
+  if (( complete_line )); then
+    print -r -- "${line}" >> "${standard_output}"
+  else
+    print -rn -- "${line}" >> "${standard_output}"
+  fi
+  if [[ "${line}" == *"OPENSTEAMER_RECONNECT_RAW_MICROPHONE_PROOF_V1"* ]]; then
+    if (( complete_line )); then
+      print -r -- "${line}" >> "${proof_stream}"
+    else
+      print -rn -- "${line}" >> "${proof_stream}"
+    fi
+  fi
+  (( complete_line )) || break
+done
+' reconnect-proof-projection \
+    "${standard_output}" "${standard_error}" "${proof_stream}" "$@"
 }
 
 function capture_raw_ui_completion_observation_from_log() {
@@ -6728,6 +7380,8 @@ function record_audited_host_connections() {
 
   while IFS= read -r line; do
     [[ "${line}" == *"Worldwide WebRTC peer state: connected pid="* ]] || continue
+    audited_connection_host_pids[${connection_number}]=${host_pid}
+    audited_connection_records[${connection_number}]=${line}
     print -r -- \
       "connection=${connection_number} observed_at=$(date -u +%FT%TZ) host_pid=${host_pid} log=${line}" \
       >> "${HOST_EVENTS}"
@@ -6788,6 +7442,27 @@ function prepare_host_deployment_contract_self_test() {
   } > "${HOST_GENERATION_STATE}" || return $?
 }
 
+function mutate_final_reconnect_host_events_for_self_test() {
+  local mode=$1
+  local temporary_events="${HOST_EVENTS}.mutated"
+
+  LC_ALL=C /usr/bin/awk -v mode="${mode}" '
+    mode == "reused-generation-pid" &&
+        $0 ~ /^(connection=3 |proof=3 |restart=2 |restart=3 )/ {
+      gsub(/pid=300/, "pid=100")
+    }
+    mode == "final-pid-drift" &&
+        $0 ~ /^(connection=[56] |proof=[56] )/ {
+      gsub(/pid=400/, "pid=401")
+    }
+    mode == "host-log-mismatch" && $0 ~ /^proof=5 / {
+      sub(/host_log=Worldwide WebRTC peer state: connected pid=400/, "host_log=Worldwide WebRTC peer state: connected pid=999")
+    }
+    { print }
+  ' "${HOST_EVENTS}" > "${temporary_events}" || return $?
+  /bin/mv "${temporary_events}" "${HOST_EVENTS}"
+}
+
 function run_host_provenance_self_test() {
   local scenario=${OPENSTEAMER_SCRIPT_SELF_TEST#host-provenance-}
   local host_pid_file="${ARTIFACT_DIR}/self-test-host-pid.txt"
@@ -6797,10 +7472,12 @@ function run_host_provenance_self_test() {
   local audit_only_ready="${ARTIFACT_DIR}/self-test-audit-only-ready.txt"
   local audit_only_proceed="${ARTIFACT_DIR}/self-test-audit-only-proceed.txt"
   local watcher_result
+  local xcodebuild_result
   local kickstart_count
   local empty_digest
 
   HOST_LOG="${ARTIFACT_DIR}/self-test-worldwide-host.log"
+  XCODEBUILD_LIVE_STDOUT=${RECONNECT_XCODEBUILD_LIVE_STDOUT}
   OPENSTEAMER_SELF_TEST_HOST_PID_FILE=${host_pid_file}
   OPENSTEAMER_SELF_TEST_HOST_PID_QUEUE=${host_pid_queue}
   OPENSTEAMER_SELF_TEST_KICKSTART_EVENTS=${kickstart_events}
@@ -6809,6 +7486,11 @@ function run_host_provenance_self_test() {
       || "${scenario}" == "final-partial-mismatch" ]]; then
     OPENSTEAMER_SELF_TEST_AUDIT_ONLY_READY=${audit_only_ready}
     OPENSTEAMER_SELF_TEST_AUDIT_ONLY_PROCEED=${audit_only_proceed}
+  fi
+  # Production startup has already enforced the 60...120 second physical handshake contract. The
+  # timeout mutant lowers only this inert deterministic worker so XCTest does not wait a minute.
+  if [[ "${scenario}" == "proof-timeout" ]]; then
+    RECONNECT_RAW_MICROPHONE_PROOF_TIMEOUT_SECONDS=1
   fi
   EXPECTED_INITIAL_HOST_PID=100
   rm -rf \
@@ -6825,7 +7507,13 @@ function run_host_provenance_self_test() {
     "${HOST_CHURN_STOP_MARKER}" \
     "${HOST_LOG_APPEND_CHUNK}" \
     "${HOST_LOG_COMPLETED_LINES}" \
-    "${HOST_LOG_PARTIAL_LINE}"
+    "${HOST_LOG_PARTIAL_LINE}" \
+    "${RECONNECT_XCODEBUILD_LIVE_STDOUT}" \
+    "${RECONNECT_XCODEBUILD_LIVE_STDERR}" \
+    "${RECONNECT_RAW_MICROPHONE_PROOF_STREAM}" \
+    "${RECONNECT_PROOF_STDOUT_APPEND_CHUNK}" \
+    "${RECONNECT_PROOF_STDOUT_COMPLETED_LINES}" \
+    "${RECONNECT_PROOF_STDOUT_PARTIAL_LINE}"
   print -r -- "baseline" > "${HOST_LOG}"
   print -r -- "100" > "${host_pid_file}"
   case "${scenario}" in
@@ -6848,7 +7536,11 @@ function run_host_provenance_self_test() {
   HOST_LOG_START_DIGEST=${OPENSTEAMER_LOG_SNAPSHOT_DIGEST}
   rm -f "${HOST_LOG_APPEND_CHUNK}"
 
-  opensteamer_start_isolated_validation_process /bin/zsh -c '
+  if ! start_reconnect_validation_process_capturing_proof_stream \
+      "${RECONNECT_XCODEBUILD_LIVE_STDOUT}" \
+      "${RECONNECT_XCODEBUILD_LIVE_STDERR}" \
+      "${RECONNECT_RAW_MICROPHONE_PROOF_STREAM}" \
+      /bin/zsh -c '
 scenario=$1
 log_path=$2
 pid_path=$3
@@ -6856,6 +7548,24 @@ ready_path=$4
 
 function append_record() {
   print -r -- "Worldwide WebRTC peer state: connected pid=$1" >> "${log_path}"
+}
+function append_proof() {
+  local ordinal=$1
+  local identity_ordinal=${2:-${ordinal}}
+  local session_ordinal=${3:-${identity_ordinal}}
+  local generation_value=${4:-${identity_ordinal}}
+  local mic_policy_value=${5:-1}
+  local identity_tail
+  local session_tail
+
+  identity_tail=$(printf "%012d" "${identity_ordinal}") || return $?
+  session_tail=$(printf "%012d" "${session_ordinal}") || return $?
+  print -r -- \
+    "OPENSTEAMER_RECONNECT_RAW_MICROPHONE_PROOF_V1 ordinal=${ordinal} session=10000000-0000-4000-8000-${session_tail} window=20000000-0000-4000-8000-${identity_tail} transport=30000000-0000-4000-8000-${identity_tail} audioPolicy=40000000-0000-4000-8000-${identity_tail} negotiation=${generation_value} binding=${generation_value} track=${generation_value} micPolicy=${mic_policy_value} recording=${generation_value}"
+}
+function append_connection_and_proof() {
+  append_record "$1" || return $?
+  append_proof "$2" || return $?
 }
 function wait_for_file() {
   for poll in {1..400}; do
@@ -6876,6 +7586,11 @@ function wait_for_pid() {
 }
 
 case "${scenario}" in
+  proof-projection-command-failure)
+    print -r -- "ordinary xcodebuild output before synthetic failure"
+    sleep 0.2
+    exit 17
+    ;;
   batched-malformed)
     append_record 100
     append_record 0
@@ -6883,40 +7598,98 @@ case "${scenario}" in
   pre-kick-mismatch)
     append_record 100
     wait_for_file "${ready_path}" || exit $?
+    append_proof 1
     append_record 999
     ;;
   same-inode-rewrite)
     append_record 100
     wait_for_file "${ready_path}" || exit $?
+    append_proof 1
     print -rn -- B \
       | /bin/dd of="${log_path}" bs=1 seek=0 conv=notrunc 2>/dev/null
     ;;
-  *)
+  proof-missing)
     append_record 100
+    wait_for_file "${ready_path}" || exit $?
+    exit 0
+    ;;
+  proof-timeout)
+    append_record 100
+    wait_for_file "${ready_path}" || exit $?
+    sleep 2
+    exit 0
+    ;;
+  proof-duplicate)
+    append_record 100
+    append_proof 1
+    append_proof 1
+    ;;
+  proof-out-of-order)
+    append_record 100
+    append_proof 2
+    ;;
+  proof-zero-generation)
+    append_record 100
+    append_proof 1 1 1 0 0
+    ;;
+  proof-max-plus-one-generation)
+    append_record 100
+    append_proof 1 1 1 18446744073709551616 18446744073709551616
+    ;;
+  proof-reused-uuid)
+    append_connection_and_proof 100 1
     wait_for_pid 200 || exit $?
     append_record 200
+    append_proof 2 2 1 2
+    ;;
+  proof-reused-fingerprint)
+    append_connection_and_proof 100 1
+    wait_for_pid 200 || exit $?
+    append_record 200
+    append_proof 2 1 1 1
+    ;;
+  *)
+    if [[ "${scenario}" == proof-projection-noisy ]]; then
+      /usr/bin/yes "ordinary xcodebuild noise" \
+        | /usr/bin/head -c 131072 || true
+      print -r -- ""
+    fi
+    append_record 100
+    if [[ "${scenario}" == proof-max-generation ]]; then
+      append_proof \
+        1 1 1 18446744073709551615 18446744073709551615
+    else
+      append_proof 1
+    fi
+    wait_for_pid 200 || exit $?
+    append_connection_and_proof 200 2
     if [[ "${scenario}" == reused-pid ]]; then
       wait_for_pid 100 || exit $?
     else
       wait_for_pid 300 || exit $?
-      append_record 300
+      append_connection_and_proof 300 3
       wait_for_pid 400 || exit $?
       if [[ "${scenario}" == late-mismatch ]]; then
         append_record 999
-      elif [[ "${scenario}" == unique-pids ]]; then
-        append_record 400
+      else
+        append_connection_and_proof 400 4
+        append_connection_and_proof 400 5
+        append_connection_and_proof 400 6
       fi
     fi
     ;;
 esac
 sleep 0.5
 ' host-provenance-writer \
-    "${scenario}" "${HOST_LOG}" "${host_pid_file}" "${pre_kick_ready}"
+      "${scenario}" "${HOST_LOG}" "${host_pid_file}" "${pre_kick_ready}"; then
+    return 62
+  fi
 
   if ! start_host_churn_worker; then
     return 60
   fi
   opensteamer_wait_for_final_process_status "${XCODEBUILD_PID}"
+  xcodebuild_result=${OPENSTEAMER_FINAL_PROCESS_STATUS}
   if ! opensteamer_wait_for_process_group_exit "${XCODEBUILD_PID}" 1; then
     opensteamer_terminate_isolated_process_group \
       "${XCODEBUILD_PID}" "${UI_TEST_TERMINATION_GRACE_SECONDS}"
@@ -6939,7 +7712,8 @@ sleep 0.5
       || "${scenario}" == "final-partial-mismatch" ]]; then
     opensteamer_write_state "${audit_only_proceed}" "state=proceed"
   fi
-  if ! opensteamer_wait_for_process_exit "${HOST_WATCHER_PID}" 3; then
+  if ! opensteamer_wait_for_process_exit \
+      "${HOST_WATCHER_PID}" "${HOST_FINAL_WATCHER_WAIT_TIMEOUT_SECONDS}"; then
     return 21
   fi
   if opensteamer_process_group_exists "${HOST_WATCHER_PID}"; then
@@ -6954,6 +7728,39 @@ sleep 0.5
   XCODEBUILD_PID=""
   XCODEBUILD_GROUP_ISOLATED=0
   kickstart_count=$(grep -c '^kickstart=' "${kickstart_events}" 2>/dev/null || true)
+  case "${scenario}" in
+    final-events-reused-generation-pid)
+      mutate_final_reconnect_host_events_for_self_test \
+        reused-generation-pid || return 124
+      ;;
+    final-events-final-pid-drift)
+      mutate_final_reconnect_host_events_for_self_test \
+        final-pid-drift || return 125
+      ;;
+    final-events-host-log-mismatch)
+      mutate_final_reconnect_host_events_for_self_test \
+        host-log-mismatch || return 126
+      ;;
+  esac
+  [[ -f "${RECONNECT_XCODEBUILD_LIVE_STDOUT}" \
+      && ! -L "${RECONNECT_XCODEBUILD_LIVE_STDOUT}" \
+      && -f "${RECONNECT_XCODEBUILD_LIVE_STDERR}" \
+      && ! -L "${RECONNECT_XCODEBUILD_LIVE_STDERR}" \
+      && -f "${RECONNECT_RAW_MICROPHONE_PROOF_STREAM}" \
+      && ! -L "${RECONNECT_RAW_MICROPHONE_PROOF_STREAM}" ]] || return 63
+  [[ ! -e "${RECONNECT_PROOF_STDOUT_APPEND_CHUNK}" \
+      && ! -e "${RECONNECT_PROOF_STDOUT_COMPLETED_LINES}" \
+      && ! -e "${RECONNECT_PROOF_STDOUT_PARTIAL_LINE}" ]] || return 64
+  if [[ "${scenario}" == "proof-projection-command-failure" ]]; then
+    (( xcodebuild_result == 17 )) || return 102
+  else
+    (( xcodebuild_result == 0 )) || return 103
+  fi
+  if /usr/bin/grep -Fv \
+      'OPENSTEAMER_RECONNECT_RAW_MICROPHONE_PROOF_V1' \
+      "${RECONNECT_RAW_MICROPHONE_PROOF_STREAM}" >/dev/null; then
+    return 104
+  fi
 
   case "${scenario}" in
     batched-malformed)
@@ -6969,7 +7776,8 @@ sleep 0.5
       (( kickstart_count == 0 )) || return 33
       grep -qx 'connections=1' "${HOST_STATUS}" || return 34
       grep -qx 'restarts=0' "${HOST_STATUS}" || return 35
-      grep -qx 'detail=host log or PID provenance changed during the pre-kick delay' \
+      grep -Eq \
+        '^detail=host log or PID provenance changed (while waiting for raw microphone proof 1|after raw microphone proof and before kickstart)$' \
         "${HOST_STATUS}" || return 50
       ;;
     reused-pid)
@@ -6990,13 +7798,8 @@ sleep 0.5
       ;;
     unique-pids)
       (( watcher_result == 0 )) || return 22
-      grep -qx 'status=passed' "${HOST_STATUS}" || return 23
-      grep -qx 'restarts=3' "${HOST_STATUS}" || return 24
+      validate_final_reconnect_host_evidence || return 23
       (( kickstart_count == 3 )) || return 25
-      grep -qx 'connections=4' "${HOST_STATUS}" || return 44
-      grep -qx \
-        'detail=audited 4 live connections and verified three globally unique host replacements' \
-        "${HOST_STATUS}" || return 53
       ;;
     final-audit-mismatch)
       (( watcher_result != 0 )) || return 26
@@ -7013,6 +7816,105 @@ sleep 0.5
       grep -qx 'restarts=3' "${HOST_STATUS}" || return 58
       grep -qx 'detail=final host log snapshot ended with an incomplete record' \
         "${HOST_STATUS}" || return 59
+      ;;
+    proof-missing)
+      (( watcher_result != 0 )) || return 65
+      (( kickstart_count == 0 )) || return 66
+      grep -qx 'connections=1' "${HOST_STATUS}" || return 67
+      grep -qx 'proofs=0' "${HOST_STATUS}" || return 68
+      grep -qx 'restarts=0' "${HOST_STATUS}" || return 69
+      grep -qx \
+        'detail=xcodebuild ended before raw microphone proof 1 could authorize restart' \
+        "${HOST_STATUS}" || return 70
+      ;;
+    proof-timeout)
+      (( watcher_result != 0 )) || return 71
+      (( kickstart_count == 0 )) || return 72
+      grep -qx 'connections=1' "${HOST_STATUS}" || return 73
+      grep -qx 'proofs=0' "${HOST_STATUS}" || return 74
+      grep -qx 'restarts=0' "${HOST_STATUS}" || return 75
+      grep -qx 'detail=timed out waiting 1s for raw microphone proof 1' \
+        "${HOST_STATUS}" || return 76
+      ;;
+    proof-duplicate)
+      (( watcher_result != 0 )) || return 77
+      (( kickstart_count == 0 )) || return 78
+      grep -qx 'connections=1' "${HOST_STATUS}" || return 79
+      grep -qx 'restarts=0' "${HOST_STATUS}" || return 80
+      grep -qx 'detail=duplicate raw microphone proof ordinal 1' \
+        "${HOST_STATUS}" || return 81
+      ;;
+    proof-out-of-order)
+      (( watcher_result != 0 )) || return 82
+      (( kickstart_count == 0 )) || return 83
+      grep -qx 'connections=1' "${HOST_STATUS}" || return 84
+      grep -qx 'restarts=0' "${HOST_STATUS}" || return 85
+      grep -qx 'detail=out-of-order raw microphone proof ordinal 2; expected 1' \
+        "${HOST_STATUS}" || return 86
+      ;;
+    proof-reused-uuid)
+      (( watcher_result != 0 )) || return 87
+      (( kickstart_count == 1 )) || return 88
+      grep -qx 'connections=2' "${HOST_STATUS}" || return 89
+      grep -qx 'proofs=1' "${HOST_STATUS}" || return 90
+      grep -qx 'restarts=1' "${HOST_STATUS}" || return 91
+      grep -qx 'detail=raw microphone proof 2 reused a session UUID' \
+        "${HOST_STATUS}" || return 92
+      ;;
+    proof-reused-fingerprint)
+      (( watcher_result != 0 )) || return 93
+      (( kickstart_count == 1 )) || return 94
+      grep -qx 'connections=2' "${HOST_STATUS}" || return 95
+      grep -qx 'proofs=1' "${HOST_STATUS}" || return 96
+      grep -qx 'restarts=1' "${HOST_STATUS}" || return 97
+      grep -qx \
+        'detail=raw microphone proof 2 reused a complete lifecycle fingerprint' \
+        "${HOST_STATUS}" || return 98
+      ;;
+    proof-zero-generation|proof-max-plus-one-generation)
+      (( watcher_result != 0 )) || return 105
+      (( kickstart_count == 0 )) || return 106
+      grep -qx 'connections=1' "${HOST_STATUS}" || return 107
+      grep -qx 'proofs=0' "${HOST_STATUS}" || return 108
+      grep -qx 'restarts=0' "${HOST_STATUS}" || return 109
+      grep -qx 'detail=malformed raw microphone proof in authenticated proof stream' \
+        "${HOST_STATUS}" || return 110
+      ;;
+    proof-projection-command-failure)
+      (( watcher_result != 0 )) || return 111
+      (( kickstart_count == 0 )) || return 112
+      grep -qx 'connections=0' "${HOST_STATUS}" || return 113
+      grep -qx 'restarts=0' "${HOST_STATUS}" || return 114
+      ;;
+    proof-projection-noisy)
+      (( watcher_result == 0 )) || return 115
+      (( kickstart_count == 3 )) || return 116
+      validate_final_reconnect_host_evidence || return 117
+      (( $(/usr/bin/stat -f '%z' "${RECONNECT_XCODEBUILD_LIVE_STDOUT}") \
+          > RECONNECT_PROOF_MAX_APPEND_BYTES )) || return 118
+      (( $(/usr/bin/stat -f '%z' "${RECONNECT_RAW_MICROPHONE_PROOF_STREAM}") \
+          < RECONNECT_PROOF_MAX_APPEND_BYTES )) || return 119
+      ;;
+    proof-max-generation)
+      (( watcher_result == 0 )) || return 120
+      (( kickstart_count == 3 )) || return 121
+      validate_final_reconnect_host_evidence || return 122
+      /usr/bin/grep -Fq \
+        'negotiation=18446744073709551615 binding=18446744073709551615 track=18446744073709551615 micPolicy=18446744073709551615 recording=18446744073709551615' \
+        "${RECONNECT_RAW_MICROPHONE_PROOF_STREAM}" || return 123
+      ;;
+    final-events-reused-generation-pid|final-events-final-pid-drift|final-events-host-log-mismatch)
+      (( watcher_result == 0 )) || return 127
+      (( kickstart_count == 3 )) || return 128
+      grep -qx 'status=passed' "${HOST_STATUS}" || return 129
+      if validate_final_reconnect_host_evidence; then
+        return 130
+      fi
+      ;;
+    proof-all-six|watcher-final-delay)
+      (( watcher_result == 0 )) || return 99
+      (( kickstart_count == 3 )) || return 100
+      validate_final_reconnect_host_evidence || return 101
       ;;
     *)
       return 47
@@ -8886,6 +9788,8 @@ fi
 # until the parent proves the isolated xcodebuild group ended and requests the final locked audit.
 function churn_host_after_live_connections() {
   local connections=0
+  local proofs=0
+  local bound_proofs=0
   local restarts=0
   local previous_pid
   local replacement_pid
@@ -8895,7 +9799,37 @@ function churn_host_after_live_connections() {
   local expected_host_pid
   local new_connections
   local first_connection_number
+  local proof_audit_deadline_ns
+  local proof_audit_status
   local -A observed_host_pids
+  local -a observed_sessions=()
+  local -a observed_windows=()
+  local -a observed_transports=()
+  local -a observed_audio_policies=()
+  local -a observed_fingerprints=()
+  local -a proof_records=()
+  local -a audited_connection_host_pids=()
+  local -a audited_connection_records=()
+
+  trap cleanup_reconnect_raw_microphone_proof_parser EXIT
+  OPENSTEAMER_RECONNECT_PROOF_COUNT=0
+  OPENSTEAMER_RECONNECT_BOUND_PROOF_COUNT=0
+  OPENSTEAMER_RECONNECT_PROOF_ERROR=""
+  OPENSTEAMER_RECONNECT_PROOF_DEADLINE_NS=0
+  RECONNECT_PROOF_STDOUT_ID=""
+  RECONNECT_PROOF_STDOUT_OFFSET=0
+  RECONNECT_PROOF_STDOUT_DIGEST=$(opensteamer_empty_sha256) || return $?
+  if [[ ! -f "${RECONNECT_RAW_MICROPHONE_PROOF_STREAM}" \
+      || -L "${RECONNECT_RAW_MICROPHONE_PROOF_STREAM}" ]]; then
+    write_host_status failed 0 0 \
+      "raw microphone proof stream was unavailable to the host worker"
+    return 1
+  fi
+  /bin/rm -f \
+    "${RECONNECT_PROOF_STDOUT_APPEND_CHUNK}" \
+    "${RECONNECT_PROOF_STDOUT_COMPLETED_LINES}" \
+    "${RECONNECT_PROOF_STDOUT_PARTIAL_LINE}" || return $?
+  print -rn -- "" > "${RECONNECT_PROOF_STDOUT_PARTIAL_LINE}" || return $?
 
   expected_host_pid=${EXPECTED_INITIAL_HOST_PID}
   if [[ -z "${expected_host_pid}" \
@@ -8910,6 +9844,10 @@ function churn_host_after_live_connections() {
 
   while true; do
     if [[ -f "${HOST_CHURN_STOP_MARKER}" ]]; then
+      if [[ "${OPENSTEAMER_SCRIPT_SELF_TEST:-}" \
+          == "host-provenance-watcher-final-delay" ]]; then
+        sleep 11
+      fi
       if ! acquire_host_churn_lock; then
         write_host_status failed "${connections}" "${restarts}" \
           "could not acquire the host churn lock for the final log audit"
@@ -8944,10 +9882,50 @@ function churn_host_after_live_connections() {
           "${first_connection_number}" "${OPENSTEAMER_CURRENT_HOST_PID}"
         connections=$((connections + new_connections))
       fi
+      proof_audit_deadline_ns=$(
+        reconnect_raw_microphone_proof_deadline_after_seconds \
+          "${RECONNECT_PROOF_FINAL_AUDIT_TIMEOUT_SECONDS}"
+      ) || {
+        release_host_churn_lock
+        write_host_status failed "${connections}" "${restarts}" \
+          "could not arm the bounded final raw microphone proof audit"
+        return 1
+      }
+      if audit_new_reconnect_raw_microphone_proofs \
+          "${proof_audit_deadline_ns}" 1; then
+        proof_audit_status=0
+      else
+        proof_audit_status=$?
+      fi
+      if (( proof_audit_status != 0 )); then
+        release_host_churn_lock
+        write_host_status failed "${connections}" "${restarts}" \
+          "${OPENSTEAMER_RECONNECT_PROOF_ERROR}"
+        return 1
+      fi
+      if [[ -s "${RECONNECT_PROOF_STDOUT_PARTIAL_LINE}" ]]; then
+        release_host_churn_lock
+        write_host_status failed "${connections}" "${restarts}" \
+          "final raw microphone proof stream ended with an incomplete record"
+        return 1
+      fi
+      if (( proofs > connections )) \
+          || ! bind_available_reconnect_raw_microphone_proofs; then
+        release_host_churn_lock
+        write_host_status failed "${connections}" "${restarts}" \
+          "final raw microphone proofs did not bind one-to-one to audited host connections"
+        return 1
+      fi
       if (( restarts != 3 )); then
         release_host_churn_lock
         write_host_status failed "${connections}" "${restarts}" \
           "xcodebuild ended before three host replacements were verified"
+        return 1
+      fi
+      if (( connections != 6 || proofs != 6 || bound_proofs != 6 )); then
+        release_host_churn_lock
+        write_host_status failed "${connections}" "${restarts}" \
+          "final gate requires exactly six audited connections and six bound raw microphone proofs"
         return 1
       fi
       if [[ "${OPENSTEAMER_SCRIPT_SELF_TEST:-}" != host-provenance-* ]] \
@@ -8958,7 +9936,7 @@ function churn_host_after_live_connections() {
         return 1
       fi
       write_host_status passed "${connections}" "${restarts}" \
-        "audited ${connections} live connections and verified three globally unique host replacements"
+        "audited six live connections, bound six fresh raw microphone proofs, and verified three globally unique host replacements"
       release_host_churn_lock
       return 0
     fi
@@ -8981,20 +9959,35 @@ function churn_host_after_live_connections() {
         "${first_connection_number}" "${OPENSTEAMER_CURRENT_HOST_PID}"
       connections=$((connections + new_connections))
     fi
+    if (( connections > 6 || proofs > connections )); then
+      write_host_status failed "${connections}" "${restarts}" \
+        "raw microphone proofs did not remain one-to-one with audited host connections"
+      return 1
+    fi
     if (( restarts >= 3 || new_connections == 0 )); then
       sleep 0.2
       continue
     fi
+    if (( connections != restarts + 1 )); then
+      write_host_status failed "${connections}" "${restarts}" \
+        "restart $((restarts + 1)) did not observe exactly one new audited host connection"
+      return 1
+    fi
 
-    previous_pid=${OPENSTEAMER_CURRENT_HOST_PID}
     if [[ -n "${OPENSTEAMER_SELF_TEST_PRE_KICK_READY:-}" ]]; then
       opensteamer_write_state \
         "${OPENSTEAMER_SELF_TEST_PRE_KICK_READY}" "state=ready"
     fi
-    wait_before_host_restart
+    if ! wait_for_reconnect_raw_microphone_proof_before_restart \
+        "$((restarts + 1))" "${expected_host_pid}"; then
+      write_host_status failed "${connections}" "${restarts}" \
+        "${OPENSTEAMER_RECONNECT_PROOF_ERROR}"
+      return 1
+    fi
+    previous_pid=${OPENSTEAMER_CURRENT_HOST_PID}
     if ! audit_new_host_log_records "${expected_host_pid}"; then
       write_host_status failed "${connections}" "${restarts}" \
-        "host log or PID provenance changed during the pre-kick delay"
+        "host log or PID provenance changed after raw microphone proof and before kickstart"
       return 1
     fi
     new_connections=${OPENSTEAMER_NEW_HOST_CONNECTIONS}
@@ -9003,6 +9996,21 @@ function churn_host_after_live_connections() {
       record_audited_host_connections \
         "${first_connection_number}" "${OPENSTEAMER_CURRENT_HOST_PID}"
       connections=$((connections + new_connections))
+    fi
+    if ! audit_new_reconnect_raw_microphone_proofs \
+        "${OPENSTEAMER_RECONNECT_PROOF_DEADLINE_NS}" 1; then
+      write_host_status failed "${connections}" "${restarts}" \
+        "${OPENSTEAMER_RECONNECT_PROOF_ERROR}"
+      return 1
+    fi
+    if (( connections != restarts + 1 \
+        || proofs != restarts + 1 \
+        || proofs > connections )) \
+        || ! bind_available_reconnect_raw_microphone_proofs \
+        || (( bound_proofs != restarts + 1 )); then
+      write_host_status failed "${connections}" "${restarts}" \
+        "raw microphone proof/connection binding changed before kickstart"
+      return 1
     fi
     replacement_pid=$(current_host_pid)
     if ! opensteamer_require_same_host_process \
@@ -9059,6 +10067,19 @@ function churn_host_after_live_connections() {
       record_audited_host_connections \
         "${first_connection_number}" "${OPENSTEAMER_CURRENT_HOST_PID}"
       connections=$((connections + new_connections))
+    fi
+    if ! audit_new_reconnect_raw_microphone_proofs \
+          "${OPENSTEAMER_RECONNECT_PROOF_DEADLINE_NS}" 1 \
+        || (( connections != restarts + 1 \
+          || proofs != restarts + 1 \
+          || proofs > connections )) \
+        || ! bind_available_reconnect_raw_microphone_proofs \
+        || (( bound_proofs != restarts + 1 )); then
+      opensteamer_resume_process_group "${XCODEBUILD_PID}" || true
+      release_host_churn_lock
+      write_host_status failed "${connections}" "${restarts}" \
+        "raw microphone proof/connection binding changed in the stopped pre-kick snapshot"
+      return 1
     fi
 
     # The parent publishes its stop marker under this same lock only after the isolated validation
@@ -9322,9 +10343,13 @@ if (( RECONNECT_PHASE_RESULT != 0 )); then
   exit "${RECONNECT_PHASE_RESULT}"
 fi
 SCREEN_ORACLE_LAST_COUNTER=$(physical_screen_oracle_counter)
+XCODEBUILD_LIVE_STDOUT=${RECONNECT_XCODEBUILD_LIVE_STDOUT}
 
 run_command_capturing_status \
-  opensteamer_start_isolated_validation_process \
+  start_reconnect_validation_process_capturing_proof_stream \
+  "${RECONNECT_XCODEBUILD_LIVE_STDOUT}" \
+  "${RECONNECT_XCODEBUILD_LIVE_STDERR}" \
+  "${RECONNECT_RAW_MICROPHONE_PROOF_STREAM}" \
   /usr/bin/env TMPDIR="${XCODE_TEMP_DIR}" \
   xcodebuild test \
   -project "${PROJECT_DIR}/opensteamer.xcodeproj" \
@@ -9342,6 +10367,7 @@ run_command_capturing_status \
   -resultBundlePath "${RESULT_BUNDLE}"
 RECONNECT_PHASE_RESULT=${OPENSTEAMER_CAPTURED_COMMAND_STATUS}
 if (( RECONNECT_PHASE_RESULT != 0 )); then
+  XCODEBUILD_LIVE_STDOUT=""
   cleanup_audio_oracle_tone || true
   cleanup_screen_oracle_challenge || true
   fail_phase "${RECONNECT_PHASE_STATUS}" || true
@@ -9491,13 +10517,8 @@ else
 fi
 XCODEBUILD_WATCHDOG_PID=""
 
-for watcher_poll in {1..100}; do
-  if ! kill -0 "${HOST_WATCHER_PID}" 2>/dev/null; then
-    break
-  fi
-  sleep 0.1
-done
-if kill -0 "${HOST_WATCHER_PID}" 2>/dev/null; then
+if ! opensteamer_wait_for_process_exit \
+    "${HOST_WATCHER_PID}" "${HOST_FINAL_WATCHER_WAIT_TIMEOUT_SECONDS}"; then
   echo "Host log auditor did not finish its final locked snapshot." >&2
   exit 4
 fi
@@ -9602,14 +10623,14 @@ if (( HOST_WATCHER_RESULT != 0 )); then
   echo "Host churn/log auditor failed; see ${HOST_STATUS} and ${HOST_EVENTS}." >&2
   exit 4
 fi
-HOST_AUDITED_CONNECTIONS=$(awk -F= '$1 == "connections" { print $2; exit }' \
-  "${HOST_STATUS}" 2>/dev/null || true)
-if ! grep -qx 'status=passed' "${HOST_STATUS}" \
-  || ! grep -qx 'restarts=3' "${HOST_STATUS}" \
-  || [[ -z "${HOST_AUDITED_CONNECTIONS}" \
-      || "${HOST_AUDITED_CONNECTIONS}" == *[^0-9]* ]] \
-  || (( HOST_AUDITED_CONNECTIONS < 3 )); then
+if ! validate_final_reconnect_host_evidence; then
   echo "Host churn evidence is incomplete; see ${HOST_STATUS} and ${HOST_EVENTS}." >&2
+  exit 4
+fi
+if [[ -e "${RECONNECT_PROOF_STDOUT_APPEND_CHUNK}" \
+    || -e "${RECONNECT_PROOF_STDOUT_COMPLETED_LINES}" \
+    || -e "${RECONNECT_PROOF_STDOUT_PARTIAL_LINE}" ]]; then
+  echo "Host churn proof parser left temporary artifacts behind." >&2
   exit 4
 fi
 

@@ -593,6 +593,11 @@ typedef NS_ENUM(NSInteger, ASIOSExpectedCategoryObservationTestScenario) {
     NS_SWIFT_NAME(terminateForPeerRetirement());
 
 #if DEBUG
++ (BOOL)debugArmNextPeerRetirementTerminationBlockForTesting;
++ (BOOL)debugWaitForPeerRetirementTerminationBlockForTestingWithTimeout:
+    (NSTimeInterval)timeout
+    NS_SWIFT_NAME(debugWaitForPeerRetirementTerminationBlockForTesting(timeout:));
++ (void)debugReleasePeerRetirementTerminationBlockForTesting;
 - (void)debugFailNextPeerRetirementTerminationForTesting;
 - (void)debugInstallMicrophoneAuthorizationForTesting:
     (ASIOSMicrophoneAuthorization *_Nullable)authorization;

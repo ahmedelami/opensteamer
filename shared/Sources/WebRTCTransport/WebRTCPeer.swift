@@ -9939,6 +9939,26 @@ public actor WebRTCPeer {
             .debugResetFailureLatch()
     }
 
+    static func debugArmNextIOSPeerRetirementTerminationBlockForTesting()
+        -> Bool {
+        ASIOSStereoPlayoutAudioDevice
+            .debugArmNextPeerRetirementTerminationBlockForTesting()
+    }
+
+    static func debugWaitForIOSPeerRetirementTerminationBlockForTesting(
+        timeout: TimeInterval
+    ) -> Bool {
+        ASIOSStereoPlayoutAudioDevice
+            .debugWaitForPeerRetirementTerminationBlockForTesting(
+                timeout: timeout
+            )
+    }
+
+    static func debugReleaseIOSPeerRetirementTerminationBlockForTesting() {
+        ASIOSStereoPlayoutAudioDevice
+            .debugReleasePeerRetirementTerminationBlockForTesting()
+    }
+
     private var debugIPhoneMicrophonePreSuspensionHandlerHook:
         (@Sendable @MainActor (
             WebRTCIOSMicrophoneRetirementContext
