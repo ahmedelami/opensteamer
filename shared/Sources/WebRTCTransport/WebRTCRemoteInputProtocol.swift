@@ -571,6 +571,9 @@ public struct WebRTCInputFeedback: Codable, Equatable, Sendable {
     public let inputSessionID: UUID
     public let result: WebRTCInputFeedbackResult
     public let rejectionReason: WebRTCInputRejectionReason?
+    /// Content-free refinement of `.rateLimited`; omitted on the wire when false so clients from
+    /// before this field continue decoding the established feedback shape.
+    public let screenFormatChanging: Bool
     public let focus: WebRTCInputFocus
 
     public init(
@@ -579,6 +582,7 @@ public struct WebRTCInputFeedback: Codable, Equatable, Sendable {
         inputSessionID: UUID,
         result: WebRTCInputFeedbackResult,
         rejectionReason: WebRTCInputRejectionReason? = nil,
+        screenFormatChanging: Bool = false,
         focus: WebRTCInputFocus = .none
     ) {
         self.id = id
@@ -586,6 +590,7 @@ public struct WebRTCInputFeedback: Codable, Equatable, Sendable {
         self.inputSessionID = inputSessionID
         self.result = result
         self.rejectionReason = rejectionReason
+        self.screenFormatChanging = screenFormatChanging
         self.focus = focus
     }
 
@@ -595,6 +600,7 @@ public struct WebRTCInputFeedback: Codable, Equatable, Sendable {
         case inputSessionID
         case result
         case rejectionReason
+        case screenFormatChanging
         case focus
     }
 
@@ -605,6 +611,10 @@ public struct WebRTCInputFeedback: Codable, Equatable, Sendable {
             WebRTCInputRejectionReason.self,
             forKey: .rejectionReason
         )
+        let screenFormatChanging = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .screenFormatChanging
+        ) ?? false
         let id = try container.decode(UInt64.self, forKey: .id)
         let screenRequestID = try container.decode(UInt64.self, forKey: .screenRequestID)
         let inputSessionID = try container.decode(UUID.self, forKey: .inputSessionID)
@@ -613,7 +623,11 @@ public struct WebRTCInputFeedback: Codable, Equatable, Sendable {
               screenRequestID > 0,
               inputSessionID != WebRTCInputCapability.zeroUUIDForValidation,
               focus.isValid,
-              (result == .accepted ? rejectionReason == nil : rejectionReason != nil) else {
+              Self.hasValidRejectionShape(
+                  result: result,
+                  rejectionReason: rejectionReason,
+                  screenFormatChanging: screenFormatChanging
+              ) else {
             throw DecodingError.dataCorruptedError(
                 forKey: .result,
                 in: container,
@@ -626,6 +640,7 @@ public struct WebRTCInputFeedback: Codable, Equatable, Sendable {
             inputSessionID: inputSessionID,
             result: result,
             rejectionReason: rejectionReason,
+            screenFormatChanging: screenFormatChanging,
             focus: focus
         )
     }
@@ -643,6 +658,9 @@ public struct WebRTCInputFeedback: Codable, Equatable, Sendable {
         try container.encode(inputSessionID, forKey: .inputSessionID)
         try container.encode(result, forKey: .result)
         try container.encodeIfPresent(rejectionReason, forKey: .rejectionReason)
+        if screenFormatChanging {
+            try container.encode(true, forKey: .screenFormatChanging)
+        }
         try container.encode(focus, forKey: .focus)
     }
 
@@ -651,7 +669,25 @@ public struct WebRTCInputFeedback: Codable, Equatable, Sendable {
             && screenRequestID > 0
             && inputSessionID != WebRTCInputCapability.zeroUUIDForValidation
             && focus.isValid
-            && (result == .accepted ? rejectionReason == nil : rejectionReason != nil)
+            && Self.hasValidRejectionShape(
+                result: result,
+                rejectionReason: rejectionReason,
+                screenFormatChanging: screenFormatChanging
+            )
+    }
+
+    private static func hasValidRejectionShape(
+        result: WebRTCInputFeedbackResult,
+        rejectionReason: WebRTCInputRejectionReason?,
+        screenFormatChanging: Bool
+    ) -> Bool {
+        switch result {
+        case .accepted:
+            rejectionReason == nil && !screenFormatChanging
+        case .rejected:
+            rejectionReason != nil
+                && (!screenFormatChanging || rejectionReason == .rateLimited)
+        }
     }
 }
 

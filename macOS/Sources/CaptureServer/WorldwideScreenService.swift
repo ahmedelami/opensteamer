@@ -3124,6 +3124,7 @@ actor WorldwideScreenService {
                 for: request.id,
                 result: feedback.result,
                 rejectionReason: feedback.rejectionReason,
+                screenFormatChanging: feedback.screenFormatChanging,
                 focus: feedback.focus
             )
         } catch {
@@ -3357,39 +3358,53 @@ actor WorldwideScreenService {
 
         case .rejected(let rejection):
             let reason: WebRTCInputRejectionReason
+            let screenFormatChanging: Bool
             let revokesSession: Bool
             switch rejection {
             case .disabled:
                 reason = .inputDisabled
+                screenFormatChanging = false
                 revokesSession = true
             case .permissionRequired:
                 let permission = remoteInputController.permissionStatus()
                 reason = permission.accessibilityTrusted
                     ? .eventPostingPermissionRequired
                     : .accessibilityPermissionRequired
+                screenFormatChanging = false
                 revokesSession = true
             case .staleSession, .displayUnavailable:
                 reason = .staleSession
+                screenFormatChanging = false
                 revokesSession = true
             case .screenFormatChanging:
                 // Reuse the established non-terminal wire reason so older TestFlight clients
-                // remain decode-compatible during host-first rollout.
+                // remain decode-compatible; newer clients use the optional flag to distinguish
+                // this from real input throttling without retaining action content.
                 reason = .rateLimited
+                screenFormatChanging = true
                 revokesSession = false
             case .invalidPoint, .invalidScrollDelta, .invalidText:
                 reason = .invalidRequest
+                screenFormatChanging = false
                 revokesSession = false
             case .rateLimited:
                 reason = .rateLimited
+                screenFormatChanging = false
                 revokesSession = false
             case .focusChanged:
                 reason = .invalidFocus
+                screenFormatChanging = false
                 revokesSession = false
             case .primaryButtonInUse, .injectionFailed:
                 reason = .injectionFailed
+                screenFormatChanging = false
                 revokesSession = false
             }
-            return .rejected(reason: reason, revokesSession: revokesSession)
+            return .rejected(
+                reason: reason,
+                screenFormatChanging: screenFormatChanging,
+                revokesSession: revokesSession
+            )
         }
     }
 
@@ -6353,6 +6368,7 @@ struct ScreenFormatRenegotiationCoordinator<Sink: AnyObject> {
 private struct RemoteInputTransportFeedback {
     let result: WebRTCInputFeedbackResult
     let rejectionReason: WebRTCInputRejectionReason?
+    let screenFormatChanging: Bool
     let focus: WebRTCInputFocus
     let revokesSession: Bool
 
@@ -6360,6 +6376,7 @@ private struct RemoteInputTransportFeedback {
         Self(
             result: .accepted,
             rejectionReason: nil,
+            screenFormatChanging: false,
             focus: focus,
             revokesSession: false
         )
@@ -6367,11 +6384,13 @@ private struct RemoteInputTransportFeedback {
 
     static func rejected(
         reason: WebRTCInputRejectionReason,
+        screenFormatChanging: Bool = false,
         revokesSession: Bool
     ) -> Self {
         Self(
             result: .rejected,
             rejectionReason: reason,
+            screenFormatChanging: screenFormatChanging,
             focus: .none,
             revokesSession: revokesSession
         )

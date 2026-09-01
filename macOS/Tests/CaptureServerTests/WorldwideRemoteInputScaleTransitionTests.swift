@@ -360,13 +360,20 @@ final class WorldwideRemoteInputScaleTransitionTests: XCTestCase {
                 range: transitionCase.upperBound..<feedback.endIndex
             )
         )
-        let nonRevoking = try XCTUnwrap(
+        let formatChangingFlag = try XCTUnwrap(
             feedback.range(
-                of: "revokesSession = false",
+                of: "screenFormatChanging = true",
                 range: rateLimited.upperBound..<feedback.endIndex
             )
         )
+        let nonRevoking = try XCTUnwrap(
+            feedback.range(
+                of: "revokesSession = false",
+                range: formatChangingFlag.upperBound..<feedback.endIndex
+            )
+        )
         XCTAssertLessThan(rateLimited.lowerBound, nonRevoking.lowerBound)
+        XCTAssertLessThan(formatChangingFlag.lowerBound, nonRevoking.lowerBound)
     }
 
     func testPreConfigurationFenceRemainsOwnedAndNonTerminalForInputCapability() throws {
@@ -406,13 +413,20 @@ final class WorldwideRemoteInputScaleTransitionTests: XCTestCase {
         let transitionCase = try XCTUnwrap(
             feedback.range(of: "case .screenFormatChanging:")
         )
-        let nonRevoking = try XCTUnwrap(
+        let formatChangingFlag = try XCTUnwrap(
             feedback.range(
-                of: "revokesSession = false",
+                of: "screenFormatChanging = true",
                 range: transitionCase.upperBound..<feedback.endIndex
             )
         )
+        let nonRevoking = try XCTUnwrap(
+            feedback.range(
+                of: "revokesSession = false",
+                range: formatChangingFlag.upperBound..<feedback.endIndex
+            )
+        )
         XCTAssertLessThan(transitionCase.lowerBound, nonRevoking.lowerBound)
+        XCTAssertLessThan(formatChangingFlag.lowerBound, nonRevoking.lowerBound)
     }
 
     func testNativeRestartRetryPreservesInputOnlyForAnOwnedFormatTransition() throws {

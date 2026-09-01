@@ -711,6 +711,66 @@ final class WorldwideRemoteInputLifecycleTests: XCTestCase {
     }
 
     @MainActor
+    func testFormatTransitionKeepsKeyboardFocusedWhilePointerGeometryIsRevoked() {
+        let settled = WorldwideScreenViewerView.remoteInputPresentationAvailability(
+            remoteInputAvailable: true,
+            renderedVideoSize: CGSize(width: 540, height: 1_170),
+            allowsPresentation: true,
+            screenMediaIsCovered: false,
+            scenePhase: .active
+        )
+        XCTAssertTrue(settled.keyboard)
+        XCTAssertTrue(settled.pointer)
+
+        let transitioning = WorldwideScreenViewerView.remoteInputPresentationAvailability(
+            remoteInputAvailable: true,
+            renderedVideoSize: nil,
+            allowsPresentation: true,
+            screenMediaIsCovered: false,
+            scenePhase: .active
+        )
+        XCTAssertTrue(transitioning.keyboard)
+        XCTAssertFalse(transitioning.pointer)
+    }
+
+    @MainActor
+    func testKeyboardContinuityDoesNotCrossPrivacyOrAuthorizationBoundaries() {
+        for availability in [
+            WorldwideScreenViewerView.remoteInputPresentationAvailability(
+                remoteInputAvailable: false,
+                renderedVideoSize: CGSize(width: 540, height: 1_170),
+                allowsPresentation: true,
+                screenMediaIsCovered: false,
+                scenePhase: .active
+            ),
+            WorldwideScreenViewerView.remoteInputPresentationAvailability(
+                remoteInputAvailable: true,
+                renderedVideoSize: CGSize(width: 540, height: 1_170),
+                allowsPresentation: false,
+                screenMediaIsCovered: false,
+                scenePhase: .active
+            ),
+            WorldwideScreenViewerView.remoteInputPresentationAvailability(
+                remoteInputAvailable: true,
+                renderedVideoSize: CGSize(width: 540, height: 1_170),
+                allowsPresentation: true,
+                screenMediaIsCovered: true,
+                scenePhase: .active
+            ),
+            WorldwideScreenViewerView.remoteInputPresentationAvailability(
+                remoteInputAvailable: true,
+                renderedVideoSize: CGSize(width: 540, height: 1_170),
+                allowsPresentation: true,
+                screenMediaIsCovered: false,
+                scenePhase: .inactive
+            )
+        ] {
+            XCTAssertFalse(availability.keyboard)
+            XCTAssertFalse(availability.pointer)
+        }
+    }
+
+    @MainActor
     func testTerminalOrReplacementStateDismissesRetainedFullScreenViewer() {
         XCTAssertFalse(
             PlayerView.shouldDismissWorldwideScreen(
@@ -2345,6 +2405,153 @@ final class WorldwideSessionGenerationFenceTests: XCTestCase {
 
         XCTAssertEqual(sentAction, .tap(.init(x: 0.25, y: 0.75)))
         XCTAssertEqual(sentSize, expectedSize)
+        viewModel.disconnect()
+        await peer.close(reason: .viewerDisconnected)
+    }
+
+    @MainActor
+    func testFormatTransitionRejectionKeepsKeyboardFocusForNextCommittedText() async throws {
+        let viewModel = WorldwideSessionViewModel()
+        let peer = try makeViewerPeer()
+        let focusGeneration: UInt64 = 404
+        let nextTextSent = expectation(description: "next committed text sent")
+        var sentActions: [WebRTCInputAction] = []
+        viewModel.debugInstallRemoteInputSender { _, action, _, _, _, _ in
+            sentActions.append(action)
+            if sentActions.count == 2 {
+                nextTextSent.fulfill()
+            }
+            return UInt64(sentActions.count)
+        }
+        let authorization =
+            viewModel.debugInstallQueuedRemoteInputSessionForRaceTests(
+                peer: peer,
+                focusGeneration: focusGeneration,
+                diagnostic: "format transition fixture",
+                queuedAction: .insertText(
+                    "a",
+                    focusGeneration: focusGeneration
+                )
+            )
+        let capability = try XCTUnwrap(viewModel.debugRemoteInputState.capability)
+
+        await viewModel.debugDrainRemoteInputQueueForRaceTests()
+        XCTAssertEqual(viewModel.debugRemoteInputState.pendingActionCount, 1)
+        viewModel.debugDeliverRemoteInputFeedbackForRaceTests(
+            WebRTCInputFeedback(
+                id: 1,
+                screenRequestID: capability.screenRequestID,
+                inputSessionID: capability.inputSessionID,
+                result: .rejected,
+                rejectionReason: .rateLimited,
+                screenFormatChanging: true
+            )
+        )
+
+        let transitioningState = viewModel.debugRemoteInputState
+        XCTAssertEqual(transitioningState.focusGeneration, focusGeneration)
+        XCTAssertEqual(transitioningState.pendingActionCount, 0)
+        XCTAssertTrue(transitioningState.inputAvailable)
+        XCTAssertTrue(authorization.isValid)
+        XCTAssertEqual(
+            viewModel.lastDiagnostic,
+            "Mac screen format changed during remote input."
+        )
+
+        viewModel.sendRemoteText("b", focusGeneration: focusGeneration)
+        await fulfillment(of: [nextTextSent], timeout: 2)
+        XCTAssertEqual(
+            sentActions,
+            [
+                .insertText("a", focusGeneration: focusGeneration),
+                .insertText("b", focusGeneration: focusGeneration)
+            ]
+        )
+
+        viewModel.debugDeliverRemoteInputFeedbackForRaceTests(
+            WebRTCInputFeedback(
+                id: 2,
+                screenRequestID: capability.screenRequestID,
+                inputSessionID: capability.inputSessionID,
+                result: .accepted,
+                focus: .editable(generation: focusGeneration, secure: false)
+            )
+        )
+        XCTAssertEqual(
+            viewModel.debugRemoteInputState.focusGeneration,
+            focusGeneration
+        )
+        XCTAssertTrue(authorization.isValid)
+
+        viewModel.disconnect()
+        await peer.close(reason: .viewerDisconnected)
+    }
+
+    @MainActor
+    func testFormatTransitionRejectionForPointerStillClosesKeyboardFocus() async throws {
+        let viewModel = WorldwideSessionViewModel()
+        let peer = try makeViewerPeer()
+        let focusGeneration: UInt64 = 406
+        viewModel.debugInstallRemoteInputSender { _, _, _, _, _, _ in 1 }
+        _ = viewModel.debugInstallQueuedRemoteInputSessionForRaceTests(
+            peer: peer,
+            focusGeneration: focusGeneration,
+            diagnostic: "format-transition pointer fixture",
+            queuedAction: .tap(.init(x: 0.25, y: 0.75)),
+            viewerVideoSize: .init(width: 1_080, height: 2_340)
+        )
+        let capability = try XCTUnwrap(viewModel.debugRemoteInputState.capability)
+
+        await viewModel.debugDrainRemoteInputQueueForRaceTests()
+        viewModel.debugDeliverRemoteInputFeedbackForRaceTests(
+            WebRTCInputFeedback(
+                id: 1,
+                screenRequestID: capability.screenRequestID,
+                inputSessionID: capability.inputSessionID,
+                result: .rejected,
+                rejectionReason: .rateLimited,
+                screenFormatChanging: true
+            )
+        )
+
+        XCTAssertNil(viewModel.debugRemoteInputState.focusGeneration)
+        XCTAssertEqual(
+            viewModel.lastDiagnostic,
+            "Mac screen format changed during remote input."
+        )
+        viewModel.disconnect()
+        await peer.close(reason: .viewerDisconnected)
+    }
+
+    @MainActor
+    func testUnqualifiedKeyboardRateLimitClosesFocusImmediately() async throws {
+        let viewModel = WorldwideSessionViewModel()
+        let peer = try makeViewerPeer()
+        let focusGeneration: UInt64 = 405
+        viewModel.debugInstallRemoteInputSender { _, _, _, _, _, _ in 1 }
+        _ = viewModel.debugInstallQueuedRemoteInputSessionForRaceTests(
+            peer: peer,
+            focusGeneration: focusGeneration,
+            diagnostic: "rate-limited keyboard fixture",
+            queuedAction: .insertText(
+                "x",
+                focusGeneration: focusGeneration
+            )
+        )
+        let capability = try XCTUnwrap(viewModel.debugRemoteInputState.capability)
+
+        await viewModel.debugDrainRemoteInputQueueForRaceTests()
+        viewModel.debugDeliverRemoteInputFeedbackForRaceTests(
+            WebRTCInputFeedback(
+                id: 1,
+                screenRequestID: capability.screenRequestID,
+                inputSessionID: capability.inputSessionID,
+                result: .rejected,
+                rejectionReason: .rateLimited
+            )
+        )
+
+        XCTAssertNil(viewModel.debugRemoteInputState.focusGeneration)
         viewModel.disconnect()
         await peer.close(reason: .viewerDisconnected)
     }

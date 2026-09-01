@@ -8100,8 +8100,19 @@ final class WorldwideSessionViewModel: ObservableObject {
         guard pending.sendAuthorization?.isValid != false else { return }
 
         guard feedback.result == .accepted else {
-            clearRemoteKeyboardFocus()
-            handleRemoteInputRejection(feedback.rejectionReason)
+            // The optional context distinguishes an owned format rebuild from genuine keyboard
+            // throttling while keeping the established `.rateLimited` reason compatible.
+            if !Self.preservesRemoteKeyboardFocus(
+                after: feedback.rejectionReason,
+                screenFormatChanging: feedback.screenFormatChanging,
+                for: pending.kind
+            ) {
+                clearRemoteKeyboardFocus()
+            }
+            handleRemoteInputRejection(
+                feedback.rejectionReason,
+                screenFormatChanging: feedback.screenFormatChanging
+            )
             return
         }
 
@@ -8116,7 +8127,23 @@ final class WorldwideSessionViewModel: ObservableObject {
         }
     }
 
-    private func handleRemoteInputRejection(_ reason: WebRTCInputRejectionReason?) {
+    private static func preservesRemoteKeyboardFocus(
+        after rejection: WebRTCInputRejectionReason?,
+        screenFormatChanging: Bool,
+        for pendingKind: PendingRemoteInputKind
+    ) -> Bool {
+        guard rejection == .rateLimited,
+              screenFormatChanging else { return false }
+        if case .keyboard = pendingKind {
+            return true
+        }
+        return false
+    }
+
+    private func handleRemoteInputRejection(
+        _ reason: WebRTCInputRejectionReason?,
+        screenFormatChanging: Bool = false
+    ) {
         switch reason {
         case .accessibilityPermissionRequired:
             lastError = "Remote control needs Accessibility permission on the Mac."
@@ -8130,7 +8157,9 @@ final class WorldwideSessionViewModel: ObservableObject {
         case .staleSession:
             invalidateRemoteInputState()
         case .rateLimited:
-            lastDiagnostic = "Remote input was rate-limited."
+            lastDiagnostic = screenFormatChanging
+                ? "Mac screen format changed during remote input."
+                : "Remote input was rate-limited."
         case .injectionFailed:
             lastError = "The Mac could not post that remote input event."
         case .invalidRequest:

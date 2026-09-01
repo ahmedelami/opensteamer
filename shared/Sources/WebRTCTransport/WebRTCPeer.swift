@@ -3428,6 +3428,7 @@ public actor WebRTCPeer {
         for id: UInt64,
         result: WebRTCInputFeedbackResult,
         rejectionReason: WebRTCInputRejectionReason? = nil,
+        screenFormatChanging: Bool = false,
         focus: WebRTCInputFocus = .none
     ) throws {
         try ensureOpen()
@@ -3451,6 +3452,7 @@ public actor WebRTCPeer {
             inputSessionID: request.inputSessionID,
             result: result,
             rejectionReason: rejectionReason,
+            screenFormatChanging: screenFormatChanging,
             focus: focus
         )
         guard feedback.isValid else { throw WebRTCTransportError.invalidInputRequest }

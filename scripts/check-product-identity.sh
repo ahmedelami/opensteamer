@@ -736,7 +736,7 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'EXPECTED_CONFIGURATION="TestFlight"' 1 \
   'side-by-side TestFlight configuration guard'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  'EXPECTED_BUILD_NUMBER="57"' 1 \
+  'EXPECTED_BUILD_NUMBER="59"' 1 \
   'side-by-side TestFlight build-number guard'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'PRIVATE_TEMPORARY_ROOT="/private/tmp"' 1 \

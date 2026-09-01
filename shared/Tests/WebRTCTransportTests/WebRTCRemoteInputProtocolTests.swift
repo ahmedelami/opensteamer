@@ -756,26 +756,49 @@ final class WebRTCRemoteInputProtocolTests: XCTestCase {
             result: .rejected,
             rejectionReason: .invalidFocus
         )
-        XCTAssertNoThrow(try JSONEncoder().encode(rejected))
-
-        XCTAssertThrowsError(
-            try JSONEncoder().encode(
-                WebRTCInputFeedback(
-                    id: 3,
-                    screenRequestID: 2,
-                    inputSessionID: sessionID,
-                    result: .rejected
-                )
-            )
+        let legacyCompatibleRejectedData = try JSONEncoder().encode(rejected)
+        let legacyCompatibleRejectedObject = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: legacyCompatibleRejectedData)
+                as? [String: Any]
         )
+        XCTAssertNil(legacyCompatibleRejectedObject["screenFormatChanging"])
+        XCTAssertFalse(
+            try JSONDecoder().decode(
+                WebRTCInputFeedback.self,
+                from: legacyCompatibleRejectedData
+            ).screenFormatChanging
+        )
+
+        let formatTransition = WebRTCInputFeedback(
+            id: 3,
+            screenRequestID: 2,
+            inputSessionID: sessionID,
+            result: .rejected,
+            rejectionReason: .rateLimited,
+            screenFormatChanging: true
+        )
+        let formatTransitionData = try JSONEncoder().encode(formatTransition)
+        XCTAssertEqual(
+            try JSONDecoder().decode(
+                WebRTCInputFeedback.self,
+                from: formatTransitionData
+            ),
+            formatTransition
+        )
+        XCTAssertTrue(
+            try XCTUnwrap(
+                JSONSerialization.jsonObject(with: formatTransitionData)
+                    as? [String: Any]
+            )["screenFormatChanging"] as? Bool == true
+        )
+
         XCTAssertThrowsError(
             try JSONEncoder().encode(
                 WebRTCInputFeedback(
                     id: 4,
                     screenRequestID: 2,
                     inputSessionID: sessionID,
-                    result: .accepted,
-                    rejectionReason: .rateLimited
+                    result: .rejected
                 )
             )
         )
@@ -786,7 +809,41 @@ final class WebRTCRemoteInputProtocolTests: XCTestCase {
                     screenRequestID: 2,
                     inputSessionID: sessionID,
                     result: .accepted,
+                    rejectionReason: .rateLimited
+                )
+            )
+        )
+        XCTAssertThrowsError(
+            try JSONEncoder().encode(
+                WebRTCInputFeedback(
+                    id: 6,
+                    screenRequestID: 2,
+                    inputSessionID: sessionID,
+                    result: .accepted,
                     focus: .editable(generation: 0, secure: false)
+                )
+            )
+        )
+        XCTAssertThrowsError(
+            try JSONEncoder().encode(
+                WebRTCInputFeedback(
+                    id: 7,
+                    screenRequestID: 2,
+                    inputSessionID: sessionID,
+                    result: .rejected,
+                    rejectionReason: .invalidFocus,
+                    screenFormatChanging: true
+                )
+            )
+        )
+        XCTAssertThrowsError(
+            try JSONEncoder().encode(
+                WebRTCInputFeedback(
+                    id: 8,
+                    screenRequestID: 2,
+                    inputSessionID: sessionID,
+                    result: .accepted,
+                    screenFormatChanging: true
                 )
             )
         )

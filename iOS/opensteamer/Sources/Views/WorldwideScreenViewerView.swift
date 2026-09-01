@@ -197,7 +197,7 @@ struct WorldwideScreenViewerView: View {
             screenAccessibilityOracles
 
             RemoteKeyboardInputView(
-                inputAvailable: effectiveRemoteInputAvailable,
+                inputAvailable: remoteInputPresentationAvailability.keyboard,
                 focusGeneration: viewModel.focusedInputGeneration,
                 isSecure: viewModel.focusedInputIsSecure,
                 onInsertText: viewModel.sendRemoteText,
@@ -258,7 +258,7 @@ struct WorldwideScreenViewerView: View {
                 )
                 .accessibilityIdentifier("worldwideScreenAcknowledgementOracle")
 
-            if effectiveRemoteInputAvailable {
+            if remoteInputPresentationAvailability.pointer {
                 Color.clear
                     .frame(width: 1, height: 1)
                     .accessibilityElement()
@@ -298,7 +298,7 @@ struct WorldwideScreenViewerView: View {
     }
 
     private func forwardTap(_ location: CGPoint, containerSize: CGSize) {
-        guard effectiveRemoteInputAvailable,
+        guard remoteInputPresentationAvailability.pointer,
               let renderedVideoSize,
               let normalizedPoint = AspectFitCoordinateMapper.normalizedPoint(
                 for: location,
@@ -317,7 +317,7 @@ struct WorldwideScreenViewerView: View {
         at location: CGPoint,
         configuration: RemotePointerGestureConfiguration
     ) -> UUID? {
-        guard effectiveRemoteInputAvailable,
+        guard remoteInputPresentationAvailability.pointer,
               viewModel.isRemoteScrollAvailable,
               configuration.inputSessionID
                 == viewModel.remoteInputCapability?.inputSessionID,
@@ -343,7 +343,7 @@ struct WorldwideScreenViewerView: View {
         containerSize: CGSize,
         videoSize: CGSize
     ) {
-        guard effectiveRemoteInputAvailable,
+        guard remoteInputPresentationAvailability.pointer,
               viewModel.isRemotePrimaryDragAvailable,
               let endpoints = RemotePrimaryDragGesturePolicy.normalizedEndpoints(
                 startLocation: startLocation,
@@ -360,12 +360,15 @@ struct WorldwideScreenViewerView: View {
         )
     }
 
-    private var effectiveRemoteInputAvailable: Bool {
-        viewModel.remoteInputIsAvailable(for: lease)
-            && renderedVideoSize != nil
-            && allowsRemoteInputPresentation
-            && screenMediaFence?.forceCover != true
-            && scenePhase == .active
+    private var remoteInputPresentationAvailability:
+        RemoteInputPresentationAvailability {
+        Self.remoteInputPresentationAvailability(
+            remoteInputAvailable: viewModel.remoteInputIsAvailable(for: lease),
+            renderedVideoSize: renderedVideoSize,
+            allowsPresentation: allowsRemoteInputPresentation,
+            screenMediaIsCovered: screenMediaFence?.forceCover == true,
+            scenePhase: scenePhase
+        )
     }
 
     private var screenMediaFence: WorldwideScreenMediaViewerFence? {
@@ -375,7 +378,7 @@ struct WorldwideScreenViewerView: View {
     private func remotePointerGestureConfiguration(
         containerSize: CGSize
     ) -> RemotePointerGestureConfiguration? {
-        guard effectiveRemoteInputAvailable,
+        guard remoteInputPresentationAvailability.pointer,
               let capability = viewModel.remoteInputCapability,
               let track = viewModel.remoteVideoTrack,
               let renderedVideoSize else {
@@ -433,6 +436,32 @@ struct WorldwideScreenViewerView: View {
         return CGSize(
             width: observation.width,
             height: observation.height
+        )
+    }
+
+    struct RemoteInputPresentationAvailability: Equatable {
+        let keyboard: Bool
+        let pointer: Bool
+    }
+
+    /// A decoded-size change revokes pointer geometry until Metal presents a frame in the new
+    /// format. Keyboard actions carry an independently authenticated focus generation and no
+    /// video coordinates, so tying the responder to that geometry gap needlessly dismisses the
+    /// software keyboard during ordinary quality adaptation.
+    static func remoteInputPresentationAvailability(
+        remoteInputAvailable: Bool,
+        renderedVideoSize: CGSize?,
+        allowsPresentation: Bool,
+        screenMediaIsCovered: Bool,
+        scenePhase: ScenePhase
+    ) -> RemoteInputPresentationAvailability {
+        let keyboard = remoteInputAvailable
+            && allowsPresentation
+            && !screenMediaIsCovered
+            && scenePhase == .active
+        return RemoteInputPresentationAvailability(
+            keyboard: keyboard,
+            pointer: keyboard && renderedVideoSize != nil
         )
     }
 

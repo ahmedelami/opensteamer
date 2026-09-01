@@ -2883,6 +2883,29 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
             )
         ])
 
+        try await host.sendInputFeedback(
+            for: dragInputID,
+            result: .rejected,
+            rejectionReason: .rateLimited,
+            screenFormatChanging: true
+        )
+        var transitionFeedbackSnapshot = await recorder.snapshot()
+        for _ in 0..<300 where transitionFeedbackSnapshot.inputFeedback.count < 2 {
+            try await Task.sleep(for: .milliseconds(10))
+            transitionFeedbackSnapshot = await recorder.snapshot()
+        }
+        XCTAssertEqual(
+            transitionFeedbackSnapshot.inputFeedback.last,
+            WebRTCInputFeedback(
+                id: dragInputID,
+                screenRequestID: showID,
+                inputSessionID: inputCapability.inputSessionID,
+                result: .rejected,
+                rejectionReason: .rateLimited,
+                screenFormatChanging: true
+            )
+        )
+
         guard let capturer = host.externalVideoCapturer else {
             XCTFail("The host did not expose its external screen capturer.")
             await host.close(reason: .protocolError)
