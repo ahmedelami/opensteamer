@@ -1,4 +1,5 @@
 import SwiftUI
+import Streaming
 import WebRTCTransport
 
 /// Privacy-bounded full-screen WebRTC renderer and remote-input surface.
@@ -16,6 +17,7 @@ struct WorldwideScreenViewerView: View {
     @State private var videoRendererID = UUID()
     @State private var videoRenderObservation: WebRTCVideoRenderObservation?
     @State private var allowsRemoteInputPresentation = true
+    @State private var focusedWindowResizeGhostFrame: CGRect?
 
     var body: some View {
         ZStack {
@@ -39,6 +41,8 @@ struct WorldwideScreenViewerView: View {
                             // Any decoded-size transition clears touch immediately. Size callbacks
                             // precede presentation and therefore cannot authorize the new mapping.
                             onVideoSizeChanged: { size in
+                                focusedWindowResizeGhostFrame = nil
+                                viewModel.cancelFocusedWindowResize()
                                 viewModel.discardPendingRemoteScrolls()
                                 videoRenderObservation = nil
                                 viewModel.screenVideoPresentationGeometryDidChange(
@@ -132,11 +136,45 @@ struct WorldwideScreenViewerView: View {
                                             videoSize: configuration.videoSize
                                         )
                                     },
+                                    onFocusedWindowSelection: { location in
+                                        selectWindowForFocusedResize(
+                                            at: location,
+                                            configuration: configuration
+                                        )
+                                    },
+                                    onFocusedWindowResizePreview: {
+                                        generation, start, end in
+                                        previewFocusedWindowResize(
+                                            targetGeneration: generation,
+                                            from: start,
+                                            to: end,
+                                            configuration: configuration
+                                        )
+                                    },
+                                    onFocusedWindowResizeCommit: {
+                                        generation, start, end in
+                                        commitFocusedWindowResize(
+                                            targetGeneration: generation,
+                                            from: start,
+                                            to: end,
+                                            configuration: configuration
+                                        )
+                                    },
+                                    onFocusedWindowResizeCancelled: {
+                                        focusedWindowResizeGhostFrame = nil
+                                    },
                                     onConfigurationInvalidated: {
+                                        focusedWindowResizeGhostFrame = nil
+                                        viewModel.cancelFocusedWindowResize()
                                         viewModel.discardPendingRemoteScrolls()
                                     }
                                 )
                             }
+                        }
+                        .overlay {
+                            focusedWindowResizeOverlay(
+                                containerSize: geometry.size
+                            )
                         }
                         .overlay {
                             if viewModel.remoteVideoTrack == nil {
@@ -177,6 +215,22 @@ struct WorldwideScreenViewerView: View {
                                         "worldwideScreenClientPipelineStatus"
                                     )
                             }
+                        }
+                        .overlay(alignment: .bottomTrailing) {
+                            focusedWindowResizeButton(
+                                containerSize: geometry.size
+                            )
+                        }
+                        .onChange(of: geometry.size) { oldSize, newSize in
+                            guard oldSize != newSize,
+                                  viewModel.focusedWindowResizeState.isActive else {
+                                return
+                            }
+                            focusedWindowResizeGhostFrame = nil
+                            viewModel.focusedWindowResizeContainerGeometryDidChange(
+                                to: newSize,
+                                for: lease
+                            )
                         }
                         .privacySensitive()
                     } else {
@@ -223,16 +277,49 @@ struct WorldwideScreenViewerView: View {
             }
         }
         .onDisappear {
+            focusedWindowResizeGhostFrame = nil
+            viewModel.cancelFocusedWindowResize()
             allowsRemoteInputPresentation = false
             _ = viewModel.beginPassiveScreenTeardown(for: lease)
         }
         .onChange(of: scenePhase) { _, newPhase in
+            if newPhase != .active {
+                focusedWindowResizeGhostFrame = nil
+                viewModel.cancelFocusedWindowResize()
+            }
             guard Self.shouldTearDownPresentation(in: newPhase) else { return }
             hideAndDismiss()
         }
         .onChange(of: remoteVideoTrackIdentity) {
+            focusedWindowResizeGhostFrame = nil
+            viewModel.cancelFocusedWindowResize()
             videoRendererID = UUID()
             videoRenderObservation = nil
+        }
+        .onChange(of: viewModel.remoteInputCapability) { _, capability in
+            guard viewModel.focusedWindowResizeState.isActive,
+                  capability?.supportsFocusedWindowResize != true
+                    || capability?.inputSessionID
+                        != viewModel.focusedWindowResizeState.interaction?.binding.inputSessionID
+                    || capability?.screenRequestID
+                        != viewModel.focusedWindowResizeState.interaction?.binding.screenRequestID else {
+                return
+            }
+            focusedWindowResizeGhostFrame = nil
+            viewModel.cancelFocusedWindowResize()
+        }
+        .onChange(of: viewModel.isFocusedWindowResizeAvailable) { _, isAvailable in
+            guard !isAvailable,
+                  viewModel.focusedWindowResizeState.isActive else { return }
+            focusedWindowResizeGhostFrame = nil
+            viewModel.cancelFocusedWindowResize()
+        }
+        .onChange(of: viewModel.focusedWindowResizeState) { oldState, newState in
+            if !newState.isActive
+                || (oldState.interaction?.pending != nil
+                    && newState.interaction?.pending == nil) {
+                focusedWindowResizeGhostFrame = nil
+            }
         }
         .onChange(of: screenMediaFence?.proofRequestRevision) {
             guard let videoRenderObservation else { return }
@@ -286,12 +373,16 @@ struct WorldwideScreenViewerView: View {
         // Close rendering/input synchronously and start the fail-closed remote Hide transaction.
         // The local cover exits immediately; the model continues requiring an authenticated Hide
         // acknowledgement and closes the session if the Mac cannot prove capture stopped.
+        focusedWindowResizeGhostFrame = nil
+        viewModel.cancelFocusedWindowResize()
         allowsRemoteInputPresentation = false
         _ = viewModel.beginPassiveScreenTeardown(for: lease)
         dismissPresentation(lease)
     }
 
     private func rejectPresentationAndDismiss() {
+        focusedWindowResizeGhostFrame = nil
+        viewModel.cancelFocusedWindowResize()
         allowsRemoteInputPresentation = false
         _ = viewModel.beginPassiveScreenTeardown(for: lease)
         dismissPresentation(lease)
@@ -299,6 +390,7 @@ struct WorldwideScreenViewerView: View {
 
     private func forwardTap(_ location: CGPoint, containerSize: CGSize) {
         guard remoteInputPresentationAvailability.pointer,
+              !viewModel.focusedWindowResizeState.isActive,
               let renderedVideoSize,
               let normalizedPoint = AspectFitCoordinateMapper.normalizedPoint(
                 for: location,
@@ -318,6 +410,7 @@ struct WorldwideScreenViewerView: View {
         configuration: RemotePointerGestureConfiguration
     ) -> UUID? {
         guard remoteInputPresentationAvailability.pointer,
+              !viewModel.focusedWindowResizeState.isActive,
               viewModel.isRemoteScrollAvailable,
               configuration.inputSessionID
                 == viewModel.remoteInputCapability?.inputSessionID,
@@ -344,6 +437,7 @@ struct WorldwideScreenViewerView: View {
         videoSize: CGSize
     ) {
         guard remoteInputPresentationAvailability.pointer,
+              !viewModel.focusedWindowResizeState.isActive,
               viewModel.isRemotePrimaryDragAvailable,
               let endpoints = RemotePrimaryDragGesturePolicy.normalizedEndpoints(
                 startLocation: startLocation,
@@ -357,6 +451,170 @@ struct WorldwideScreenViewerView: View {
             startNormalizedPoint: endpoints.start,
             endNormalizedPoint: endpoints.end,
             viewerVideoSize: videoSize
+        )
+    }
+
+    private func selectWindowForFocusedResize(
+        at location: CGPoint,
+        configuration: RemotePointerGestureConfiguration
+    ) {
+        guard viewModel.focusedWindowResizeState.isActive,
+              let normalizedPoint = AspectFitCoordinateMapper.normalizedPoint(
+                  for: location,
+                  containerSize: configuration.containerSize,
+                  videoSize: configuration.videoSize
+              ) else {
+            return
+        }
+        focusedWindowResizeGhostFrame = nil
+        viewModel.selectWindowForFocusedResize(
+            at: normalizedPoint,
+            for: lease,
+            containerSize: configuration.containerSize,
+            viewerVideoSize: configuration.videoSize
+        )
+    }
+
+    private func previewFocusedWindowResize(
+        targetGeneration: UUID,
+        from startLocation: CGPoint,
+        to endLocation: CGPoint,
+        configuration: RemotePointerGestureConfiguration
+    ) {
+        guard let interaction = viewModel.focusedWindowResizeState.interaction,
+              interaction.pending == nil,
+              let target = interaction.target,
+              target.generation == targetGeneration,
+              let minimumSize = FocusedWindowResizeGeometry.minimumRetainedSize(
+                  for: Self.cgRect(from: target.normalizedFrame)
+              ),
+              let start = AspectFitCoordinateMapper.normalizedPoint(
+                  for: startLocation,
+                  containerSize: configuration.containerSize,
+                  videoSize: configuration.videoSize
+              ),
+              let end = AspectFitCoordinateMapper.clampedNormalizedPoint(
+                  for: endLocation,
+                  containerSize: configuration.containerSize,
+                  videoSize: configuration.videoSize
+              ),
+              let proposal = FocusedWindowResizeGeometry.proposedFrame(
+                  original: Self.cgRect(from: target.normalizedFrame),
+                  start: start,
+                  end: end,
+                  bounds: CGRect(x: 0, y: 0, width: 1, height: 1),
+                  minimumSize: minimumSize,
+                  containmentTolerance: 0
+              ) else {
+            focusedWindowResizeGhostFrame = nil
+            return
+        }
+        focusedWindowResizeGhostFrame = proposal.frame
+    }
+
+    private func commitFocusedWindowResize(
+        targetGeneration: UUID,
+        from startLocation: CGPoint,
+        to endLocation: CGPoint,
+        configuration: RemotePointerGestureConfiguration
+    ) {
+        guard let start = AspectFitCoordinateMapper.normalizedPoint(
+                  for: startLocation,
+                  containerSize: configuration.containerSize,
+                  videoSize: configuration.videoSize
+              ),
+              let end = AspectFitCoordinateMapper.clampedNormalizedPoint(
+                  for: endLocation,
+                  containerSize: configuration.containerSize,
+                  videoSize: configuration.videoSize
+              ) else {
+            focusedWindowResizeGhostFrame = nil
+            return
+        }
+        viewModel.commitFocusedWindowResize(
+            targetGeneration: targetGeneration,
+            startNormalizedPoint: start,
+            endNormalizedPoint: end,
+            for: lease,
+            containerSize: configuration.containerSize,
+            viewerVideoSize: configuration.videoSize
+        )
+    }
+
+    @ViewBuilder
+    private func focusedWindowResizeOverlay(containerSize: CGSize) -> some View {
+        if viewModel.focusedWindowResizeState.isActive,
+           let videoSize = renderedVideoSize {
+            let targetRect = viewModel.focusedWindowResizeState.interaction?.target.flatMap {
+                AspectFitCoordinateMapper.viewRect(
+                    forNormalizedRect: Self.cgRect(from: $0.normalizedFrame),
+                    containerSize: containerSize,
+                    videoSize: videoSize
+                )
+            }
+            let ghostRect = focusedWindowResizeGhostFrame.flatMap {
+                AspectFitCoordinateMapper.viewRect(
+                    forNormalizedRect: $0,
+                    containerSize: containerSize,
+                    videoSize: videoSize
+                )
+            }
+            FocusedWindowResizeOverlay(
+                targetRect: targetRect,
+                ghostRect: ghostRect
+            )
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        }
+    }
+
+    @ViewBuilder
+    private func focusedWindowResizeButton(containerSize: CGSize) -> some View {
+        if (viewModel.focusedWindowResizeState.isActive
+            || viewModel.isFocusedWindowResizeAvailable),
+           remoteInputPresentationAvailability.pointer,
+           let renderedVideoSize {
+            Button {
+                focusedWindowResizeGhostFrame = nil
+                if viewModel.focusedWindowResizeState.isActive {
+                    viewModel.cancelFocusedWindowResize()
+                } else {
+                    _ = viewModel.beginFocusedWindowResize(
+                        for: lease,
+                        containerSize: containerSize,
+                        viewerVideoSize: renderedVideoSize
+                    )
+                }
+            } label: {
+                Label(
+                    viewModel.focusedWindowResizeState.isActive ? "Done" : "Resize",
+                    systemImage: viewModel.focusedWindowResizeState.isActive
+                        ? "checkmark"
+                        : "arrow.up.left.and.arrow.down.right"
+                )
+                .font(.callout.weight(.semibold))
+                .padding(.horizontal, 4)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(viewModel.focusedWindowResizeState.isActive ? .green : .blue)
+            .controlSize(.large)
+            .padding(.trailing, 16)
+            .padding(.bottom, 14)
+            .accessibilityIdentifier("worldwideFocusedWindowResizeButton")
+            .accessibilityHint(
+                viewModel.focusedWindowResizeState.isActive
+                    ? "Ends focused-window resize mode"
+                    : "Selects and resizes a Mac window"
+            )
+        }
+    }
+
+    private static func cgRect(from rect: WebRTCNormalizedRect) -> CGRect {
+        CGRect(
+            x: rect.x,
+            y: rect.y,
+            width: rect.width,
+            height: rect.height
         )
     }
 
@@ -391,7 +649,50 @@ struct WorldwideScreenViewerView: View {
             containerSize: containerSize,
             videoSize: renderedVideoSize,
             allowsPrimaryDrag: viewModel.isRemotePrimaryDragAvailable,
-            allowsScroll: viewModel.isRemoteScrollAvailable
+            allowsScroll: viewModel.isRemoteScrollAvailable,
+            interactionMode: remotePointerInteractionMode(
+                containerSize: containerSize,
+                videoSize: renderedVideoSize,
+                capability: capability,
+                track: track
+            )
+        )
+    }
+
+    private func remotePointerInteractionMode(
+        containerSize: CGSize,
+        videoSize: CGSize,
+        capability: WebRTCInputCapability,
+        track: WebRTCRemoteVideoTrack
+    ) -> RemotePointerGestureInteractionMode {
+        guard let interaction = viewModel.focusedWindowResizeState.interaction else {
+            return .standard
+        }
+        let binding = interaction.binding
+        guard binding.lease == lease,
+              binding.inputSessionID == capability.inputSessionID,
+              binding.screenRequestID == capability.screenRequestID,
+              binding.trackIdentity == ObjectIdentifier(track),
+              binding.containerSize == containerSize,
+              binding.viewerVideoSize == videoSize else {
+            return .focusedWindowResizePending
+        }
+        if interaction.pending != nil {
+            return .focusedWindowResizePending
+        }
+        guard let target = interaction.target,
+              let targetViewFrame = AspectFitCoordinateMapper.viewRect(
+                  forNormalizedRect: Self.cgRect(from: target.normalizedFrame),
+                  containerSize: containerSize,
+                  videoSize: videoSize
+              ) else {
+            return .focusedWindowResize(target: nil)
+        }
+        return .focusedWindowResize(
+            target: RemotePointerResizeTarget(
+                generation: target.generation,
+                viewFrame: targetViewFrame
+            )
         )
     }
 
@@ -519,5 +820,42 @@ struct WorldwideScreenViewerView: View {
         isScreenVisible: Bool
     ) -> Bool {
         allowsPresentation && isScreenVisible && scenePhase == .active
+    }
+}
+
+private struct FocusedWindowResizeOverlay: View {
+    let targetRect: CGRect?
+    let ghostRect: CGRect?
+
+    var body: some View {
+        ZStack {
+            if let targetRect {
+                Path(targetRect)
+                    .stroke(.cyan, style: StrokeStyle(lineWidth: 3, lineJoin: .round))
+                    .shadow(color: .black.opacity(0.8), radius: 2)
+                Path { path in
+                    let midpoint = CGPoint(x: targetRect.midX, y: targetRect.midY)
+                    path.move(to: CGPoint(x: midpoint.x, y: targetRect.minY))
+                    path.addLine(to: CGPoint(x: midpoint.x, y: targetRect.maxY))
+                    path.move(to: CGPoint(x: targetRect.minX, y: midpoint.y))
+                    path.addLine(to: CGPoint(x: targetRect.maxX, y: midpoint.y))
+                }
+                .stroke(
+                    .white.opacity(0.55),
+                    style: StrokeStyle(lineWidth: 1, dash: [5, 6])
+                )
+            }
+
+            if let ghostRect {
+                Path(ghostRect)
+                    .fill(.cyan.opacity(0.12))
+                Path(ghostRect)
+                    .stroke(
+                        .white,
+                        style: StrokeStyle(lineWidth: 3, lineJoin: .round, dash: [9, 6])
+                    )
+                    .shadow(color: .black.opacity(0.9), radius: 2)
+            }
+        }
     }
 }

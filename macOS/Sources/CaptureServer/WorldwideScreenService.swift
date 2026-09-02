@@ -30,24 +30,117 @@ struct WorldwideScreenCaptureGateDiagnostic: Equatable, Sendable {
 
 struct WorldwideRemoteInputInjectionOutcome: Equatable, Sendable {
     let result: MacRemoteInputResult
+    let windowResizeFeedback: MacRemoteWindowResizeFeedback?
+    let verifiedFocus: MacRemoteInputFocus?
     let formatOrigin: WorldwideRemoteInputFormatOrigin?
 
     init(
         _ result: MacRemoteInputResult,
+        windowResizeFeedback: MacRemoteWindowResizeFeedback? = nil,
+        verifiedFocus: MacRemoteInputFocus? = nil,
         formatOrigin: WorldwideRemoteInputFormatOrigin? = nil
     ) {
         self.result = result
+        self.windowResizeFeedback = windowResizeFeedback
+        self.verifiedFocus = verifiedFocus
         self.formatOrigin = formatOrigin
     }
 
     init(_ diagnosedResult: MacRemoteInputDiagnosedResult) {
         result = diagnosedResult.result
+        windowResizeFeedback = nil
+        verifiedFocus = nil
         if let diagnostic = diagnosedResult.screenFormatDiagnostic {
             formatOrigin = .controller(diagnostic)
         } else if case .rejected(.screenFormatChanging) = diagnosedResult.result {
             formatOrigin = .controllerUnknown
         } else {
             formatOrigin = nil
+        }
+    }
+
+    init(_ diagnosedResult: MacRemoteWindowResizeDiagnosedResult) {
+        result = diagnosedResult.result
+        windowResizeFeedback = diagnosedResult.windowResizeFeedback
+        verifiedFocus = diagnosedResult.verifiedFocus
+        if let diagnostic = diagnosedResult.screenFormatDiagnostic {
+            formatOrigin = .controller(diagnostic)
+        } else if case .rejected(.screenFormatChanging) = diagnosedResult.result {
+            formatOrigin = .controllerUnknown
+        } else {
+            formatOrigin = nil
+        }
+    }
+}
+
+protocol WorldwideFocusedWindowResizeDispatching: Sendable {
+    func requestFocusedWindowResizeTarget(
+        screenRequestID: UInt64,
+        inputSessionID: UUID,
+        viewerVideoSize: MacRemoteInputVideoSize?
+    ) -> MacRemoteWindowResizeDiagnosedResult
+
+    func selectWindowForResize(
+        screenRequestID: UInt64,
+        inputSessionID: UUID,
+        normalizedPoint: MacRemoteNormalizedPoint,
+        viewerVideoSize: MacRemoteInputVideoSize?
+    ) -> MacRemoteWindowResizeDiagnosedResult
+
+    func commitFocusedWindowResize(
+        screenRequestID: UInt64,
+        inputSessionID: UUID,
+        targetGeneration: UUID,
+        start: MacRemoteNormalizedPoint,
+        end: MacRemoteNormalizedPoint,
+        viewerVideoSize: MacRemoteInputVideoSize?
+    ) -> MacRemoteWindowResizeDiagnosedResult
+}
+
+extension MacRemoteInputController: WorldwideFocusedWindowResizeDispatching {}
+
+enum WorldwideFocusedWindowResizeDispatcher {
+    static func dispatch(
+        _ request: WebRTCInputRequest,
+        to controller: any WorldwideFocusedWindowResizeDispatching
+    ) -> WorldwideRemoteInputInjectionOutcome? {
+        let viewerVideoSize = request.viewerVideoSize.map {
+            MacRemoteInputVideoSize(width: $0.width, height: $0.height)
+        }
+        switch request.action {
+        case .requestFocusedWindowResizeTarget:
+            return WorldwideRemoteInputInjectionOutcome(
+                controller.requestFocusedWindowResizeTarget(
+                    screenRequestID: request.screenRequestID,
+                    inputSessionID: request.inputSessionID,
+                    viewerVideoSize: viewerVideoSize
+                )
+            )
+
+        case .selectWindowForResize(let point):
+            return WorldwideRemoteInputInjectionOutcome(
+                controller.selectWindowForResize(
+                    screenRequestID: request.screenRequestID,
+                    inputSessionID: request.inputSessionID,
+                    normalizedPoint: .init(x: point.x, y: point.y),
+                    viewerVideoSize: viewerVideoSize
+                )
+            )
+
+        case .commitFocusedWindowResize(let targetGeneration, let start, let end):
+            return WorldwideRemoteInputInjectionOutcome(
+                controller.commitFocusedWindowResize(
+                    screenRequestID: request.screenRequestID,
+                    inputSessionID: request.inputSessionID,
+                    targetGeneration: targetGeneration,
+                    start: .init(x: start.x, y: start.y),
+                    end: .init(x: end.x, y: end.y),
+                    viewerVideoSize: viewerVideoSize
+                )
+            )
+
+        default:
+            return nil
         }
     }
 }
@@ -3366,15 +3459,17 @@ actor WorldwideScreenService {
         }
     }
 
-    /// Injects one request under revocable gates, then returns payload-free feedback.
+    /// Injects one request under revocable gates, then returns content-free feedback.
     private func handleRemoteInputRequest(
         _ request: WebRTCInputRequest,
         authorization: WebRTCInputAuthorization
     ) async {
-        guard let peer else {
+        guard let sourcePeer = peer else {
             revokeRemoteInputAuthorization()
             return
         }
+        let sourcePeerGeneration = peerGeneration
+        let sourceCapability = activeInputCapability
 
         // Keep both revocable gates held through controller validation and OS event injection.
         // The lock order is always input then capture. The first suspension is the feedback send
@@ -3393,21 +3488,28 @@ actor WorldwideScreenService {
             (formatDiagnostic.map { " \($0)" } ?? "")
         )
 
-        let feedback = transportFeedback(for: inputOutcome.result)
+        let feedback = transportFeedback(for: inputOutcome)
         if feedback.revokesSession {
             revokeRemoteInputAuthorization()
         }
 
         do {
-            try await peer.sendInputFeedback(
+            try await sourcePeer.sendInputFeedback(
                 for: request.id,
                 result: feedback.result,
                 rejectionReason: feedback.rejectionReason,
                 screenFormatChanging: feedback.screenFormatChanging,
-                focus: feedback.focus
+                focus: feedback.focus,
+                windowResize: feedback.windowResize
             )
         } catch {
-            revokeRemoteInputAuthorization()
+            // A delayed send failure from an old peer must never revoke a newer session.
+            if peer === sourcePeer,
+               peerGeneration == sourcePeerGeneration,
+               activeInputAuthorization === authorization,
+               activeInputCapability == sourceCapability {
+                revokeRemoteInputAuthorization()
+            }
             // Never include action payloads or typed text in diagnostics.
             logger.error("Worldwide remote-input feedback failed: \(error.localizedDescription)")
         }
@@ -3535,6 +3637,14 @@ actor WorldwideScreenService {
                 )
             )
 
+        case .requestFocusedWindowResizeTarget,
+             .selectWindowForResize,
+             .commitFocusedWindowResize:
+            WorldwideFocusedWindowResizeDispatcher.dispatch(
+                request,
+                to: remoteInputController
+            ) ?? WorldwideRemoteInputInjectionOutcome(.rejected(.invalidPoint))
+
         case .insertText(let text, let focusGeneration):
             WorldwideRemoteInputInjectionOutcome(
                 remoteInputController.insertText(
@@ -3576,6 +3686,12 @@ actor WorldwideScreenService {
             return "primary-drag"
         case .scroll:
             return "scroll"
+        case .requestFocusedWindowResizeTarget:
+            return "focused-window-target"
+        case .selectWindowForResize:
+            return "focused-window-selection"
+        case .commitFocusedWindowResize:
+            return "focused-window-resize-commit"
         case .insertText:
             return "committed-text"
         case .backspace:
@@ -3595,6 +3711,10 @@ actor WorldwideScreenService {
             capability.supportsPrimaryDrag
         case .scroll:
             capability.supportsScroll
+        case .requestFocusedWindowResizeTarget,
+             .selectWindowForResize,
+             .commitFocusedWindowResize:
+            capability.supportsFocusedWindowResize
         case .tap, .insertText, .backspace, .returnKey:
             true
         }
@@ -3609,7 +3729,8 @@ actor WorldwideScreenService {
             inputSessionID: inputSessionID,
             screenRequestID: screenRequestID,
             supportsPrimaryDrag: true,
-            supportsScroll: true
+            supportsScroll: true,
+            supportsFocusedWindowResize: true
         )
     }
 
@@ -3627,13 +3748,19 @@ actor WorldwideScreenService {
 
     /// Maps local outcomes to stable wire feedback and session-revocation policy.
     private func transportFeedback(
-        for result: MacRemoteInputResult
+        for outcome: WorldwideRemoteInputInjectionOutcome
     ) -> RemoteInputTransportFeedback {
-        switch result {
+        switch outcome.result {
         case .accepted(.none):
-            return .accepted(focus: .none)
+            return .accepted(
+                focus: .none,
+                windowResize: wireWindowResizeFeedback(outcome.windowResizeFeedback)
+            )
         case .accepted(.editable(let generation, let secure)):
-            return .accepted(focus: .editable(generation: generation, secure: secure))
+            return .accepted(
+                focus: .editable(generation: generation, secure: secure),
+                windowResize: wireWindowResizeFeedback(outcome.windowResizeFeedback)
+            )
 
         case .rejected(let rejection):
             let reason: WebRTCInputRejectionReason
@@ -3678,13 +3805,58 @@ actor WorldwideScreenService {
                 reason = .injectionFailed
                 screenFormatChanging = false
                 revokesSession = false
+            case .windowUnavailable, .windowResizeFailed:
+                reason = .invalidRequest
+                screenFormatChanging = false
+                revokesSession = false
+            case .windowResizeUncertain:
+                // The AX rollback could not prove the original frame. Reuse the established
+                // terminal session reason so deployed clients revoke all input authority.
+                reason = .staleSession
+                screenFormatChanging = false
+                revokesSession = true
             }
             return .rejected(
                 reason: reason,
                 screenFormatChanging: screenFormatChanging,
+                focus: wireFocus(outcome.verifiedFocus),
                 revokesSession: revokesSession
             )
         }
+    }
+
+    private func wireFocus(_ focus: MacRemoteInputFocus?) -> WebRTCInputFocus {
+        switch focus {
+        case .some(.editable(let generation, let secure)):
+            .editable(generation: generation, secure: secure)
+        case .some(.none), nil:
+            .none
+        }
+    }
+
+    private func wireWindowResizeFeedback(
+        _ feedback: MacRemoteWindowResizeFeedback?
+    ) -> WebRTCWindowResizeFeedback? {
+        guard let feedback else { return nil }
+        let kind: WebRTCWindowResizeFeedbackKind = switch feedback.kind {
+        case .targetAcquired: .targetAcquired
+        case .windowSelected: .windowSelected
+        case .resizeCommitted: .resizeCommitted
+        }
+        let frame = feedback.target.normalizedFrame
+        return WebRTCWindowResizeFeedback(
+            kind: kind,
+            committedTargetGeneration: feedback.committedTargetGeneration,
+            target: WebRTCWindowResizeTarget(
+                generation: feedback.target.generation,
+                normalizedFrame: WebRTCNormalizedRect(
+                    x: frame.minX,
+                    y: frame.minY,
+                    width: frame.width,
+                    height: frame.height
+                )
+            )
+        )
     }
 
     /// Revokes the transport token and controller state synchronously.
@@ -6650,14 +6822,19 @@ private struct RemoteInputTransportFeedback {
     let rejectionReason: WebRTCInputRejectionReason?
     let screenFormatChanging: Bool
     let focus: WebRTCInputFocus
+    let windowResize: WebRTCWindowResizeFeedback?
     let revokesSession: Bool
 
-    static func accepted(focus: WebRTCInputFocus) -> Self {
+    static func accepted(
+        focus: WebRTCInputFocus,
+        windowResize: WebRTCWindowResizeFeedback? = nil
+    ) -> Self {
         Self(
             result: .accepted,
             rejectionReason: nil,
             screenFormatChanging: false,
             focus: focus,
+            windowResize: windowResize,
             revokesSession: false
         )
     }
@@ -6665,13 +6842,15 @@ private struct RemoteInputTransportFeedback {
     static func rejected(
         reason: WebRTCInputRejectionReason,
         screenFormatChanging: Bool = false,
+        focus: WebRTCInputFocus = .none,
         revokesSession: Bool
     ) -> Self {
         Self(
             result: .rejected,
             rejectionReason: reason,
             screenFormatChanging: screenFormatChanging,
-            focus: .none,
+            focus: focus,
+            windowResize: nil,
             revokesSession: revokesSession
         )
     }

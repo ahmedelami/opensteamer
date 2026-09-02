@@ -1,4 +1,5 @@
 import CoreGraphics
+import Streaming
 import UIKit
 import XCTest
 @testable import opensteamer
@@ -342,6 +343,123 @@ final class AspectFitCoordinateMapperTests: XCTestCase {
         XCTAssertEqual(accumulator.pendingPixelDelta, .zero)
     }
 
+    func testNormalizedResizeRectMapsIntoAspectFitVideoAndRejectsClipping() {
+        XCTAssertEqual(
+            AspectFitCoordinateMapper.viewRect(
+                forNormalizedRect: CGRect(x: 0.25, y: 0.5, width: 0.5, height: 0.25),
+                containerSize: CGSize(width: 400, height: 400),
+                videoSize: CGSize(width: 200, height: 100)
+            ),
+            CGRect(x: 100, y: 200, width: 200, height: 50)
+        )
+        XCTAssertNil(
+            AspectFitCoordinateMapper.viewRect(
+                forNormalizedRect: CGRect(x: 0.8, y: 0.1, width: 0.3, height: 0.5),
+                containerSize: CGSize(width: 400, height: 400),
+                videoSize: CGSize(width: 200, height: 100)
+            )
+        )
+    }
+
+    func testResizeCrossoverRetainsSharedMinimumAndAffinePreviewParity() throws {
+        let containerSize = CGSize(width: 390, height: 844)
+        let videoSize = CGSize(width: 1_920, height: 1_080)
+        let normalizedBounds = CGRect(x: 0, y: 0, width: 1, height: 1)
+        let normalizedOriginal = CGRect(x: 0.1, y: 0.2, width: 0.6, height: 0.5)
+        let normalizedStart = CGPoint(x: 0.15, y: 0.25)
+        let normalizedEnd = CGPoint(x: 0.95, y: 0.95)
+        let normalizedMinimum = try XCTUnwrap(
+            FocusedWindowResizeGeometry.minimumRetainedSize(
+                for: normalizedOriginal
+            )
+        )
+        let normalizedProposal = try XCTUnwrap(
+            FocusedWindowResizeGeometry.proposedFrame(
+                original: normalizedOriginal,
+                start: normalizedStart,
+                end: normalizedEnd,
+                bounds: normalizedBounds,
+                minimumSize: normalizedMinimum,
+                containmentTolerance: 0
+            )
+        )
+
+        XCTAssertEqual(
+            normalizedProposal.frame.width,
+            normalizedOriginal.width
+                * FocusedWindowResizeGeometry.minimumRetainedFraction,
+            accuracy: 0.000_001
+        )
+        XCTAssertEqual(
+            normalizedProposal.frame.height,
+            normalizedOriginal.height
+                * FocusedWindowResizeGeometry.minimumRetainedFraction,
+            accuracy: 0.000_001
+        )
+
+        let viewBounds = try XCTUnwrap(
+            AspectFitCoordinateMapper.visibleVideoRect(
+                containerSize: containerSize,
+                videoSize: videoSize
+            )
+        )
+        let viewOriginal = try XCTUnwrap(
+            AspectFitCoordinateMapper.viewRect(
+                forNormalizedRect: normalizedOriginal,
+                containerSize: containerSize,
+                videoSize: videoSize
+            )
+        )
+        func viewPoint(_ point: CGPoint) -> CGPoint {
+            CGPoint(
+                x: viewBounds.minX + point.x * viewBounds.width,
+                y: viewBounds.minY + point.y * viewBounds.height
+            )
+        }
+        let viewProposal = try XCTUnwrap(
+            FocusedWindowResizeGeometry.proposedFrame(
+                original: viewOriginal,
+                start: viewPoint(normalizedStart),
+                end: viewPoint(normalizedEnd),
+                bounds: viewBounds,
+                minimumSize: try XCTUnwrap(
+                    FocusedWindowResizeGeometry.minimumRetainedSize(
+                        for: viewOriginal
+                    )
+                ),
+                containmentTolerance: 0
+            )
+        )
+        let mappedNormalizedProposal = try XCTUnwrap(
+            AspectFitCoordinateMapper.viewRect(
+                forNormalizedRect: normalizedProposal.frame,
+                containerSize: containerSize,
+                videoSize: videoSize
+            )
+        )
+
+        XCTAssertEqual(
+            viewProposal.frame.minX,
+            mappedNormalizedProposal.minX,
+            accuracy: 0.000_001
+        )
+        XCTAssertEqual(
+            viewProposal.frame.minY,
+            mappedNormalizedProposal.minY,
+            accuracy: 0.000_001
+        )
+        XCTAssertEqual(
+            viewProposal.frame.width,
+            mappedNormalizedProposal.width,
+            accuracy: 0.000_001
+        )
+        XCTAssertEqual(
+            viewProposal.frame.height,
+            mappedNormalizedProposal.height,
+            accuracy: 0.000_001
+        )
+    }
+
     @MainActor
     func testNativeGestureSurfaceInstallsOneAuthoritativeRecognizer() {
         let trackIdentity = NSObject()
@@ -585,5 +703,157 @@ final class AspectFitCoordinateMapperTests: XCTestCase {
             machine.end(at: CGPoint(x: 20, y: 0), timestamp: 0.3),
             []
         )
+    }
+
+    func testResizeModeTapSelectsWindowWithoutHoldOrOrdinaryTap() {
+        var machine = RemotePointerGestureStateMachine(
+            allowsScroll: true,
+            allowsPrimaryDrag: true,
+            interactionMode: .focusedWindowResize(target: nil)
+        )
+
+        XCTAssertEqual(machine.begin(at: CGPoint(x: 40, y: 50), timestamp: 0), [])
+        XCTAssertFalse(machine.shouldScheduleHoldDeadline)
+        XCTAssertEqual(machine.holdDeadlineReached(), [])
+        XCTAssertEqual(
+            machine.end(at: CGPoint(x: 45, y: 52), timestamp: 1),
+            [.focusedWindowSelection(CGPoint(x: 45, y: 52))]
+        )
+    }
+
+    func testResizeModeEndOnlyThresholdCrossingPreviewsThenCommitsExactlyOnce() {
+        let generation = UUID()
+        let target = RemotePointerResizeTarget(
+            generation: generation,
+            viewFrame: CGRect(x: 20, y: 20, width: 100, height: 100)
+        )
+        var machine = RemotePointerGestureStateMachine(
+            allowsScroll: true,
+            allowsPrimaryDrag: true,
+            interactionMode: .focusedWindowResize(target: target)
+        )
+        let start = CGPoint(x: 30, y: 30)
+        let end = CGPoint(x: 42, y: 30)
+
+        XCTAssertEqual(machine.begin(at: start, timestamp: 0), [])
+        XCTAssertEqual(
+            machine.end(at: end, timestamp: 0.1),
+            [
+                .focusedWindowResizePreview(
+                    targetGeneration: generation,
+                    start: start,
+                    end: end
+                ),
+                .focusedWindowResizeCommit(
+                    targetGeneration: generation,
+                    start: start,
+                    end: end
+                ),
+            ]
+        )
+        XCTAssertEqual(machine.end(at: end, timestamp: 0.2), [])
+    }
+
+    func testResizeModeDragOutsideTargetSuppressesSelectionScrollAndCommit() {
+        let target = RemotePointerResizeTarget(
+            generation: UUID(),
+            viewFrame: CGRect(x: 20, y: 20, width: 100, height: 100)
+        )
+        var machine = RemotePointerGestureStateMachine(
+            allowsScroll: true,
+            allowsPrimaryDrag: true,
+            interactionMode: .focusedWindowResize(target: target)
+        )
+
+        XCTAssertEqual(machine.begin(at: .zero, timestamp: 0), [])
+        XCTAssertEqual(machine.move(to: CGPoint(x: 12, y: 0), timestamp: 0.1), [])
+        XCTAssertEqual(machine.phase, .suppressed)
+        XCTAssertEqual(machine.end(at: CGPoint(x: 20, y: 0), timestamp: 0.2), [])
+    }
+
+    func testResizeModeCancellationAfterPreviewCannotCommit() {
+        let generation = UUID()
+        let start = CGPoint(x: 30, y: 30)
+        let target = RemotePointerResizeTarget(
+            generation: generation,
+            viewFrame: CGRect(x: 20, y: 20, width: 100, height: 100)
+        )
+        var machine = RemotePointerGestureStateMachine(
+            allowsScroll: true,
+            allowsPrimaryDrag: true,
+            interactionMode: .focusedWindowResize(target: target)
+        )
+
+        XCTAssertEqual(machine.begin(at: start, timestamp: 0), [])
+        XCTAssertEqual(
+            machine.move(to: CGPoint(x: 43, y: 30), timestamp: 0.1),
+            [
+                .focusedWindowResizePreview(
+                    targetGeneration: generation,
+                    start: start,
+                    end: CGPoint(x: 43, y: 30)
+                ),
+            ]
+        )
+        XCTAssertEqual(machine.cancel(), [.focusedWindowResizeCancelled])
+        XCTAssertEqual(machine.end(at: CGPoint(x: 60, y: 30), timestamp: 0.2), [])
+    }
+
+    @MainActor
+    func testResizeTargetUpdateKeepsOneRecognizerWithoutOwnershipInvalidation() {
+        let trackIdentity = NSObject()
+        var invalidationCount = 0
+        let base = RemotePointerGestureConfiguration(
+            presentationID: UUID(),
+            inputSessionID: UUID(),
+            trackIdentity: ObjectIdentifier(trackIdentity),
+            containerSize: CGSize(width: 390, height: 844),
+            videoSize: CGSize(width: 1_080, height: 2_340),
+            allowsPrimaryDrag: true,
+            allowsScroll: true,
+            interactionMode: .focusedWindowResize(target: nil)
+        )
+        let surface = RemotePointerGestureSurface(
+            configuration: base,
+            onTap: { _ in },
+            onScrollBegan: { _ in nil },
+            onScrollChanged: { _, _ in },
+            onScrollEnded: { _ in },
+            onScrollCancelled: { _ in },
+            onPrimaryDrag: { _, _ in },
+            onConfigurationInvalidated: { invalidationCount += 1 }
+        )
+        let coordinator = surface.makeCoordinator()
+        let view = UIView(frame: .zero)
+        coordinator.install(on: view)
+        let target = RemotePointerResizeTarget(
+            generation: UUID(),
+            viewFrame: CGRect(x: 20, y: 20, width: 100, height: 100)
+        )
+
+        coordinator.update(
+            from: RemotePointerGestureSurface(
+                configuration: RemotePointerGestureConfiguration(
+                    presentationID: base.presentationID,
+                    inputSessionID: base.inputSessionID,
+                    trackIdentity: base.trackIdentity,
+                    containerSize: base.containerSize,
+                    videoSize: base.videoSize,
+                    allowsPrimaryDrag: base.allowsPrimaryDrag,
+                    allowsScroll: base.allowsScroll,
+                    interactionMode: .focusedWindowResize(target: target)
+                ),
+                onTap: surface.onTap,
+                onScrollBegan: surface.onScrollBegan,
+                onScrollChanged: surface.onScrollChanged,
+                onScrollEnded: surface.onScrollEnded,
+                onScrollCancelled: surface.onScrollCancelled,
+                onPrimaryDrag: surface.onPrimaryDrag,
+                onConfigurationInvalidated: surface.onConfigurationInvalidated
+            )
+        )
+
+        XCTAssertEqual(invalidationCount, 0)
+        XCTAssertEqual(view.gestureRecognizers?.count, 1)
     }
 }

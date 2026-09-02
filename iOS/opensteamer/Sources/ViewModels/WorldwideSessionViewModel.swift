@@ -19,6 +19,77 @@ struct WorldwideScreenPresentationLease: Identifiable, Equatable, Sendable {
     }
 }
 
+/// Exact viewer geometry and ownership under which one focused-window resize interaction exists.
+/// A target is never allowed to cross any member of this binding.
+struct FocusedWindowResizeBinding: Equatable {
+    let lease: WorldwideScreenPresentationLease
+    let inputSessionID: UUID
+    let screenRequestID: UInt64
+    let trackIdentity: ObjectIdentifier
+    let containerSize: CGSize
+    let viewerVideoSize: CGSize
+}
+
+enum FocusedWindowResizePendingOperation: Equatable {
+    case targetRequest(operationID: UUID, focusGeneration: UInt64?)
+    case selection(operationID: UUID, focusGeneration: UInt64?)
+    case commit(
+        operationID: UUID,
+        consumedTargetGeneration: UUID,
+        focusGeneration: UInt64?
+    )
+
+    var operationID: UUID {
+        switch self {
+        case .targetRequest(let operationID, _),
+             .selection(let operationID, _),
+             .commit(let operationID, _, _):
+            operationID
+        }
+    }
+
+    var focusGeneration: UInt64? {
+        switch self {
+        case .targetRequest(_, let focusGeneration),
+             .selection(_, let focusGeneration),
+             .commit(_, _, let focusGeneration):
+            focusGeneration
+        }
+    }
+
+    func matches(_ action: WebRTCInputAction) -> Bool {
+        switch (self, action) {
+        case (.targetRequest, .requestFocusedWindowResizeTarget),
+             (.selection, .selectWindowForResize):
+            true
+        case (.commit(_, let consumedGeneration, _),
+              .commitFocusedWindowResize(let actionGeneration, _, _)):
+            consumedGeneration == actionGeneration
+        default:
+            false
+        }
+    }
+}
+
+struct FocusedWindowResizeInteraction: Equatable {
+    let id: UUID
+    let binding: FocusedWindowResizeBinding
+    var target: WebRTCWindowResizeTarget?
+    var pending: FocusedWindowResizePendingOperation?
+}
+
+enum FocusedWindowResizeState: Equatable {
+    case inactive
+    case active(FocusedWindowResizeInteraction)
+
+    var interaction: FocusedWindowResizeInteraction? {
+        guard case .active(let interaction) = self else { return nil }
+        return interaction
+    }
+
+    var isActive: Bool { interaction != nil }
+}
+
 /// Composite identity for an in-flight show/hide request across reconnect generations.
 struct WorldwideScreenVisibilityRequestKey: Hashable, Sendable {
     let sessionGeneration: UUID
@@ -654,7 +725,7 @@ final class WorldwideSessionViewModel: ObservableObject {
                 reason: "The remote video track changed during screen resume.",
                 notifyPeer: true
             )
-            discardPendingRemoteScrolls()
+            remoteVideoTrackIdentityWillChange()
         }
         didSet {
             let previousIdentity = oldValue.map { ObjectIdentifier($0) }
@@ -669,6 +740,9 @@ final class WorldwideSessionViewModel: ObservableObject {
         WorldwideScreenMediaViewerFence? {
         didSet {
             guard oldValue != screenMediaViewerFence else { return }
+            if screenMediaViewerFence?.forceCover == true {
+                cancelFocusedWindowResize()
+            }
             if let recoveryRevealFence = screenPresentationRevealAfterRecoveryFence,
                !recoveryRevealFence.matches(screenMediaViewerFence) {
                 screenPresentationRevealAfterRecoveryFence = nil
@@ -703,6 +777,7 @@ final class WorldwideSessionViewModel: ObservableObject {
     @Published private(set) var remoteInputCapability: WebRTCInputCapability?
     @Published private(set) var focusedInputGeneration: UInt64?
     @Published private(set) var focusedInputIsSecure = false
+    @Published private(set) var focusedWindowResizeState: FocusedWindowResizeState = .inactive
 
     private var signaling: RendezvousSignalingClient?
     private var peer: WebRTCPeer? {
@@ -858,6 +933,7 @@ final class WorldwideSessionViewModel: ObservableObject {
     private var sessionGeneration = UUID() {
         didSet {
             if oldValue != sessionGeneration {
+                cancelFocusedWindowResize()
                 advanceScreenLivenessGeneration(clearRenderObservation: true)
                 beginMacHostedCallNegotiationBoundary()
                 transportAuthorizationGeneration = UUID()
@@ -880,12 +956,19 @@ final class WorldwideSessionViewModel: ObservableObject {
     private var activeRemoteScroll: ActiveRemoteScroll?
     private var remoteScrollFlushTask: Task<Void, Never>?
     private var remoteScrollSendAuthorization: WebRTCInputSendAuthorization?
+    private var focusedWindowResizeSendAuthorization: WebRTCInputSendAuthorization?
     private var remoteInputLifecycleSendAuthorization:
         WebRTCInputSendAuthorization?
     private var applicationInputIsSuspended = false
     private var pendingRemoteInputs: [UInt64: PendingRemoteInput] = [:]
     private var pendingRemoteInputOrder: [UInt64] = []
     private var earlyRemoteInputFeedback: [UInt64: WebRTCInputFeedback] = [:]
+    private var retiredFocusedWindowResizeRequests: [
+        RetiredFocusedWindowResizeRequestKey: RetiredFocusedWindowResizeRequest
+    ] = [:]
+    private var retiredFocusedWindowResizeRequestKeyOrder: [
+        RetiredFocusedWindowResizeRequestKey
+    ] = []
     private var latestPointerIntentID: UInt64 = 0
     private var remoteInputAuthorization: WebRTCInputAuthorization?
     private var currentScreenPresentationLease: WorldwideScreenPresentationLease?
@@ -917,6 +1000,7 @@ final class WorldwideSessionViewModel: ObservableObject {
     private var remoteHideRequired = false
     private var screenVisibilityOperationGeneration = UUID()
     #if DEBUG
+    private var debugFocusedWindowResizeTrackOwner: NSObject?
     private var debugScreenVisibilityRequestSender: (@MainActor (Bool) async throws -> UInt64)?
     private var debugScreenVisibilityRequestSenderV2: (
         @MainActor (WorldwideScreenVisibilityDebugRequest) async throws -> UInt64
@@ -1135,6 +1219,11 @@ final class WorldwideSessionViewModel: ObservableObject {
 
     var isRemoteScrollAvailable: Bool {
         isRemoteInputAvailable && remoteInputCapability?.supportsScroll == true
+    }
+
+    var isFocusedWindowResizeAvailable: Bool {
+        isRemoteInputAvailable
+            && remoteInputCapability?.supportsFocusedWindowResize == true
     }
 
     var canResumeAudioPlayback: Bool {
@@ -2281,6 +2370,9 @@ final class WorldwideSessionViewModel: ObservableObject {
 
     func retireScreenPresentationLease(_ lease: WorldwideScreenPresentationLease) {
         guard currentScreenPresentationLease == lease else { return }
+        if focusedWindowResizeState.interaction?.binding.lease == lease {
+            cancelFocusedWindowResize()
+        }
         if recoveringScreenPresentationLease == lease {
             recoveringScreenPresentationLease = nil
             screenPresentationRecoveryTask?.cancel()
@@ -2348,7 +2440,10 @@ final class WorldwideSessionViewModel: ObservableObject {
         for lease: WorldwideScreenPresentationLease,
         completion: @escaping @MainActor () -> Void = {}
     ) -> Bool {
-        claimScreenTeardown(
+        if focusedWindowResizeState.interaction?.binding.lease == lease {
+            cancelFocusedWindowResize()
+        }
+        return claimScreenTeardown(
             for: lease,
             allowSupersededSameSessionLease: false,
             completion: { _ in completion() }
@@ -2744,6 +2839,9 @@ final class WorldwideSessionViewModel: ObservableObject {
         to size: CGSize,
         for lease: WorldwideScreenPresentationLease
     ) {
+        if focusedWindowResizeState.interaction?.binding.lease == lease {
+            cancelFocusedWindowResize()
+        }
         guard let attempt = screenMediaViewerAttempt,
               screenMediaViewerAttemptIsCurrent(attempt),
               attempt.lease == lease else {
@@ -2785,6 +2883,18 @@ final class WorldwideSessionViewModel: ObservableObject {
                 notifyPeer: true
             )
         }
+    }
+
+    func focusedWindowResizeContainerGeometryDidChange(
+        to containerSize: CGSize,
+        for lease: WorldwideScreenPresentationLease
+    ) {
+        guard let binding = focusedWindowResizeState.interaction?.binding,
+              binding.lease == lease,
+              binding.containerSize != containerSize else {
+            return
+        }
+        cancelFocusedWindowResize()
     }
 
     private func receiveScreenMediaSuspension(
@@ -3940,11 +4050,296 @@ final class WorldwideSessionViewModel: ObservableObject {
 
     // MARK: - Remote input serialization
 
+    @discardableResult
+    func beginFocusedWindowResize(
+        for lease: WorldwideScreenPresentationLease,
+        containerSize: CGSize,
+        viewerVideoSize: CGSize
+    ) -> Bool {
+        guard let binding = focusedWindowResizeBinding(
+            for: lease,
+            containerSize: containerSize,
+            viewerVideoSize: viewerVideoSize
+        ) else {
+            cancelFocusedWindowResize()
+            return false
+        }
+
+        cancelFocusedWindowResize()
+        discardPendingRemoteScrolls()
+        retireRemotePointerIntentPreservingKeyboardFocus()
+        let interactionID = UUID()
+        let operation = FocusedWindowResizePendingOperation.targetRequest(
+            operationID: UUID(),
+            focusGeneration: focusedInputGeneration
+        )
+        focusedWindowResizeState = .active(
+            FocusedWindowResizeInteraction(
+                id: interactionID,
+                binding: binding,
+                target: nil,
+                pending: operation
+            )
+        )
+        let sendAuthorization = currentFocusedWindowResizeSendAuthorization()
+        enqueueRemoteInput(
+            .requestFocusedWindowResizeTarget,
+            viewerVideoSize: Self.remoteInputVideoSize(from: viewerVideoSize),
+            sendAuthorization: sendAuthorization,
+            focusedWindowResizeInteractionID: interactionID,
+            focusedWindowResizeOperation: operation
+        )
+        return focusedWindowResizeState.interaction?.id == interactionID
+            && sendAuthorization.isValid
+    }
+
+    func selectWindowForFocusedResize(
+        at normalizedPoint: CGPoint,
+        for lease: WorldwideScreenPresentationLease,
+        containerSize: CGSize,
+        viewerVideoSize: CGSize
+    ) {
+        guard Self.isValidNormalizedRemoteInputPoint(normalizedPoint),
+              var interaction = currentFocusedWindowResizeInteraction(
+                  for: lease,
+                  containerSize: containerSize,
+                  viewerVideoSize: viewerVideoSize
+              ),
+              interaction.pending == nil,
+              let sendAuthorization = focusedWindowResizeSendAuthorization,
+              sendAuthorization.isValid else {
+            return
+        }
+
+        let operation = FocusedWindowResizePendingOperation.selection(
+            operationID: UUID(),
+            focusGeneration: focusedInputGeneration
+        )
+        interaction.target = nil
+        interaction.pending = operation
+        focusedWindowResizeState = .active(interaction)
+        enqueueRemoteInput(
+            .selectWindowForResize(
+                at: WebRTCNormalizedPoint(
+                    x: Double(normalizedPoint.x),
+                    y: Double(normalizedPoint.y)
+                )
+            ),
+            viewerVideoSize: Self.remoteInputVideoSize(from: viewerVideoSize),
+            sendAuthorization: sendAuthorization,
+            focusedWindowResizeInteractionID: interaction.id,
+            focusedWindowResizeOperation: operation
+        )
+    }
+
+    func commitFocusedWindowResize(
+        targetGeneration: UUID,
+        startNormalizedPoint: CGPoint,
+        endNormalizedPoint: CGPoint,
+        for lease: WorldwideScreenPresentationLease,
+        containerSize: CGSize,
+        viewerVideoSize: CGSize
+    ) {
+        guard Self.isValidNormalizedRemoteInputPoint(startNormalizedPoint),
+              Self.isValidNormalizedRemoteInputPoint(endNormalizedPoint),
+              var interaction = currentFocusedWindowResizeInteraction(
+                  for: lease,
+                  containerSize: containerSize,
+                  viewerVideoSize: viewerVideoSize
+              ),
+              interaction.pending == nil,
+              interaction.target?.generation == targetGeneration,
+              let sendAuthorization = focusedWindowResizeSendAuthorization,
+              sendAuthorization.isValid else {
+            return
+        }
+
+        let operation = FocusedWindowResizePendingOperation.commit(
+            operationID: UUID(),
+            consumedTargetGeneration: targetGeneration,
+            focusGeneration: focusedInputGeneration
+        )
+        // The consumed generation is one-shot. Feedback may install only a fresh successor.
+        interaction.target = nil
+        interaction.pending = operation
+        focusedWindowResizeState = .active(interaction)
+        enqueueRemoteInput(
+            .commitFocusedWindowResize(
+                targetGeneration: targetGeneration,
+                start: WebRTCNormalizedPoint(
+                    x: Double(startNormalizedPoint.x),
+                    y: Double(startNormalizedPoint.y)
+                ),
+                end: WebRTCNormalizedPoint(
+                    x: Double(endNormalizedPoint.x),
+                    y: Double(endNormalizedPoint.y)
+                )
+            ),
+            viewerVideoSize: Self.remoteInputVideoSize(from: viewerVideoSize),
+            sendAuthorization: sendAuthorization,
+            focusedWindowResizeInteractionID: interaction.id,
+            focusedWindowResizeOperation: operation
+        )
+    }
+
+    /// Revokes only focused-window resize work. Keyboard focus and ordinary text packets remain
+    /// owned by their independent authenticated generations.
+    func cancelFocusedWindowResize() {
+        focusedWindowResizeSendAuthorization?.revoke()
+        focusedWindowResizeSendAuthorization = nil
+        remoteInputQueue.removeAll(where: {
+            $0.focusedWindowResizeOperation != nil
+        })
+        let pendingRequests: [(
+            requestID: UInt64,
+            operation: FocusedWindowResizePendingOperation,
+            requestScope: RemoteInputRequestScope
+        )] = pendingRemoteInputs.compactMap { requestID, pending in
+            guard case .focusedWindowResize(_, let operation) = pending.kind else {
+                return nil
+            }
+            return (
+                requestID: requestID,
+                operation: operation,
+                requestScope: pending.requestScope
+            )
+        }
+        for (requestID, operation, requestScope) in pendingRequests {
+            pendingRemoteInputs.removeValue(forKey: requestID)
+            earlyRemoteInputFeedback.removeValue(forKey: requestID)
+            retireFocusedWindowResizeRequestID(
+                requestID,
+                operation: operation,
+                requestScope: requestScope
+            )
+        }
+        if !pendingRequests.isEmpty {
+            let retired = Set(pendingRequests.map(\.requestID))
+            pendingRemoteInputOrder.removeAll(where: retired.contains)
+        }
+        focusedWindowResizeState = .inactive
+    }
+
+    private func remoteVideoTrackIdentityWillChange() {
+        discardPendingRemoteScrolls()
+        cancelFocusedWindowResize()
+    }
+
+    private func retireFocusedWindowResizeRequestID(
+        _ requestID: UInt64,
+        operation: FocusedWindowResizePendingOperation,
+        requestScope: RemoteInputRequestScope
+    ) {
+        let key = RetiredFocusedWindowResizeRequestKey(
+            requestID: requestID,
+            requestScope: requestScope
+        )
+        guard retiredFocusedWindowResizeRequests[key] == nil else {
+            return
+        }
+        retiredFocusedWindowResizeRequests[key] =
+            RetiredFocusedWindowResizeRequest(operation: operation)
+        retiredFocusedWindowResizeRequestKeyOrder.append(key)
+        while retiredFocusedWindowResizeRequestKeyOrder.count > 256 {
+            let oldest = retiredFocusedWindowResizeRequestKeyOrder.removeFirst()
+            retiredFocusedWindowResizeRequests.removeValue(forKey: oldest)
+        }
+    }
+
+    private func focusedWindowResizeBinding(
+        for lease: WorldwideScreenPresentationLease,
+        containerSize: CGSize,
+        viewerVideoSize: CGSize
+    ) -> FocusedWindowResizeBinding? {
+        guard remoteInputIsAvailable(for: lease),
+              isFocusedWindowResizeAvailable,
+              let capability = remoteInputCapability,
+              capability.supportsFocusedWindowResize,
+              let trackIdentity = focusedWindowResizeTrackIdentity(for: lease),
+              containerSize.width.isFinite,
+              containerSize.height.isFinite,
+              containerSize.width > 0,
+              containerSize.height > 0,
+              Self.remoteInputVideoSize(from: viewerVideoSize) != nil else {
+            return nil
+        }
+        return FocusedWindowResizeBinding(
+            lease: lease,
+            inputSessionID: capability.inputSessionID,
+            screenRequestID: capability.screenRequestID,
+            trackIdentity: trackIdentity,
+            containerSize: containerSize,
+            viewerVideoSize: viewerVideoSize
+        )
+    }
+
+    private func currentFocusedWindowResizeInteraction(
+        for lease: WorldwideScreenPresentationLease,
+        containerSize: CGSize,
+        viewerVideoSize: CGSize
+    ) -> FocusedWindowResizeInteraction? {
+        guard let interaction = focusedWindowResizeState.interaction,
+              interaction.binding.lease == lease,
+              interaction.binding.containerSize == containerSize,
+              interaction.binding.viewerVideoSize == viewerVideoSize,
+              focusedWindowResizeInteractionIsCurrent(interaction) else {
+            cancelFocusedWindowResize()
+            return nil
+        }
+        return interaction
+    }
+
+    private func focusedWindowResizeInteractionIsCurrent(
+        _ interaction: FocusedWindowResizeInteraction
+    ) -> Bool {
+        let binding = interaction.binding
+        return remoteInputIsAvailable(for: binding.lease)
+            && isFocusedWindowResizeAvailable
+            && remoteInputCapability?.inputSessionID == binding.inputSessionID
+            && remoteInputCapability?.screenRequestID == binding.screenRequestID
+            && focusedWindowResizeTrackIdentity(for: binding.lease)
+                == binding.trackIdentity
+            && focusedWindowResizeSendAuthorization?.isValid == true
+    }
+
+    private func focusedWindowResizeTrackIdentity(
+        for lease: WorldwideScreenPresentationLease
+    ) -> ObjectIdentifier? {
+        if let track = screenVideoTrack(for: lease) {
+            return ObjectIdentifier(track)
+        }
+        #if DEBUG
+        if screenPresentationIsVisible(lease),
+           let debugFocusedWindowResizeTrackOwner {
+            return ObjectIdentifier(debugFocusedWindowResizeTrackOwner)
+        }
+        #endif
+        return nil
+    }
+
+    private func currentFocusedWindowResizeSendAuthorization()
+        -> WebRTCInputSendAuthorization {
+        if let focusedWindowResizeSendAuthorization,
+           focusedWindowResizeSendAuthorization.isValid {
+            return focusedWindowResizeSendAuthorization
+        }
+        let authorization = WebRTCInputSendAuthorization()
+        focusedWindowResizeSendAuthorization = authorization
+        return authorization
+    }
+
+    private static func isValidNormalizedRemoteInputPoint(_ point: CGPoint) -> Bool {
+        point.x.isFinite && point.y.isFinite
+            && (0 ... 1).contains(point.x)
+            && (0 ... 1).contains(point.y)
+    }
+
     func sendRemoteTap(
         normalizedPoint: CGPoint,
         viewerVideoSize: CGSize
     ) {
         guard isRemoteInputAvailable,
+              !focusedWindowResizeState.isActive,
               normalizedPoint.x.isFinite,
               normalizedPoint.y.isFinite,
               let viewerVideoSize = Self.remoteInputVideoSize(from: viewerVideoSize) else {
@@ -3970,6 +4365,7 @@ final class WorldwideSessionViewModel: ObservableObject {
         viewerVideoSize: CGSize
     ) {
         guard isRemotePrimaryDragAvailable,
+              !focusedWindowResizeState.isActive,
               startNormalizedPoint.x.isFinite,
               startNormalizedPoint.y.isFinite,
               endNormalizedPoint.x.isFinite,
@@ -4003,6 +4399,7 @@ final class WorldwideSessionViewModel: ObservableObject {
         viewerVideoSize: CGSize
     ) -> UUID? {
         guard isRemoteScrollAvailable,
+              !focusedWindowResizeState.isActive,
               normalizedAnchor.x.isFinite,
               normalizedAnchor.y.isFinite,
               (0 ... 1).contains(normalizedAnchor.x),
@@ -4124,6 +4521,7 @@ final class WorldwideSessionViewModel: ObservableObject {
     private func suspendRemoteInputForApplicationLifecycle() {
         guard !applicationInputIsSuspended else { return }
         applicationInputIsSuspended = true
+        cancelFocusedWindowResize()
         discardQueuedRemoteInputsForInactiveLifecycle()
         clearRemoteKeyboardFocus()
     }
@@ -4272,6 +4670,14 @@ final class WorldwideSessionViewModel: ObservableObject {
         return latestPointerIntentID
     }
 
+    private func retireRemotePointerIntentPreservingKeyboardFocus() {
+        latestPointerIntentID &+= 1
+        if latestPointerIntentID == 0 { latestPointerIntentID = 1 }
+        remoteInputQueue.removeAll(where: {
+            $0.focusedWindowResizeOperation == nil && $0.action.isOrdinaryPointerAction
+        })
+    }
+
     func sendRemoteText(_ text: String, focusGeneration: UInt64) {
         guard focusedInputGeneration == focusGeneration,
               WebRTCInputAction.isValidCommittedText(text) else { return }
@@ -4293,8 +4699,19 @@ final class WorldwideSessionViewModel: ObservableObject {
         pointerIntentID: UInt64? = nil,
         viewerVideoSize: WebRTCInputVideoSize? = nil,
         scrollGestureID: UUID? = nil,
-        sendAuthorization: WebRTCInputSendAuthorization? = nil
+        sendAuthorization: WebRTCInputSendAuthorization? = nil,
+        focusedWindowResizeInteractionID: UUID? = nil,
+        focusedWindowResizeOperation: FocusedWindowResizePendingOperation? = nil
     ) {
+        let hasResizeMetadata = focusedWindowResizeInteractionID != nil
+            || focusedWindowResizeOperation != nil
+        guard action.isFocusedWindowResizeAction == hasResizeMetadata,
+              !hasResizeMetadata
+                || (focusedWindowResizeInteractionID != nil
+                    && focusedWindowResizeOperation?.matches(action) == true) else {
+            cancelFocusedWindowResize()
+            return
+        }
         guard let capability = remoteInputCapability,
               let authorization = remoteInputAuthorization,
               authorization.isValid,
@@ -4320,7 +4737,9 @@ final class WorldwideSessionViewModel: ObservableObject {
                 pointerIntentID: pointerIntentID,
                 viewerVideoSize: viewerVideoSize,
                 scrollGestureID: scrollGestureID,
-                sendAuthorization: sendAuthorization
+                sendAuthorization: sendAuthorization,
+                focusedWindowResizeInteractionID: focusedWindowResizeInteractionID,
+                focusedWindowResizeOperation: focusedWindowResizeOperation
             )
         )
         startRemoteInputDrainIfNeeded()
@@ -4336,7 +4755,10 @@ final class WorldwideSessionViewModel: ObservableObject {
 
     private func remoteInputActionMatchesCurrentFocus(_ action: WebRTCInputAction) -> Bool {
         switch action {
-        case .tap, .primaryDrag, .scroll:
+        case .tap, .primaryDrag, .scroll,
+             .requestFocusedWindowResizeTarget,
+             .selectWindowForResize,
+             .commitFocusedWindowResize:
             return true
         case .insertText(_, let generation),
              .backspace(let generation),
@@ -4379,6 +4801,11 @@ final class WorldwideSessionViewModel: ObservableObject {
                 guard !Task.isCancelled,
                       queued.authorization.isValid,
                       queued.sendAuthorization?.isValid != false else { continue }
+                let requestScope = RemoteInputRequestScope(
+                    sessionGeneration: queued.sessionGeneration,
+                    peer: peer,
+                    capability: queued.capability
+                )
                 let requestID = try await sendRemoteInput(
                     queued.action,
                     viewerVideoSize: queued.viewerVideoSize,
@@ -4393,13 +4820,44 @@ final class WorldwideSessionViewModel: ObservableObject {
                       self.peer === peer,
                       queued.capability == remoteInputCapability,
                       queued.authorization === remoteInputAuthorization,
-                      queued.authorization.isValid else {
+                      queued.authorization.isValid,
+                      queued.sendAuthorization?.isValid != false else {
+                    // A non-cooperative send may return after a replacement peer has restarted
+                    // request IDs. Its bounded tombstone remains safe because the scope is part of
+                    // the key, but it must never consume bare-ID early feedback from a replacement.
+                    let requestScopeIsCurrent = queued.sessionGeneration == sessionGeneration
+                        && self.peer === peer
+                        && queued.capability == remoteInputCapability
+                    if let operation = queued.focusedWindowResizeOperation {
+                        retireFocusedWindowResizeRequestID(
+                            requestID,
+                            operation: operation,
+                            requestScope: requestScope
+                        )
+                    }
+                    guard requestScopeIsCurrent else { continue }
+                    if queued.focusedWindowResizeOperation != nil {
+                        if let feedback = earlyRemoteInputFeedback.removeValue(
+                            forKey: requestID
+                        ) {
+                            handleRemoteInputFeedback(feedback)
+                        }
+                    } else {
+                        earlyRemoteInputFeedback.removeValue(forKey: requestID)
+                    }
                     continue
                 }
                 pendingRemoteInputs[requestID] = PendingRemoteInput(
-                    kind: PendingRemoteInputKind(queued.action),
+                    kind: PendingRemoteInputKind(
+                        queued.action,
+                        focusedWindowResizeInteractionID:
+                            queued.focusedWindowResizeInteractionID,
+                        focusedWindowResizeOperation:
+                            queued.focusedWindowResizeOperation
+                    ),
                     pointerIntentID: queued.pointerIntentID,
-                    sendAuthorization: queued.sendAuthorization
+                    sendAuthorization: queued.sendAuthorization,
+                    requestScope: requestScope
                 )
                 pendingRemoteInputOrder.append(requestID)
 
@@ -4425,9 +4883,14 @@ final class WorldwideSessionViewModel: ObservableObject {
                 }
                 if let transportError = error as? WebRTCTransportError,
                    transportError == .invalidInputRequest {
-                    clearRemoteKeyboardFocus()
-                    remoteInputQueue.removeAll(where: { $0.action.requiresRemoteFocus })
-                    lastDiagnostic = "The remote input action was not valid."
+                    if queued.focusedWindowResizeOperation != nil {
+                        cancelFocusedWindowResize()
+                        lastDiagnostic = "The focused-window resize request was not valid."
+                    } else {
+                        clearRemoteKeyboardFocus()
+                        remoteInputQueue.removeAll(where: { $0.action.requiresRemoteFocus })
+                        lastDiagnostic = "The remote input action was not valid."
+                    }
                     continue
                 }
                 lastDiagnostic = "Remote input paused because its secure control path is unavailable."
@@ -8152,13 +8615,34 @@ final class WorldwideSessionViewModel: ObservableObject {
 
     private func handleRemoteInputFeedback(_ feedback: WebRTCInputFeedback) {
         guard let capability = remoteInputCapability,
+              let peer,
               feedback.screenRequestID == capability.screenRequestID,
               feedback.inputSessionID == capability.inputSessionID else {
             invalidateRemoteInputState()
             return
         }
+        let requestScope = RemoteInputRequestScope(
+            sessionGeneration: sessionGeneration,
+            peer: peer,
+            capability: capability
+        )
+        let retiredKey = RetiredFocusedWindowResizeRequestKey(
+            requestID: feedback.id,
+            requestScope: requestScope
+        )
+        if var retired = retiredFocusedWindowResizeRequests[retiredKey] {
+            earlyRemoteInputFeedback.removeValue(forKey: feedback.id)
+            guard !retired.didHandleFeedback else { return }
+            retired.didHandleFeedback = true
+            retiredFocusedWindowResizeRequests[retiredKey] = retired
+            handleRetiredFocusedWindowResizeFeedback(
+                feedback,
+                operation: retired.operation
+            )
+            return
+        }
 
-        guard let pending = pendingRemoteInputs.removeValue(forKey: feedback.id) else {
+        guard let pending = pendingRemoteInputs[feedback.id] else {
             guard earlyRemoteInputFeedback.count < 32 else {
                 lastDiagnostic = "Remote input feedback arrived out of bounds."
                 invalidateRemoteInputState()
@@ -8167,12 +8651,40 @@ final class WorldwideSessionViewModel: ObservableObject {
             earlyRemoteInputFeedback[feedback.id] = feedback
             return
         }
+        guard pending.requestScope == requestScope else {
+            invalidateRemoteInputState()
+            return
+        }
+        pendingRemoteInputs.removeValue(forKey: feedback.id)
         if let index = pendingRemoteInputOrder.firstIndex(of: feedback.id) {
             pendingRemoteInputOrder.remove(at: index)
         }
         guard pending.sendAuthorization?.isValid != false else { return }
+        if case .pointer = pending.kind,
+           pending.pointerIntentID != latestPointerIntentID {
+            if feedback.result == .rejected,
+               Self.isTerminalRemoteInputRejection(feedback.rejectionReason) {
+                handleRemoteInputRejection(
+                    feedback.rejectionReason,
+                    screenFormatChanging: feedback.screenFormatChanging
+                )
+            }
+            return
+        }
 
         guard feedback.result == .accepted else {
+            if case .focusedWindowResize(let interactionID, let operation) = pending.kind {
+                handleRejectedFocusedWindowResizeFeedback(
+                    feedback,
+                    interactionID: interactionID,
+                    operation: operation
+                )
+                handleRemoteInputRejection(
+                    feedback.rejectionReason,
+                    screenFormatChanging: feedback.screenFormatChanging
+                )
+                return
+            }
             // The optional context distinguishes an owned format rebuild from genuine keyboard
             // throttling while keeping the established `.rateLimited` reason compatible.
             if !Self.preservesRemoteKeyboardFocus(
@@ -8191,14 +8703,192 @@ final class WorldwideSessionViewModel: ObservableObject {
 
         switch pending.kind {
         case .pointer:
-            guard pending.pointerIntentID == latestPointerIntentID else { return }
+            guard feedback.windowResize == nil else {
+                invalidateRemoteInputState()
+                return
+            }
             applyRemoteInputFocus(feedback.focus)
 
         case .keyboard(let generation):
+            guard feedback.windowResize == nil else {
+                invalidateRemoteInputState()
+                return
+            }
             guard focusedInputGeneration == generation else { return }
             applyRemoteInputFocus(feedback.focus)
+
+        case .focusedWindowResize(let interactionID, let operation):
+            handleAcceptedFocusedWindowResizeFeedback(
+                feedback,
+                interactionID: interactionID,
+                operation: operation
+            )
         }
     }
+
+    /// A locally canceled resize can never restore its target or preview. Its authenticated host
+    /// result still carries authoritative focus and terminal permission/session state, so retain
+    /// only enough bounded correlation to apply those revocations exactly once.
+    private func handleRetiredFocusedWindowResizeFeedback(
+        _ feedback: WebRTCInputFeedback,
+        operation: FocusedWindowResizePendingOperation
+    ) {
+        guard feedback.result == .accepted else {
+            applyRetiredFocusedWindowResizeFocusRevocation(
+                feedback.focus,
+                expectedGeneration: operation.focusGeneration
+            )
+            handleRemoteInputRejection(
+                feedback.rejectionReason,
+                screenFormatChanging: feedback.screenFormatChanging
+            )
+            return
+        }
+
+        guard let resize = feedback.windowResize,
+              Self.focusedWindowResizeTargetIsValid(resize.target),
+              Self.focusedWindowResizeFeedback(resize, matches: operation),
+              Self.focusedWindowResizeFocus(
+                  feedback.focus,
+                  matches: operation.focusGeneration
+              ) else {
+            revokeRemoteKeyboardFocusIfOwned(
+                by: operation.focusGeneration
+            )
+            lastDiagnostic = "The Mac returned mismatched focused-window resize feedback."
+            return
+        }
+        applyRetiredFocusedWindowResizeFocusRevocation(
+            feedback.focus,
+            expectedGeneration: operation.focusGeneration
+        )
+    }
+
+    /// Late feedback for locally canceled resize work may revoke the exact focus generation that
+    /// existed when the request was sent, but it can never install or resurrect editable focus.
+    private func applyRetiredFocusedWindowResizeFocusRevocation(
+        _ focus: WebRTCInputFocus,
+        expectedGeneration: UInt64?
+    ) {
+        guard Self.focusedWindowResizeFocus(
+            focus,
+            matches: expectedGeneration
+        ) else {
+            revokeRemoteKeyboardFocusIfOwned(by: expectedGeneration)
+            return
+        }
+        if case .none = focus {
+            revokeRemoteKeyboardFocusIfOwned(by: expectedGeneration)
+        }
+    }
+
+    private func revokeRemoteKeyboardFocusIfOwned(by generation: UInt64?) {
+        guard focusedInputGeneration == generation else { return }
+        clearRemoteKeyboardFocus()
+    }
+
+    private func handleAcceptedFocusedWindowResizeFeedback(
+        _ feedback: WebRTCInputFeedback,
+        interactionID: UUID,
+        operation: FocusedWindowResizePendingOperation
+    ) {
+        guard var interaction = focusedWindowResizeState.interaction,
+              interaction.id == interactionID,
+              interaction.pending == operation else {
+            return
+        }
+        guard focusedWindowResizeInteractionIsCurrent(interaction),
+              let resize = feedback.windowResize,
+              Self.focusedWindowResizeTargetIsValid(resize.target),
+              Self.focusedWindowResizeFeedback(
+                  resize,
+                  matches: operation
+              ),
+              Self.focusedWindowResizeFocus(
+                  feedback.focus,
+                  matches: operation.focusGeneration
+              ) else {
+            clearRemoteKeyboardFocus()
+            cancelFocusedWindowResize()
+            lastDiagnostic = "The Mac returned mismatched focused-window resize feedback."
+            return
+        }
+
+        applyRemoteInputFocus(feedback.focus)
+        interaction.pending = nil
+        interaction.target = resize.target
+        focusedWindowResizeState = .active(interaction)
+    }
+
+    private func handleRejectedFocusedWindowResizeFeedback(
+        _ feedback: WebRTCInputFeedback,
+        interactionID: UUID,
+        operation: FocusedWindowResizePendingOperation
+    ) {
+        guard let interaction = focusedWindowResizeState.interaction,
+              interaction.id == interactionID,
+              interaction.pending == operation else {
+            return
+        }
+        if Self.focusedWindowResizeFocus(
+            feedback.focus,
+            matches: operation.focusGeneration
+        ) {
+            applyRemoteInputFocus(feedback.focus)
+        } else {
+            clearRemoteKeyboardFocus()
+        }
+        cancelFocusedWindowResize()
+    }
+
+    private static func focusedWindowResizeFeedback(
+        _ feedback: WebRTCWindowResizeFeedback,
+        matches operation: FocusedWindowResizePendingOperation
+    ) -> Bool {
+        switch operation {
+        case .targetRequest:
+            return feedback.kind == .targetAcquired
+                && feedback.committedTargetGeneration == nil
+        case .selection:
+            return feedback.kind == .windowSelected
+                && feedback.committedTargetGeneration == nil
+        case .commit(_, let consumedTargetGeneration, _):
+            return feedback.kind == .resizeCommitted
+                && feedback.committedTargetGeneration == consumedTargetGeneration
+                && feedback.target.generation != consumedTargetGeneration
+        }
+    }
+
+    private static func focusedWindowResizeFocus(
+        _ focus: WebRTCInputFocus,
+        matches expectedGeneration: UInt64?
+    ) -> Bool {
+        switch focus {
+        case .none:
+            return true
+        case .editable(let generation, secure: false):
+            return expectedGeneration == generation
+        case .editable(_, secure: true):
+            return false
+        }
+    }
+
+    private static func focusedWindowResizeTargetIsValid(
+        _ target: WebRTCWindowResizeTarget
+    ) -> Bool {
+        let frame = target.normalizedFrame
+        return target.generation != zeroUUID
+            && frame.x.isFinite && frame.y.isFinite
+            && frame.width.isFinite && frame.height.isFinite
+            && frame.x >= 0 && frame.y >= 0
+            && frame.width > 0 && frame.height > 0
+            && frame.x + frame.width <= 1
+            && frame.y + frame.height <= 1
+    }
+
+    private static let zeroUUID = UUID(
+        uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+    )
 
     private static func preservesRemoteKeyboardFocus(
         after rejection: WebRTCInputRejectionReason?,
@@ -8211,6 +8901,21 @@ final class WorldwideSessionViewModel: ObservableObject {
             return true
         }
         return false
+    }
+
+    private static func isTerminalRemoteInputRejection(
+        _ rejection: WebRTCInputRejectionReason?
+    ) -> Bool {
+        switch rejection {
+        case .accessibilityPermissionRequired,
+             .eventPostingPermissionRequired,
+             .inputDisabled,
+             .staleSession,
+             nil:
+            true
+        case .rateLimited, .injectionFailed, .invalidRequest, .invalidFocus:
+            false
+        }
     }
 
     private func handleRemoteInputRejection(
@@ -8271,6 +8976,7 @@ final class WorldwideSessionViewModel: ObservableObject {
     private func invalidateRemoteInputState() {
         // Revoke both final-send gates before cancelling actor work. A send already inside the
         // gates linearizes before this call; queued work cannot enter afterward.
+        cancelFocusedWindowResize()
         revokeRemoteScrollSendAuthorization()
         revokeRemoteInputLifecycleSendAuthorization()
         remoteInputAuthorization?.revoke()
@@ -8283,6 +8989,8 @@ final class WorldwideSessionViewModel: ObservableObject {
         pendingRemoteInputs.removeAll(keepingCapacity: false)
         pendingRemoteInputOrder.removeAll(keepingCapacity: false)
         earlyRemoteInputFeedback.removeAll(keepingCapacity: false)
+        retiredFocusedWindowResizeRequests.removeAll(keepingCapacity: false)
+        retiredFocusedWindowResizeRequestKeyOrder.removeAll(keepingCapacity: false)
         latestPointerIntentID = 0
         remoteInputCapability = nil
         clearRemoteKeyboardFocus()
@@ -8817,6 +9525,13 @@ final class WorldwideSessionViewModel: ObservableObject {
         #endif
         lastDiagnostic = diagnostic
         let action = queuedAction ?? .returnKey(focusGeneration: focusGeneration)
+        let pointerIntentID: UInt64?
+        if action.isOrdinaryPointerAction {
+            latestPointerIntentID = 1
+            pointerIntentID = 1
+        } else {
+            pointerIntentID = nil
+        }
         remoteInputQueue = [
             QueuedRemoteInput(
                 action: action,
@@ -8824,10 +9539,12 @@ final class WorldwideSessionViewModel: ObservableObject {
                 authorization: authorization,
                 sessionGeneration: sessionGeneration,
                 inputGeneration: remoteInputGeneration,
-                pointerIntentID: action.requiresRemoteFocus ? nil : 1,
+                pointerIntentID: pointerIntentID,
                 viewerVideoSize: viewerVideoSize,
                 scrollGestureID: nil,
-                sendAuthorization: currentRemoteInputLifecycleSendAuthorization()
+                sendAuthorization: currentRemoteInputLifecycleSendAuthorization(),
+                focusedWindowResizeInteractionID: nil,
+                focusedWindowResizeOperation: nil
             )
         ]
         return authorization
@@ -8839,6 +9556,11 @@ final class WorldwideSessionViewModel: ObservableObject {
 
     func debugDeliverRemoteInputFeedbackForRaceTests(_ feedback: WebRTCInputFeedback) {
         handleRemoteInputFeedback(feedback)
+    }
+
+    func debugSetRemoteKeyboardFocusForTests(_ generation: UInt64?) {
+        focusedInputGeneration = generation
+        focusedInputIsSecure = false
     }
 
     /// Routes tests through the production terminal-session path without requiring live media.
@@ -8885,7 +9607,9 @@ final class WorldwideSessionViewModel: ObservableObject {
                 pointerIntentID: nil,
                 viewerVideoSize: nil,
                 scrollGestureID: nil,
-                sendAuthorization: currentRemoteInputLifecycleSendAuthorization()
+                sendAuthorization: currentRemoteInputLifecycleSendAuthorization(),
+                focusedWindowResizeInteractionID: nil,
+                focusedWindowResizeOperation: nil
             )
         ]
         return authorization
@@ -8900,8 +9624,13 @@ final class WorldwideSessionViewModel: ObservableObject {
             focusGeneration: focusedInputGeneration,
             queuedActionCount: remoteInputQueue.count,
             pendingActionCount: pendingRemoteInputs.count,
+            earlyFeedbackCount: earlyRemoteInputFeedback.count,
+            retiredRequestIDCount: retiredFocusedWindowResizeRequests.count,
             inputGeneration: remoteInputGeneration,
             activeScrollGestureID: activeRemoteScroll?.gestureID,
+            focusedWindowResizeState: focusedWindowResizeState,
+            focusedWindowResizeSendAuthorizationIsValid:
+                focusedWindowResizeSendAuthorization?.isValid == true,
             latestPointerIntentID: latestPointerIntentID,
             inputAvailable: isRemoteInputAvailable,
             acceptsActiveScreenAcknowledgement: acceptsActiveScreenAcknowledgement,
@@ -8919,6 +9648,7 @@ final class WorldwideSessionViewModel: ObservableObject {
         visible: Bool = false,
         provenance: MediaSessionProvenance = .unauthenticated
     ) {
+        debugFocusedWindowResizeTrackOwner = nil
         resetScreenPresentationState(
             rotateQueueGeneration: true,
             clearRequestHistory: true
@@ -8991,7 +9721,8 @@ final class WorldwideSessionViewModel: ObservableObject {
         generation: UUID = UUID(),
         leaseID: UUID = UUID(),
         screenRequestID: UInt64 = 1,
-        supportsScroll: Bool = false
+        supportsScroll: Bool = false,
+        supportsFocusedWindowResize: Bool = false
     ) -> WorldwideScreenPresentationDebugFixture {
         debugInstallScreenSessionForTests(
             peer: newPeer,
@@ -9006,9 +9737,13 @@ final class WorldwideSessionViewModel: ObservableObject {
             inputSessionID: UUID(),
             screenRequestID: screenRequestID,
             supportsPrimaryDrag: true,
-            supportsScroll: supportsScroll
+            supportsScroll: supportsScroll,
+            supportsFocusedWindowResize: supportsFocusedWindowResize
         )
         let authorization = WebRTCInputAuthorization()
+        debugFocusedWindowResizeTrackOwner = supportsFocusedWindowResize
+            ? NSObject()
+            : nil
         remoteInputCapability = capability
         remoteInputAuthorization = authorization
         focusedInputGeneration = screenRequestID
@@ -9024,6 +9759,35 @@ final class WorldwideSessionViewModel: ObservableObject {
             lease: lease,
             authorization: authorization
         )
+    }
+
+    @discardableResult
+    func debugReplaceRemoteInputCapabilityForTests(
+        inputSessionID: UUID = UUID(),
+        supportsFocusedWindowResize: Bool = true
+    ) -> WebRTCInputAuthorization? {
+        guard let current = remoteInputCapability else { return nil }
+        let replacement = WebRTCInputCapability(
+            inputSessionID: inputSessionID,
+            screenRequestID: current.screenRequestID,
+            protocolVersion: current.protocolVersion,
+            maxMessageBytes: current.maxMessageBytes,
+            supportsPrimaryDrag: current.supportsPrimaryDrag,
+            supportsScroll: current.supportsScroll,
+            supportsFocusedWindowResize: supportsFocusedWindowResize
+        )
+        let authorization = WebRTCInputAuthorization()
+        installRemoteInputCapability(
+            replacement,
+            authorization: authorization
+        )
+        return authorization
+    }
+
+    func debugReplaceFocusedWindowResizeTrackForTests() {
+        guard debugFocusedWindowResizeTrackOwner != nil else { return }
+        remoteVideoTrackIdentityWillChange()
+        debugFocusedWindowResizeTrackOwner = NSObject()
     }
 
     func debugScreenPeerIs(_ expectedPeer: WebRTCPeer) -> Bool {
@@ -9767,8 +10531,12 @@ struct WorldwideRemoteInputDebugState: Equatable {
     let focusGeneration: UInt64?
     let queuedActionCount: Int
     let pendingActionCount: Int
+    let earlyFeedbackCount: Int
+    let retiredRequestIDCount: Int
     let inputGeneration: UUID
     let activeScrollGestureID: UUID?
+    let focusedWindowResizeState: FocusedWindowResizeState
+    let focusedWindowResizeSendAuthorizationIsValid: Bool
     let latestPointerIntentID: UInt64
     let inputAvailable: Bool
     let acceptsActiveScreenAcknowledgement: Bool
@@ -9801,6 +10569,8 @@ private struct QueuedRemoteInput {
     let viewerVideoSize: WebRTCInputVideoSize?
     let scrollGestureID: UUID?
     let sendAuthorization: WebRTCInputSendAuthorization?
+    let focusedWindowResizeInteractionID: UUID?
+    let focusedWindowResizeOperation: FocusedWindowResizePendingOperation?
 }
 
 private struct ActiveRemoteScroll {
@@ -9821,9 +10591,38 @@ private struct ActiveRemoteScroll {
 }
 
 private extension WebRTCInputAction {
-    var requiresRemoteFocus: Bool {
+    var isFocusedWindowResizeAction: Bool {
+        switch self {
+        case .requestFocusedWindowResizeTarget,
+             .selectWindowForResize,
+             .commitFocusedWindowResize:
+            true
+        case .tap, .primaryDrag, .scroll,
+             .insertText, .backspace, .returnKey:
+            false
+        }
+    }
+
+    var isOrdinaryPointerAction: Bool {
         switch self {
         case .tap, .primaryDrag, .scroll:
+            true
+        case .requestFocusedWindowResizeTarget,
+             .selectWindowForResize,
+             .commitFocusedWindowResize,
+             .insertText,
+             .backspace,
+             .returnKey:
+            false
+        }
+    }
+
+    var requiresRemoteFocus: Bool {
+        switch self {
+        case .tap, .primaryDrag, .scroll,
+             .requestFocusedWindowResizeTarget,
+             .selectWindowForResize,
+             .commitFocusedWindowResize:
             false
         case .insertText, .backspace, .returnKey:
             true
@@ -9837,16 +10636,78 @@ private struct PendingRemoteInput {
     let kind: PendingRemoteInputKind
     let pointerIntentID: UInt64?
     let sendAuthorization: WebRTCInputSendAuthorization?
+    let requestScope: RemoteInputRequestScope
+}
+
+/// Request IDs are allocated by a peer and can restart at one after replacement. Carry the full
+/// non-sensitive ownership scope beside every pending/retired correlation so an old completion
+/// cannot claim a replacement peer's numerically identical request.
+private struct RemoteInputRequestScope: Hashable {
+    let sessionGeneration: UUID
+    let peerIdentity: ObjectIdentifier
+    let protocolVersion: Int
+    let inputSessionID: UUID
+    let screenRequestID: UInt64
+    let maxMessageBytes: Int
+    let supportsPrimaryDrag: Bool
+    let supportsScroll: Bool
+    let supportsFocusedWindowResize: Bool
+
+    init(
+        sessionGeneration: UUID,
+        peer: WebRTCPeer,
+        capability: WebRTCInputCapability
+    ) {
+        self.sessionGeneration = sessionGeneration
+        peerIdentity = ObjectIdentifier(peer)
+        protocolVersion = capability.protocolVersion
+        inputSessionID = capability.inputSessionID
+        screenRequestID = capability.screenRequestID
+        maxMessageBytes = capability.maxMessageBytes
+        supportsPrimaryDrag = capability.supportsPrimaryDrag
+        supportsScroll = capability.supportsScroll
+        supportsFocusedWindowResize = capability.supportsFocusedWindowResize
+    }
+}
+
+private struct RetiredFocusedWindowResizeRequestKey: Hashable {
+    let requestID: UInt64
+    let requestScope: RemoteInputRequestScope
+}
+
+private struct RetiredFocusedWindowResizeRequest {
+    let operation: FocusedWindowResizePendingOperation
+    var didHandleFeedback = false
 }
 
 enum PendingRemoteInputKind: Equatable {
     case pointer
     case keyboard(focusGeneration: UInt64)
+    case focusedWindowResize(
+        interactionID: UUID,
+        operation: FocusedWindowResizePendingOperation
+    )
 
-    init(_ action: WebRTCInputAction) {
+    init(
+        _ action: WebRTCInputAction,
+        focusedWindowResizeInteractionID: UUID? = nil,
+        focusedWindowResizeOperation: FocusedWindowResizePendingOperation? = nil
+    ) {
         switch action {
         case .tap, .primaryDrag, .scroll:
             self = .pointer
+        case .requestFocusedWindowResizeTarget,
+             .selectWindowForResize,
+             .commitFocusedWindowResize:
+            precondition(
+                focusedWindowResizeInteractionID != nil
+                    && focusedWindowResizeOperation?.matches(action) == true,
+                "Resize actions require exact interaction metadata."
+            )
+            self = .focusedWindowResize(
+                interactionID: focusedWindowResizeInteractionID!,
+                operation: focusedWindowResizeOperation!
+            )
         case .insertText(_, let focusGeneration),
              .backspace(let focusGeneration),
              .returnKey(let focusGeneration):

@@ -7,6 +7,8 @@ import XCTest
 /// and synchronous authorization revocation at native and actor boundaries.
 final class WebRTCRemoteInputProtocolTests: XCTestCase {
     private let sessionID = UUID(uuidString: "8D18B56A-302A-4EC2-A3DA-1070491D7814")!
+    private let targetGeneration = UUID(uuidString: "4FCB104A-E63D-4DC3-AF48-11702A24C232")!
+    private let successorGeneration = UUID(uuidString: "84BA3C4F-E14C-4ED3-AE2C-D62A63CD28FD")!
 
     func testInputAuthorizationLinearizesRevocationAgainstInFlightWork() async throws {
         let authorization = WebRTCInputAuthorization()
@@ -311,6 +313,297 @@ final class WebRTCRemoteInputProtocolTests: XCTestCase {
         await host.close(reason: .hostStopped)
     }
 
+    func testFocusedWindowResizeRequiresAdvertisedCapabilityOnBothSides() async throws {
+        let viewer = try WebRTCPeer(
+            configuration: .init(role: .viewer, iceServers: [])
+        )
+        let disabledCapability = WebRTCInputCapability(
+            inputSessionID: sessionID,
+            screenRequestID: 16
+        )
+        let viewerAuthorization = WebRTCInputAuthorization()
+        try await viewer.installViewerInputSessionForTesting(
+            capability: disabledCapability,
+            authorization: viewerAuthorization
+        )
+
+        do {
+            _ = try await viewer.requestInput(
+                .requestFocusedWindowResizeTarget,
+                viewerVideoSize: .init(width: 1_080, height: 2_340),
+                capability: disabledCapability,
+                authorization: viewerAuthorization
+            )
+            XCTFail("Unadvertised focused-window resize must not reach the send boundary.")
+        } catch WebRTCTransportError.invalidInputRequest {
+            // Expected.
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+        XCTAssertTrue(viewerAuthorization.isValid)
+        await viewer.close(reason: .viewerDisconnected)
+
+        let host = try WebRTCPeer(
+            configuration: .init(role: .host, iceServers: [])
+        )
+        let rejectedAuthorization = WebRTCInputAuthorization()
+        try await host.installHostInputSessionForTesting(
+            capability: disabledCapability,
+            authorization: rejectedAuthorization
+        )
+        let unsupportedWasAccepted = await host.receiveInputRequestForTesting(
+            .init(
+                id: 1,
+                screenRequestID: disabledCapability.screenRequestID,
+                inputSessionID: disabledCapability.inputSessionID,
+                action: .requestFocusedWindowResizeTarget,
+                viewerVideoSize: .init(width: 1_080, height: 2_340)
+            )
+        )
+        XCTAssertFalse(unsupportedWasAccepted)
+        XCTAssertFalse(rejectedAuthorization.isValid)
+
+        let enabledCapability = WebRTCInputCapability(
+            inputSessionID: UUID(),
+            screenRequestID: 17,
+            supportsFocusedWindowResize: true
+        )
+        let acceptedAuthorization = WebRTCInputAuthorization()
+        try await host.installHostInputSessionForTesting(
+            capability: enabledCapability,
+            authorization: acceptedAuthorization
+        )
+        let advertisedWasAccepted = await host.receiveInputRequestForTesting(
+            .init(
+                id: 2,
+                screenRequestID: enabledCapability.screenRequestID,
+                inputSessionID: enabledCapability.inputSessionID,
+                action: .requestFocusedWindowResizeTarget,
+                viewerVideoSize: .init(width: 750, height: 1_334)
+            )
+        )
+        XCTAssertTrue(advertisedWasAccepted)
+        XCTAssertTrue(acceptedAuthorization.isValid)
+        await host.close(reason: .hostStopped)
+    }
+
+    func testHostSuppressesEquivalentCommitDuplicateAndFailsClosedOnConflictingGeneration()
+        async throws {
+        let host = try WebRTCPeer(
+            configuration: .init(role: .host, iceServers: [])
+        )
+        let capability = WebRTCInputCapability(
+            inputSessionID: sessionID,
+            screenRequestID: 18,
+            supportsFocusedWindowResize: true
+        )
+        let authorization = WebRTCInputAuthorization()
+        try await host.installHostInputSessionForTesting(
+            capability: capability,
+            authorization: authorization
+        )
+        let first = WebRTCInputRequest(
+            id: 40,
+            screenRequestID: capability.screenRequestID,
+            inputSessionID: capability.inputSessionID,
+            action: .commitFocusedWindowResize(
+                targetGeneration: targetGeneration,
+                start: .init(x: 0.1, y: 0.2),
+                end: .init(x: 0.8, y: 0.9)
+            ),
+            viewerVideoSize: .init(width: 1_080, height: 2_340)
+        )
+        let firstWasAccepted = await host.receiveInputRequestForTesting(first)
+        XCTAssertTrue(firstWasAccepted)
+
+        let equivalentDuplicate = WebRTCInputRequest(
+            id: first.id,
+            screenRequestID: capability.screenRequestID,
+            inputSessionID: capability.inputSessionID,
+            action: .commitFocusedWindowResize(
+                targetGeneration: targetGeneration,
+                start: .init(x: 0.9, y: 0.8),
+                end: .init(x: 0.2, y: 0.1)
+            ),
+            viewerVideoSize: .init(width: 750, height: 1_334)
+        )
+        let duplicateWasAccepted = await host.receiveInputRequestForTesting(
+            equivalentDuplicate
+        )
+        XCTAssertTrue(duplicateWasAccepted)
+        var snapshot = await host.remoteInputReceiveDebugSnapshotForTesting()
+        XCTAssertEqual(snapshot.receivedRequestHistoryCount, 1)
+        XCTAssertEqual(snapshot.admittedRequestEventCount, 1)
+        XCTAssertEqual(snapshot.sentFeedbackHistoryCount, 0)
+        XCTAssertTrue(authorization.isValid)
+
+        let conflictingGeneration = WebRTCInputRequest(
+            id: first.id,
+            screenRequestID: capability.screenRequestID,
+            inputSessionID: capability.inputSessionID,
+            action: .commitFocusedWindowResize(
+                targetGeneration: successorGeneration,
+                start: .init(x: 0.1, y: 0.2),
+                end: .init(x: 0.8, y: 0.9)
+            ),
+            viewerVideoSize: .init(width: 1_080, height: 2_340)
+        )
+        let conflictWasAccepted = await host.receiveInputRequestForTesting(
+            conflictingGeneration
+        )
+        XCTAssertFalse(conflictWasAccepted)
+        snapshot = await host.remoteInputReceiveDebugSnapshotForTesting()
+        XCTAssertEqual(snapshot.receivedRequestHistoryCount, 0)
+        XCTAssertEqual(snapshot.admittedRequestEventCount, 1)
+        XCTAssertFalse(authorization.isValid)
+        let capabilityAfterConflict = await host.currentInputCapability()
+        XCTAssertNil(capabilityAfterConflict)
+
+        await host.close(reason: .hostStopped)
+    }
+
+    func testHostFailsClosedOnStaleFocusedWindowResizeRequestID() async throws {
+        let host = try WebRTCPeer(
+            configuration: .init(role: .host, iceServers: [])
+        )
+        let capability = WebRTCInputCapability(
+            inputSessionID: sessionID,
+            screenRequestID: 19,
+            supportsFocusedWindowResize: true
+        )
+        let authorization = WebRTCInputAuthorization()
+        try await host.installHostInputSessionForTesting(
+            capability: capability,
+            authorization: authorization
+        )
+        let firstWasAccepted = await host.receiveInputRequestForTesting(
+            .init(
+                id: 52,
+                screenRequestID: capability.screenRequestID,
+                inputSessionID: capability.inputSessionID,
+                action: .requestFocusedWindowResizeTarget,
+                viewerVideoSize: .init(width: 1_080, height: 2_340)
+            )
+        )
+        XCTAssertTrue(firstWasAccepted)
+        let staleWasAccepted = await host.receiveInputRequestForTesting(
+            .init(
+                id: 51,
+                screenRequestID: capability.screenRequestID,
+                inputSessionID: capability.inputSessionID,
+                action: .selectWindowForResize(at: .init(x: 0.4, y: 0.6)),
+                viewerVideoSize: .init(width: 1_080, height: 2_340)
+            )
+        )
+        XCTAssertFalse(staleWasAccepted)
+
+        let snapshot = await host.remoteInputReceiveDebugSnapshotForTesting()
+        XCTAssertEqual(snapshot.receivedRequestHistoryCount, 0)
+        XCTAssertEqual(snapshot.admittedRequestEventCount, 1)
+        XCTAssertFalse(authorization.isValid)
+        let capabilityAfterStaleRequest = await host.currentInputCapability()
+        XCTAssertNil(capabilityAfterStaleRequest)
+
+        await host.close(reason: .hostStopped)
+    }
+
+    func testHostReplaysCommittedResizeFeedbackWithoutReemittingApplicationWork()
+        async throws {
+        let host = try WebRTCPeer(
+            configuration: .init(role: .host, iceServers: [])
+        )
+        let capability = WebRTCInputCapability(
+            inputSessionID: sessionID,
+            screenRequestID: 20,
+            supportsFocusedWindowResize: true
+        )
+        let authorization = WebRTCInputAuthorization()
+        try await host.installHostInputSessionForTesting(
+            capability: capability,
+            authorization: authorization
+        )
+        await host.beginRemoteInputControlDataCaptureForTesting()
+
+        let request = WebRTCInputRequest(
+            id: 60,
+            screenRequestID: capability.screenRequestID,
+            inputSessionID: capability.inputSessionID,
+            action: .commitFocusedWindowResize(
+                targetGeneration: targetGeneration,
+                start: .init(x: 0.2, y: 0.3),
+                end: .init(x: 0.7, y: 0.8)
+            ),
+            viewerVideoSize: .init(width: 1_080, height: 2_340)
+        )
+        let requestWasAccepted = await host.receiveInputRequestForTesting(request)
+        XCTAssertTrue(requestWasAccepted)
+        let committed = WebRTCWindowResizeFeedback(
+            kind: .resizeCommitted,
+            committedTargetGeneration: targetGeneration,
+            target: .init(
+                generation: successorGeneration,
+                normalizedFrame: .init(x: 0.1, y: 0.2, width: 0.6, height: 0.7)
+            )
+        )
+        try await host.sendInputFeedback(
+            for: request.id,
+            result: .accepted,
+            focus: .none,
+            windowResize: committed
+        )
+
+        let duplicate = WebRTCInputRequest(
+            id: request.id,
+            screenRequestID: capability.screenRequestID,
+            inputSessionID: capability.inputSessionID,
+            action: .commitFocusedWindowResize(
+                targetGeneration: targetGeneration,
+                start: .init(x: 0.8, y: 0.7),
+                end: .init(x: 0.3, y: 0.2)
+            ),
+            viewerVideoSize: .init(width: 750, height: 1_334)
+        )
+        let duplicateWasAccepted = await host.receiveInputRequestForTesting(duplicate)
+        XCTAssertTrue(duplicateWasAccepted)
+
+        let snapshot = await host.remoteInputReceiveDebugSnapshotForTesting()
+        XCTAssertEqual(snapshot.receivedRequestHistoryCount, 1)
+        XCTAssertEqual(snapshot.admittedRequestEventCount, 1)
+        XCTAssertEqual(snapshot.sentFeedbackHistoryCount, 1)
+        XCTAssertEqual(snapshot.capturedControlData.count, 2)
+        XCTAssertEqual(snapshot.capturedControlData[0], snapshot.capturedControlData[1])
+        XCTAssertEqual(
+            try snapshot.capturedControlData.map {
+                try JSONDecoder().decode(ControlChannelMessage.self, from: $0)
+            },
+            [
+                .inputFeedback(
+                    .init(
+                        id: request.id,
+                        screenRequestID: capability.screenRequestID,
+                        inputSessionID: capability.inputSessionID,
+                        result: .accepted,
+                        focus: .none,
+                        windowResize: committed
+                    )
+                ),
+                .inputFeedback(
+                    .init(
+                        id: request.id,
+                        screenRequestID: capability.screenRequestID,
+                        inputSessionID: capability.inputSessionID,
+                        result: .accepted,
+                        focus: .none,
+                        windowResize: committed
+                    )
+                )
+            ]
+        )
+        XCTAssertTrue(authorization.isValid)
+
+        await host.close(reason: .hostStopped)
+    }
+
     func testNativeEventBufferOverflowRevokesInputBeforePeerCanDrainBacklog() {
         let proxy = WebRTCDelegateProxy()
         let authorization = WebRTCInputAuthorization()
@@ -480,6 +773,43 @@ final class WebRTCRemoteInputProtocolTests: XCTestCase {
         )
     }
 
+    func testFocusedWindowResizeActionsRequireViewerVideoSize() throws {
+        let actions: [WebRTCInputAction] = [
+            .requestFocusedWindowResizeTarget,
+            .selectWindowForResize(at: .init(x: 0.25, y: 0.75)),
+            .commitFocusedWindowResize(
+                targetGeneration: targetGeneration,
+                start: .init(x: 0.2, y: 0.3),
+                end: .init(x: 0.6, y: 0.8)
+            )
+        ]
+
+        for (offset, action) in actions.enumerated() {
+            let missingSize = WebRTCInputRequest(
+                id: UInt64(20 + offset),
+                screenRequestID: 3,
+                inputSessionID: sessionID,
+                action: action
+            )
+            XCTAssertThrowsError(try JSONEncoder().encode(missingSize))
+
+            let bound = WebRTCInputRequest(
+                id: UInt64(20 + offset),
+                screenRequestID: 3,
+                inputSessionID: sessionID,
+                action: action,
+                viewerVideoSize: .init(width: 1_080, height: 2_340)
+            )
+            XCTAssertEqual(
+                try JSONDecoder().decode(
+                    WebRTCInputRequest.self,
+                    from: JSONEncoder().encode(bound)
+                ),
+                bound
+            )
+        }
+    }
+
     func testLegacyV2AcknowledgementWithoutCapabilityStillDecodes() throws {
         let data = Data(#"{"version":2,"kind":"ack","acknowledgement":{"id":4,"state":"active"}}"#.utf8)
         XCTAssertEqual(
@@ -519,6 +849,7 @@ final class WebRTCRemoteInputProtocolTests: XCTestCase {
 
         XCTAssertFalse(capability.supportsPrimaryDrag)
         XCTAssertFalse(capability.supportsScroll)
+        XCTAssertFalse(capability.supportsFocusedWindowResize)
         XCTAssertEqual(capability.protocolVersion, WebRTCInputCapability.currentProtocolVersion)
     }
 
@@ -527,7 +858,8 @@ final class WebRTCRemoteInputProtocolTests: XCTestCase {
             inputSessionID: sessionID,
             screenRequestID: 11,
             supportsPrimaryDrag: true,
-            supportsScroll: true
+            supportsScroll: true,
+            supportsFocusedWindowResize: true
         )
 
         let data = try JSONEncoder().encode(capability)
@@ -535,6 +867,7 @@ final class WebRTCRemoteInputProtocolTests: XCTestCase {
 
         XCTAssertEqual(object["supportsPrimaryDrag"] as? Bool, true)
         XCTAssertEqual(object["supportsScroll"] as? Bool, true)
+        XCTAssertEqual(object["supportsFocusedWindowResize"] as? Bool, true)
         XCTAssertEqual(try JSONDecoder().decode(WebRTCInputCapability.self, from: data), capability)
     }
 
@@ -543,6 +876,13 @@ final class WebRTCRemoteInputProtocolTests: XCTestCase {
             .tap(.init(x: 0, y: 1)),
             .primaryDrag(start: .init(x: 0.1, y: 0.2), end: .init(x: 0.8, y: 0.9)),
             .scroll(anchor: .init(x: 0.25, y: 0.75), deltaX: -32, deltaY: 96),
+            .requestFocusedWindowResizeTarget,
+            .selectWindowForResize(at: .init(x: 0.4, y: 0.6)),
+            .commitFocusedWindowResize(
+                targetGeneration: targetGeneration,
+                start: .init(x: 0.2, y: 0.3),
+                end: .init(x: 0.7, y: 0.8)
+            ),
             .insertText("Hello 👋", focusGeneration: 2),
             .backspace(focusGeneration: 3),
             .returnKey(focusGeneration: 4)
@@ -588,6 +928,55 @@ final class WebRTCRemoteInputProtocolTests: XCTestCase {
         XCTAssertEqual(try JSONDecoder().decode(WebRTCInputAction.self, from: data), action)
     }
 
+    func testFocusedWindowResizeActionsUseDistinctStrictWireShapes() throws {
+        let targetRequest = try XCTUnwrap(
+            JSONSerialization.jsonObject(
+                with: JSONEncoder().encode(
+                    WebRTCInputAction.requestFocusedWindowResizeTarget
+                )
+            ) as? [String: Any]
+        )
+        XCTAssertEqual(Set(targetRequest.keys), Set(["kind"]))
+        XCTAssertEqual(targetRequest["kind"] as? String, "focusedWindowResizeTarget")
+
+        let selection = try XCTUnwrap(
+            JSONSerialization.jsonObject(
+                with: JSONEncoder().encode(
+                    WebRTCInputAction.selectWindowForResize(at: .init(x: 0.4, y: 0.6))
+                )
+            ) as? [String: Any]
+        )
+        XCTAssertEqual(Set(selection.keys), Set(["kind", "point"]))
+        XCTAssertEqual(selection["kind"] as? String, "focusedWindowSelection")
+
+        let commitAction = WebRTCInputAction.commitFocusedWindowResize(
+            targetGeneration: targetGeneration,
+            start: .init(x: 0.2, y: 0.3),
+            end: .init(x: 0.7, y: 0.8)
+        )
+        let commit = try XCTUnwrap(
+            JSONSerialization.jsonObject(
+                with: JSONEncoder().encode(commitAction)
+            ) as? [String: Any]
+        )
+        XCTAssertEqual(
+            Set(commit.keys),
+            Set(["kind", "targetGeneration", "start", "end"])
+        )
+        XCTAssertEqual(commit["kind"] as? String, "focusedWindowResizeCommit")
+        XCTAssertEqual(
+            (commit["targetGeneration"] as? String)?.uppercased(),
+            targetGeneration.uuidString
+        )
+        XCTAssertEqual(
+            try JSONDecoder().decode(
+                WebRTCInputAction.self,
+                from: JSONEncoder().encode(commitAction)
+            ),
+            commitAction
+        )
+    }
+
     func testRequestHistoryBindingDoesNotRetainCommittedText() {
         let sensitiveText = "never-retain-this-credential"
         let first = WebRTCInputRequestBinding(
@@ -609,6 +998,62 @@ final class WebRTCRemoteInputProtocolTests: XCTestCase {
 
         XCTAssertEqual(first, second, "History identity is payload-blind and at-most-once by ID")
         XCTAssertFalse(String(reflecting: first).contains(sensitiveText))
+    }
+
+    func testRequestHistoryBindingRetainsOnlyActionKindAndCommitAuthority() {
+        let baseRequest = WebRTCInputRequest(
+            id: 20,
+            screenRequestID: 11,
+            inputSessionID: sessionID,
+            action: .commitFocusedWindowResize(
+                targetGeneration: targetGeneration,
+                start: .init(x: 0.1, y: 0.2),
+                end: .init(x: 0.8, y: 0.9)
+            ),
+            viewerVideoSize: .init(width: 1_080, height: 2_340)
+        )
+        let sameAuthorityDifferentPointerPayload = WebRTCInputRequest(
+            id: 20,
+            screenRequestID: 11,
+            inputSessionID: sessionID,
+            action: .commitFocusedWindowResize(
+                targetGeneration: targetGeneration,
+                start: .init(x: 0.9, y: 0.8),
+                end: .init(x: 0.2, y: 0.1)
+            ),
+            viewerVideoSize: .init(width: 750, height: 1_334)
+        )
+        let differentAuthority = WebRTCInputRequest(
+            id: 20,
+            screenRequestID: 11,
+            inputSessionID: sessionID,
+            action: .commitFocusedWindowResize(
+                targetGeneration: successorGeneration,
+                start: .init(x: 0.1, y: 0.2),
+                end: .init(x: 0.8, y: 0.9)
+            ),
+            viewerVideoSize: .init(width: 1_080, height: 2_340)
+        )
+        let differentAction = WebRTCInputRequest(
+            id: 20,
+            screenRequestID: 11,
+            inputSessionID: sessionID,
+            action: .requestFocusedWindowResizeTarget,
+            viewerVideoSize: .init(width: 1_080, height: 2_340)
+        )
+
+        XCTAssertEqual(
+            WebRTCInputRequestBinding(baseRequest),
+            WebRTCInputRequestBinding(sameAuthorityDifferentPointerPayload)
+        )
+        XCTAssertNotEqual(
+            WebRTCInputRequestBinding(baseRequest),
+            WebRTCInputRequestBinding(differentAuthority)
+        )
+        XCTAssertNotEqual(
+            WebRTCInputRequestBinding(baseRequest),
+            WebRTCInputRequestBinding(differentAction)
+        )
     }
 
     func testTextBoundaryAllows512UTF8And256UTF16CodeUnits() throws {
@@ -717,6 +1162,32 @@ final class WebRTCRemoteInputProtocolTests: XCTestCase {
                 "Expected rejection for \(payload)"
             )
         }
+    }
+
+    func testFocusedWindowResizeDecoderRejectsMalformedMixedAndZeroAuthorityActions() {
+        let invalidPayloads = [
+            #"{"kind":"focusedWindowResizeTarget","point":{"x":0.5,"y":0.5}}"#,
+            #"{"kind":"focusedWindowSelection"}"#,
+            #"{"kind":"focusedWindowSelection","point":{"x":0.5,"y":0.5},"targetGeneration":"4FCB104A-E63D-4DC3-AF48-11702A24C232"}"#,
+            #"{"kind":"focusedWindowResizeCommit","start":{"x":0.1,"y":0.2},"end":{"x":0.8,"y":0.9}}"#,
+            #"{"kind":"focusedWindowResizeCommit","targetGeneration":"00000000-0000-0000-0000-000000000000","start":{"x":0.1,"y":0.2},"end":{"x":0.8,"y":0.9}}"#,
+            #"{"kind":"focusedWindowResizeCommit","targetGeneration":"4FCB104A-E63D-4DC3-AF48-11702A24C232","start":{"x":0.1,"y":0.2},"end":{"x":0.8,"y":0.9},"point":{"x":0.5,"y":0.5}}"#,
+            #"{"kind":"focusedWindowResizeCommit","targetGeneration":"4FCB104A-E63D-4DC3-AF48-11702A24C232","start":{"x":-0.1,"y":0.2},"end":{"x":0.8,"y":0.9}}"#
+        ]
+
+        for payload in invalidPayloads {
+            XCTAssertThrowsError(
+                try JSONDecoder().decode(WebRTCInputAction.self, from: Data(payload.utf8)),
+                "Expected rejection for \(payload)"
+            )
+        }
+
+        let requestWithoutVideoSize = Data(
+            #"{"id":30,"screenRequestID":3,"inputSessionID":"8D18B56A-302A-4EC2-A3DA-1070491D7814","action":{"kind":"focusedWindowResizeTarget"}}"#.utf8
+        )
+        XCTAssertThrowsError(
+            try JSONDecoder().decode(WebRTCInputRequest.self, from: requestWithoutVideoSize)
+        )
     }
 
     func testDecoderRejectsMixedActionPayloadsAndControlText() {
@@ -847,6 +1318,205 @@ final class WebRTCRemoteInputProtocolTests: XCTestCase {
                 )
             )
         )
+    }
+
+    func testFocusedWindowResizeFeedbackUsesStrictCommitEchoAndFreshSuccessor() throws {
+        let target = WebRTCWindowResizeTarget(
+            generation: successorGeneration,
+            normalizedFrame: .init(x: 0.1, y: 0.2, width: 0.6, height: 0.7)
+        )
+        let committed = WebRTCWindowResizeFeedback(
+            kind: .resizeCommitted,
+            committedTargetGeneration: targetGeneration,
+            target: target
+        )
+        let data = try JSONEncoder().encode(committed)
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+
+        XCTAssertEqual(
+            Set(object.keys),
+            Set(["kind", "committedTargetGeneration", "target"])
+        )
+        XCTAssertEqual(object["kind"] as? String, "resizeCommitted")
+        XCTAssertEqual(
+            (object["committedTargetGeneration"] as? String)?.uppercased(),
+            targetGeneration.uuidString
+        )
+        XCTAssertEqual(
+            try JSONDecoder().decode(WebRTCWindowResizeFeedback.self, from: data),
+            committed
+        )
+
+        let acquired = WebRTCWindowResizeFeedback(kind: .targetAcquired, target: target)
+        let acquiredObject = try XCTUnwrap(
+            JSONSerialization.jsonObject(
+                with: JSONEncoder().encode(acquired)
+            ) as? [String: Any]
+        )
+        XCTAssertEqual(Set(acquiredObject.keys), Set(["kind", "target"]))
+
+        let invalid = [
+            WebRTCWindowResizeFeedback(kind: .resizeCommitted, target: target),
+            WebRTCWindowResizeFeedback(
+                kind: .targetAcquired,
+                committedTargetGeneration: targetGeneration,
+                target: target
+            ),
+            WebRTCWindowResizeFeedback(
+                kind: .resizeCommitted,
+                committedTargetGeneration: successorGeneration,
+                target: target
+            ),
+            WebRTCWindowResizeFeedback(
+                kind: .resizeCommitted,
+                committedTargetGeneration: UUID(
+                    uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+                ),
+                target: target
+            )
+        ]
+        for feedback in invalid {
+            XCTAssertThrowsError(try JSONEncoder().encode(feedback))
+        }
+
+        let missingCommitEcho = Data(
+            #"{"kind":"resizeCommitted","target":{"generation":"84BA3C4F-E14C-4ED3-AE2C-D62A63CD28FD","normalizedFrame":{"x":0.1,"y":0.2,"width":0.6,"height":0.7}}}"#.utf8
+        )
+        XCTAssertThrowsError(
+            try JSONDecoder().decode(
+                WebRTCWindowResizeFeedback.self,
+                from: missingCommitEcho
+            )
+        )
+    }
+
+    func testFocusedWindowResizeFeedbackIsBoundToExactRequestStageAndCommitAuthority() {
+        let target = WebRTCWindowResizeTarget(
+            generation: successorGeneration,
+            normalizedFrame: .init(x: 0.1, y: 0.2, width: 0.6, height: 0.7)
+        )
+        let targetBinding = WebRTCInputRequestBinding(
+            WebRTCInputRequest(
+                id: 31,
+                screenRequestID: 11,
+                inputSessionID: sessionID,
+                action: .requestFocusedWindowResizeTarget,
+                viewerVideoSize: .init(width: 1_080, height: 2_340)
+            )
+        )
+        let targetFeedback = WebRTCInputFeedback(
+            id: 31,
+            screenRequestID: 11,
+            inputSessionID: sessionID,
+            result: .accepted,
+            focus: .editable(generation: 5, secure: false),
+            windowResize: .init(kind: .targetAcquired, target: target)
+        )
+        XCTAssertTrue(targetBinding.permits(targetFeedback))
+        XCTAssertFalse(
+            targetBinding.permits(
+                WebRTCInputFeedback(
+                    id: 31,
+                    screenRequestID: 11,
+                    inputSessionID: sessionID,
+                    result: .accepted,
+                    windowResize: .init(kind: .windowSelected, target: target)
+                )
+            )
+        )
+
+        let commitBinding = WebRTCInputRequestBinding(
+            WebRTCInputRequest(
+                id: 32,
+                screenRequestID: 11,
+                inputSessionID: sessionID,
+                action: .commitFocusedWindowResize(
+                    targetGeneration: targetGeneration,
+                    start: .init(x: 0.1, y: 0.2),
+                    end: .init(x: 0.8, y: 0.9)
+                ),
+                viewerVideoSize: .init(width: 1_080, height: 2_340)
+            )
+        )
+        let committedFeedback = WebRTCInputFeedback(
+            id: 32,
+            screenRequestID: 11,
+            inputSessionID: sessionID,
+            result: .accepted,
+            focus: .editable(generation: 5, secure: false),
+            windowResize: .init(
+                kind: .resizeCommitted,
+                committedTargetGeneration: targetGeneration,
+                target: target
+            )
+        )
+        XCTAssertTrue(commitBinding.permits(committedFeedback))
+
+        let wrongEcho = WebRTCInputFeedback(
+            id: 32,
+            screenRequestID: 11,
+            inputSessionID: sessionID,
+            result: .accepted,
+            windowResize: .init(
+                kind: .resizeCommitted,
+                committedTargetGeneration: sessionID,
+                target: target
+            )
+        )
+        XCTAssertFalse(commitBinding.permits(wrongEcho))
+
+        let rejected = WebRTCInputFeedback(
+            id: 32,
+            screenRequestID: 11,
+            inputSessionID: sessionID,
+            result: .rejected,
+            rejectionReason: .invalidRequest
+        )
+        XCTAssertTrue(commitBinding.permits(rejected))
+
+        let ordinaryBinding = WebRTCInputRequestBinding(
+            WebRTCInputRequest(
+                id: 33,
+                screenRequestID: 11,
+                inputSessionID: sessionID,
+                action: .tap(.init(x: 0.5, y: 0.5))
+            )
+        )
+        XCTAssertFalse(
+            ordinaryBinding.permits(
+                WebRTCInputFeedback(
+                    id: 33,
+                    screenRequestID: 11,
+                    inputSessionID: sessionID,
+                    result: .accepted,
+                    windowResize: .init(kind: .targetAcquired, target: target)
+                )
+            )
+        )
+    }
+
+    func testNormalizedResizeTargetRejectsZeroAuthorityAndInvalidFrame() {
+        let zero = UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+        let invalidTargets = [
+            WebRTCWindowResizeTarget(
+                generation: zero,
+                normalizedFrame: .init(x: 0.1, y: 0.2, width: 0.6, height: 0.7)
+            ),
+            WebRTCWindowResizeTarget(
+                generation: targetGeneration,
+                normalizedFrame: .init(x: 0.8, y: 0.2, width: 0.3, height: 0.7)
+            ),
+            WebRTCWindowResizeTarget(
+                generation: targetGeneration,
+                normalizedFrame: .init(x: 0.1, y: 0.2, width: .nan, height: 0.7)
+            )
+        ]
+
+        for target in invalidTargets {
+            XCTAssertThrowsError(try JSONEncoder().encode(target))
+        }
     }
 
     func testCapabilityRejectsWrongVersionSizeAndZeroIdentifiers() {

@@ -13,6 +13,7 @@ public struct WebRTCInputCapability: Codable, Equatable, Sendable {
     public let maxMessageBytes: Int
     public let supportsPrimaryDrag: Bool
     public let supportsScroll: Bool
+    public let supportsFocusedWindowResize: Bool
 
     public init(
         inputSessionID: UUID,
@@ -20,7 +21,8 @@ public struct WebRTCInputCapability: Codable, Equatable, Sendable {
         protocolVersion: Int = Self.currentProtocolVersion,
         maxMessageBytes: Int = Self.maximumMessageBytes,
         supportsPrimaryDrag: Bool = false,
-        supportsScroll: Bool = false
+        supportsScroll: Bool = false,
+        supportsFocusedWindowResize: Bool = false
     ) {
         self.protocolVersion = protocolVersion
         self.inputSessionID = inputSessionID
@@ -28,6 +30,7 @@ public struct WebRTCInputCapability: Codable, Equatable, Sendable {
         self.maxMessageBytes = maxMessageBytes
         self.supportsPrimaryDrag = supportsPrimaryDrag
         self.supportsScroll = supportsScroll
+        self.supportsFocusedWindowResize = supportsFocusedWindowResize
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -37,6 +40,7 @@ public struct WebRTCInputCapability: Codable, Equatable, Sendable {
         case maxMessageBytes
         case supportsPrimaryDrag
         case supportsScroll
+        case supportsFocusedWindowResize
     }
 
     public init(from decoder: any Decoder) throws {
@@ -52,6 +56,11 @@ public struct WebRTCInputCapability: Codable, Equatable, Sendable {
         }
         let supportsScroll = if container.contains(.supportsScroll) {
             try container.decode(Bool.self, forKey: .supportsScroll)
+        } else {
+            false
+        }
+        let supportsFocusedWindowResize = if container.contains(.supportsFocusedWindowResize) {
+            try container.decode(Bool.self, forKey: .supportsFocusedWindowResize)
         } else {
             false
         }
@@ -71,7 +80,8 @@ public struct WebRTCInputCapability: Codable, Equatable, Sendable {
             protocolVersion: protocolVersion,
             maxMessageBytes: maxMessageBytes,
             supportsPrimaryDrag: supportsPrimaryDrag,
-            supportsScroll: supportsScroll
+            supportsScroll: supportsScroll,
+            supportsFocusedWindowResize: supportsFocusedWindowResize
         )
     }
 
@@ -89,6 +99,7 @@ public struct WebRTCInputCapability: Codable, Equatable, Sendable {
         try container.encode(maxMessageBytes, forKey: .maxMessageBytes)
         try container.encode(supportsPrimaryDrag, forKey: .supportsPrimaryDrag)
         try container.encode(supportsScroll, forKey: .supportsScroll)
+        try container.encode(supportsFocusedWindowResize, forKey: .supportsFocusedWindowResize)
     }
 
     var isValid: Bool {
@@ -99,6 +110,206 @@ public struct WebRTCInputCapability: Codable, Equatable, Sendable {
     }
 
     private static let zeroUUID = UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+}
+
+/// A finite rectangle in the encoded frame's inclusive unit square.
+public struct WebRTCNormalizedRect: Codable, Equatable, Sendable {
+    public let x: Double
+    public let y: Double
+    public let width: Double
+    public let height: Double
+
+    public init(x: Double, y: Double, width: Double, height: Double) {
+        self.x = x
+        self.y = y
+        self.width = width
+        self.height = height
+    }
+
+    private enum CodingKeys: String, CodingKey { case x, y, width, height }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let x = try container.decode(Double.self, forKey: .x)
+        let y = try container.decode(Double.self, forKey: .y)
+        let width = try container.decode(Double.self, forKey: .width)
+        let height = try container.decode(Double.self, forKey: .height)
+        guard Self.isValid(x: x, y: y, width: width, height: height) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .x,
+                in: container,
+                debugDescription: "Invalid normalized rectangle."
+            )
+        }
+        self.init(x: x, y: y, width: width, height: height)
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        guard isValid else {
+            throw EncodingError.invalidValue(
+                self,
+                .init(codingPath: encoder.codingPath, debugDescription: "Invalid normalized rectangle.")
+            )
+        }
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(x, forKey: .x)
+        try container.encode(y, forKey: .y)
+        try container.encode(width, forKey: .width)
+        try container.encode(height, forKey: .height)
+    }
+
+    var isValid: Bool {
+        Self.isValid(x: x, y: y, width: width, height: height)
+    }
+
+    private static func isValid(x: Double, y: Double, width: Double, height: Double) -> Bool {
+        x.isFinite && y.isFinite && width.isFinite && height.isFinite
+            && x >= 0 && y >= 0 && width > 0 && height > 0
+            && x <= 1 && y <= 1
+            && width <= 1 - x && height <= 1 - y
+    }
+}
+
+/// Opaque, session-bound focused-window authority and its content-free video rectangle.
+public struct WebRTCWindowResizeTarget: Codable, Equatable, Sendable {
+    public let generation: UUID
+    public let normalizedFrame: WebRTCNormalizedRect
+
+    public init(generation: UUID, normalizedFrame: WebRTCNormalizedRect) {
+        self.generation = generation
+        self.normalizedFrame = normalizedFrame
+    }
+
+    private enum CodingKeys: String, CodingKey { case generation, normalizedFrame }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let generation = try container.decode(UUID.self, forKey: .generation)
+        let normalizedFrame = try container.decode(WebRTCNormalizedRect.self, forKey: .normalizedFrame)
+        guard generation != WebRTCInputCapability.zeroUUIDForValidation,
+              normalizedFrame.isValid else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .generation,
+                in: container,
+                debugDescription: "Invalid focused-window resize target."
+            )
+        }
+        self.init(generation: generation, normalizedFrame: normalizedFrame)
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        guard isValid else {
+            throw EncodingError.invalidValue(
+                self,
+                .init(codingPath: encoder.codingPath, debugDescription: "Invalid focused-window resize target.")
+            )
+        }
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(generation, forKey: .generation)
+        try container.encode(normalizedFrame, forKey: .normalizedFrame)
+    }
+
+    var isValid: Bool {
+        generation != WebRTCInputCapability.zeroUUIDForValidation && normalizedFrame.isValid
+    }
+}
+
+/// Identifies which resize operation produced the returned current target.
+public enum WebRTCWindowResizeFeedbackKind: String, Codable, Sendable {
+    case targetAcquired
+    case windowSelected
+    case resizeCommitted
+}
+
+/// Content-free result for one focused-window resize action.
+public struct WebRTCWindowResizeFeedback: Codable, Equatable, Sendable {
+    public let kind: WebRTCWindowResizeFeedbackKind
+    /// Echoes the one-shot authority consumed by a successful commit. Target acquisition and
+    /// selection omit this field; their returned target has no predecessor on this request.
+    public let committedTargetGeneration: UUID?
+    public let target: WebRTCWindowResizeTarget
+
+    public init(
+        kind: WebRTCWindowResizeFeedbackKind,
+        committedTargetGeneration: UUID? = nil,
+        target: WebRTCWindowResizeTarget
+    ) {
+        self.kind = kind
+        self.committedTargetGeneration = committedTargetGeneration
+        self.target = target
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case kind
+        case committedTargetGeneration
+        case target
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let kind = try container.decode(WebRTCWindowResizeFeedbackKind.self, forKey: .kind)
+        let committedTargetGeneration = try container.decodeIfPresent(
+            UUID.self,
+            forKey: .committedTargetGeneration
+        )
+        let target = try container.decode(WebRTCWindowResizeTarget.self, forKey: .target)
+        guard Self.isValid(
+            kind: kind,
+            committedTargetGeneration: committedTargetGeneration,
+            target: target
+        ) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .kind,
+                in: container,
+                debugDescription: "Invalid focused-window resize feedback."
+            )
+        }
+        self.init(
+            kind: kind,
+            committedTargetGeneration: committedTargetGeneration,
+            target: target
+        )
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        guard isValid else {
+            throw EncodingError.invalidValue(
+                self,
+                .init(codingPath: encoder.codingPath, debugDescription: "Invalid focused-window resize feedback.")
+            )
+        }
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(kind, forKey: .kind)
+        try container.encodeIfPresent(
+            committedTargetGeneration,
+            forKey: .committedTargetGeneration
+        )
+        try container.encode(target, forKey: .target)
+    }
+
+    var isValid: Bool {
+        Self.isValid(
+            kind: kind,
+            committedTargetGeneration: committedTargetGeneration,
+            target: target
+        )
+    }
+
+    private static func isValid(
+        kind: WebRTCWindowResizeFeedbackKind,
+        committedTargetGeneration: UUID?,
+        target: WebRTCWindowResizeTarget
+    ) -> Bool {
+        guard target.isValid else { return false }
+        switch kind {
+        case .targetAcquired, .windowSelected:
+            return committedTargetGeneration == nil
+        case .resizeCommitted:
+            return committedTargetGeneration != nil
+                && committedTargetGeneration != WebRTCInputCapability.zeroUUIDForValidation
+                && committedTargetGeneration != target.generation
+        }
+    }
 }
 
 /// A finite point in the inclusive unit square used for resolution-independent input.
@@ -212,6 +423,13 @@ public enum WebRTCInputAction: Codable, Equatable, Sendable {
     /// Incremental finger displacement in rendered-video pixel units: positive x is right and
     /// positive y is down. The host owns the single conversion to native scroll-wheel semantics.
     case scroll(anchor: WebRTCNormalizedPoint, deltaX: Int32, deltaY: Int32)
+    case requestFocusedWindowResizeTarget
+    case selectWindowForResize(at: WebRTCNormalizedPoint)
+    case commitFocusedWindowResize(
+        targetGeneration: UUID,
+        start: WebRTCNormalizedPoint,
+        end: WebRTCNormalizedPoint
+    )
     case insertText(String, focusGeneration: UInt64)
     case backspace(focusGeneration: UInt64)
     case returnKey(focusGeneration: UInt64)
@@ -220,6 +438,9 @@ public enum WebRTCInputAction: Codable, Equatable, Sendable {
         case tap
         case primaryDrag
         case scroll
+        case focusedWindowResizeTarget
+        case focusedWindowSelection
+        case focusedWindowResizeCommit
         case text
         case backspace
         case returnKey = "return"
@@ -235,6 +456,7 @@ public enum WebRTCInputAction: Codable, Equatable, Sendable {
         case deltaY
         case text
         case focusGeneration
+        case targetGeneration
     }
 
     public init(from decoder: any Decoder) throws {
@@ -244,7 +466,8 @@ public enum WebRTCInputAction: Codable, Equatable, Sendable {
             guard !container.contains(.start), !container.contains(.end),
                   !container.contains(.anchor), !container.contains(.deltaX),
                   !container.contains(.deltaY),
-                  !container.contains(.text), !container.contains(.focusGeneration) else {
+                  !container.contains(.text), !container.contains(.focusGeneration),
+                  !container.contains(.targetGeneration) else {
                 throw Self.invalidAction(in: container)
             }
             self = .tap(try container.decode(WebRTCNormalizedPoint.self, forKey: .point))
@@ -252,7 +475,8 @@ public enum WebRTCInputAction: Codable, Equatable, Sendable {
             guard !container.contains(.point), !container.contains(.text),
                   !container.contains(.anchor), !container.contains(.deltaX),
                   !container.contains(.deltaY),
-                  !container.contains(.focusGeneration) else {
+                  !container.contains(.focusGeneration),
+                  !container.contains(.targetGeneration) else {
                 throw Self.invalidAction(in: container)
             }
             self = .primaryDrag(
@@ -262,7 +486,8 @@ public enum WebRTCInputAction: Codable, Equatable, Sendable {
         case .scroll:
             guard !container.contains(.point), !container.contains(.start),
                   !container.contains(.end), !container.contains(.text),
-                  !container.contains(.focusGeneration) else {
+                  !container.contains(.focusGeneration),
+                  !container.contains(.targetGeneration) else {
                 throw Self.invalidAction(in: container)
             }
             let anchor = try container.decode(WebRTCNormalizedPoint.self, forKey: .anchor)
@@ -272,10 +497,46 @@ public enum WebRTCInputAction: Codable, Equatable, Sendable {
                 throw Self.invalidAction(in: container)
             }
             self = .scroll(anchor: anchor, deltaX: deltaX, deltaY: deltaY)
+        case .focusedWindowResizeTarget:
+            guard !container.contains(.point), !container.contains(.start),
+                  !container.contains(.end), !container.contains(.anchor),
+                  !container.contains(.deltaX), !container.contains(.deltaY),
+                  !container.contains(.text), !container.contains(.focusGeneration),
+                  !container.contains(.targetGeneration) else {
+                throw Self.invalidAction(in: container)
+            }
+            self = .requestFocusedWindowResizeTarget
+        case .focusedWindowSelection:
+            guard !container.contains(.start), !container.contains(.end),
+                  !container.contains(.anchor), !container.contains(.deltaX),
+                  !container.contains(.deltaY), !container.contains(.text),
+                  !container.contains(.focusGeneration),
+                  !container.contains(.targetGeneration) else {
+                throw Self.invalidAction(in: container)
+            }
+            self = .selectWindowForResize(
+                at: try container.decode(WebRTCNormalizedPoint.self, forKey: .point)
+            )
+        case .focusedWindowResizeCommit:
+            guard !container.contains(.point), !container.contains(.anchor),
+                  !container.contains(.deltaX), !container.contains(.deltaY),
+                  !container.contains(.text), !container.contains(.focusGeneration) else {
+                throw Self.invalidAction(in: container)
+            }
+            let targetGeneration = try container.decode(UUID.self, forKey: .targetGeneration)
+            guard targetGeneration != WebRTCInputCapability.zeroUUIDForValidation else {
+                throw Self.invalidAction(in: container)
+            }
+            self = .commitFocusedWindowResize(
+                targetGeneration: targetGeneration,
+                start: try container.decode(WebRTCNormalizedPoint.self, forKey: .start),
+                end: try container.decode(WebRTCNormalizedPoint.self, forKey: .end)
+            )
         case .text:
             guard !container.contains(.point), !container.contains(.start),
                   !container.contains(.end), !container.contains(.anchor),
-                  !container.contains(.deltaX), !container.contains(.deltaY) else {
+                  !container.contains(.deltaX), !container.contains(.deltaY),
+                  !container.contains(.targetGeneration) else {
                 throw Self.invalidAction(in: container)
             }
             let text = try container.decode(String.self, forKey: .text)
@@ -288,7 +549,7 @@ public enum WebRTCInputAction: Codable, Equatable, Sendable {
             guard !container.contains(.point), !container.contains(.start),
                   !container.contains(.end), !container.contains(.anchor),
                   !container.contains(.deltaX), !container.contains(.deltaY),
-                  !container.contains(.text) else {
+                  !container.contains(.text), !container.contains(.targetGeneration) else {
                 throw Self.invalidAction(in: container)
             }
             let generation = try container.decode(UInt64.self, forKey: .focusGeneration)
@@ -298,7 +559,7 @@ public enum WebRTCInputAction: Codable, Equatable, Sendable {
             guard !container.contains(.point), !container.contains(.start),
                   !container.contains(.end), !container.contains(.anchor),
                   !container.contains(.deltaX), !container.contains(.deltaY),
-                  !container.contains(.text) else {
+                  !container.contains(.text), !container.contains(.targetGeneration) else {
                 throw Self.invalidAction(in: container)
             }
             let generation = try container.decode(UInt64.self, forKey: .focusGeneration)
@@ -328,6 +589,16 @@ public enum WebRTCInputAction: Codable, Equatable, Sendable {
             try container.encode(anchor, forKey: .anchor)
             try container.encode(deltaX, forKey: .deltaX)
             try container.encode(deltaY, forKey: .deltaY)
+        case .requestFocusedWindowResizeTarget:
+            try container.encode(Kind.focusedWindowResizeTarget, forKey: .kind)
+        case .selectWindowForResize(let point):
+            try container.encode(Kind.focusedWindowSelection, forKey: .kind)
+            try container.encode(point, forKey: .point)
+        case .commitFocusedWindowResize(let targetGeneration, let start, let end):
+            try container.encode(Kind.focusedWindowResizeCommit, forKey: .kind)
+            try container.encode(targetGeneration, forKey: .targetGeneration)
+            try container.encode(start, forKey: .start)
+            try container.encode(end, forKey: .end)
         case .insertText(let text, let focusGeneration):
             try container.encode(Kind.text, forKey: .kind)
             try container.encode(text, forKey: .text)
@@ -349,6 +620,13 @@ public enum WebRTCInputAction: Codable, Equatable, Sendable {
             start.isValid && end.isValid
         case .scroll(let anchor, let deltaX, let deltaY):
             anchor.isValid && Self.isValidScrollDelta(deltaX: deltaX, deltaY: deltaY)
+        case .requestFocusedWindowResizeTarget:
+            true
+        case .selectWindowForResize(let point):
+            point.isValid
+        case .commitFocusedWindowResize(let generation, let start, let end):
+            generation != WebRTCInputCapability.zeroUUIDForValidation
+                && start.isValid && end.isValid
         case .insertText(let text, let focusGeneration):
             focusGeneration > 0 && Self.isValidCommittedText(text)
         case .backspace(let focusGeneration), .returnKey(let focusGeneration):
@@ -478,7 +756,8 @@ public struct WebRTCInputRequest: Codable, Equatable, Sendable {
         switch action {
         case .tap, .primaryDrag:
             return viewerVideoSize?.isValid ?? true
-        case .scroll:
+        case .scroll, .requestFocusedWindowResizeTarget,
+             .selectWindowForResize, .commitFocusedWindowResize:
             return viewerVideoSize?.isValid == true
         case .insertText, .backspace, .returnKey:
             return viewerVideoSize == nil
@@ -575,6 +854,7 @@ public struct WebRTCInputFeedback: Codable, Equatable, Sendable {
     /// before this field continue decoding the established feedback shape.
     public let screenFormatChanging: Bool
     public let focus: WebRTCInputFocus
+    public let windowResize: WebRTCWindowResizeFeedback?
 
     public init(
         id: UInt64,
@@ -583,7 +863,8 @@ public struct WebRTCInputFeedback: Codable, Equatable, Sendable {
         result: WebRTCInputFeedbackResult,
         rejectionReason: WebRTCInputRejectionReason? = nil,
         screenFormatChanging: Bool = false,
-        focus: WebRTCInputFocus = .none
+        focus: WebRTCInputFocus = .none,
+        windowResize: WebRTCWindowResizeFeedback? = nil
     ) {
         self.id = id
         self.screenRequestID = screenRequestID
@@ -592,6 +873,7 @@ public struct WebRTCInputFeedback: Codable, Equatable, Sendable {
         self.rejectionReason = rejectionReason
         self.screenFormatChanging = screenFormatChanging
         self.focus = focus
+        self.windowResize = windowResize
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -602,6 +884,7 @@ public struct WebRTCInputFeedback: Codable, Equatable, Sendable {
         case rejectionReason
         case screenFormatChanging
         case focus
+        case windowResize
     }
 
     public init(from decoder: any Decoder) throws {
@@ -619,6 +902,10 @@ public struct WebRTCInputFeedback: Codable, Equatable, Sendable {
         let screenRequestID = try container.decode(UInt64.self, forKey: .screenRequestID)
         let inputSessionID = try container.decode(UUID.self, forKey: .inputSessionID)
         let focus = try container.decode(WebRTCInputFocus.self, forKey: .focus)
+        let windowResize = try container.decodeIfPresent(
+            WebRTCWindowResizeFeedback.self,
+            forKey: .windowResize
+        )
         guard id > 0,
               screenRequestID > 0,
               inputSessionID != WebRTCInputCapability.zeroUUIDForValidation,
@@ -626,7 +913,8 @@ public struct WebRTCInputFeedback: Codable, Equatable, Sendable {
               Self.hasValidRejectionShape(
                   result: result,
                   rejectionReason: rejectionReason,
-                  screenFormatChanging: screenFormatChanging
+                  screenFormatChanging: screenFormatChanging,
+                  windowResize: windowResize
               ) else {
             throw DecodingError.dataCorruptedError(
                 forKey: .result,
@@ -641,7 +929,8 @@ public struct WebRTCInputFeedback: Codable, Equatable, Sendable {
             result: result,
             rejectionReason: rejectionReason,
             screenFormatChanging: screenFormatChanging,
-            focus: focus
+            focus: focus,
+            windowResize: windowResize
         )
     }
 
@@ -662,6 +951,7 @@ public struct WebRTCInputFeedback: Codable, Equatable, Sendable {
             try container.encode(true, forKey: .screenFormatChanging)
         }
         try container.encode(focus, forKey: .focus)
+        try container.encodeIfPresent(windowResize, forKey: .windowResize)
     }
 
     var isValid: Bool {
@@ -669,17 +959,20 @@ public struct WebRTCInputFeedback: Codable, Equatable, Sendable {
             && screenRequestID > 0
             && inputSessionID != WebRTCInputCapability.zeroUUIDForValidation
             && focus.isValid
+            && (windowResize?.isValid ?? true)
             && Self.hasValidRejectionShape(
                 result: result,
                 rejectionReason: rejectionReason,
-                screenFormatChanging: screenFormatChanging
+                screenFormatChanging: screenFormatChanging,
+                windowResize: windowResize
             )
     }
 
     private static func hasValidRejectionShape(
         result: WebRTCInputFeedbackResult,
         rejectionReason: WebRTCInputRejectionReason?,
-        screenFormatChanging: Bool
+        screenFormatChanging: Bool,
+        windowResize: WebRTCWindowResizeFeedback?
     ) -> Bool {
         switch result {
         case .accepted:
@@ -687,6 +980,7 @@ public struct WebRTCInputFeedback: Codable, Equatable, Sendable {
         case .rejected:
             rejectionReason != nil
                 && (!screenFormatChanging || rejectionReason == .rateLimited)
+                && windowResize == nil
         }
     }
 }

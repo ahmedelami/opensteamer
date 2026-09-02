@@ -92,6 +92,35 @@ enum AspectFitCoordinateMapper {
             videoSize: videoSize
         )
     }
+
+    static func viewRect(
+        forNormalizedRect normalizedRect: CGRect,
+        containerSize: CGSize,
+        videoSize: CGSize
+    ) -> CGRect? {
+        guard normalizedRect.origin.x.isFinite,
+              normalizedRect.origin.y.isFinite,
+              normalizedRect.width.isFinite,
+              normalizedRect.height.isFinite,
+              normalizedRect.minX >= 0,
+              normalizedRect.minY >= 0,
+              normalizedRect.width > 0,
+              normalizedRect.height > 0,
+              normalizedRect.maxX <= 1,
+              normalizedRect.maxY <= 1,
+              let visibleRect = visibleVideoRect(
+                  containerSize: containerSize,
+                  videoSize: videoSize
+              ) else {
+            return nil
+        }
+        return CGRect(
+            x: visibleRect.minX + normalizedRect.minX * visibleRect.width,
+            y: visibleRect.minY + normalizedRect.minY * visibleRect.height,
+            width: normalizedRect.width * visibleRect.width,
+            height: normalizedRect.height * visibleRect.height
+        )
+    }
 }
 
 private extension CGSize {

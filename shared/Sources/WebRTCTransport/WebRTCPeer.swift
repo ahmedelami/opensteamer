@@ -182,22 +182,103 @@ struct WebRTCIOSPeerRetirementDebugSnapshot: Equatable, Sendable {
 #endif
 #endif
 
-/// The non-sensitive portion of an input request needed after its one network delivery.
+/// The non-sensitive action identity needed to reject cross-action duplicate IDs and to bind
+/// resize feedback to the exact stage that produced it. Pointer coordinates, text, and keyboard
+/// focus generations are deliberately not retained. A commit generation is opaque authority, not
+/// user content, and must be retained so feedback cannot acknowledge a different target.
+enum WebRTCInputRequestActionBinding: Equatable, Sendable {
+    case tap
+    case primaryDrag
+    case scroll
+    case focusedWindowResizeTargetRequest
+    case focusedWindowSelection
+    case focusedWindowResizeCommit(targetGeneration: UUID)
+    case text
+    case backspace
+    case returnKey
+
+    init(_ action: WebRTCInputAction) {
+        switch action {
+        case .tap:
+            self = .tap
+        case .primaryDrag:
+            self = .primaryDrag
+        case .scroll:
+            self = .scroll
+        case .requestFocusedWindowResizeTarget:
+            self = .focusedWindowResizeTargetRequest
+        case .selectWindowForResize:
+            self = .focusedWindowSelection
+        case .commitFocusedWindowResize(let targetGeneration, _, _):
+            self = .focusedWindowResizeCommit(targetGeneration: targetGeneration)
+        case .insertText:
+            self = .text
+        case .backspace:
+            self = .backspace
+        case .returnKey:
+            self = .returnKey
+        }
+    }
+
+    func permits(_ feedback: WebRTCInputFeedback) -> Bool {
+        switch feedback.result {
+        case .rejected:
+            // Rejections are terminal but intentionally carry no new target authority.
+            return feedback.windowResize == nil
+        case .accepted:
+            switch (self, feedback.windowResize) {
+            case (.tap, nil), (.primaryDrag, nil), (.scroll, nil),
+                 (.text, nil), (.backspace, nil), (.returnKey, nil):
+                return true
+            case (.focusedWindowResizeTargetRequest, .some(let resize)):
+                return resize.kind == .targetAcquired
+                    && resize.committedTargetGeneration == nil
+            case (.focusedWindowSelection, .some(let resize)):
+                return resize.kind == .windowSelected
+                    && resize.committedTargetGeneration == nil
+            case (.focusedWindowResizeCommit(let targetGeneration), .some(let resize)):
+                return resize.kind == .resizeCommitted
+                    && resize.committedTargetGeneration == targetGeneration
+            default:
+                return false
+            }
+        }
+    }
+}
+
+/// The content-free portion of an input request needed after its one network delivery.
 ///
-/// Do not add the action or encoded request here: committed text may contain credentials.
+/// Do not add the full action or encoded request here: committed text may contain credentials.
 struct WebRTCInputRequestBinding: Equatable, Sendable {
     let id: UInt64
     let screenRequestID: UInt64
     let inputSessionID: UUID
+    let action: WebRTCInputRequestActionBinding
 
     init(_ request: WebRTCInputRequest) {
         id = request.id
         screenRequestID = request.screenRequestID
         inputSessionID = request.inputSessionID
+        action = WebRTCInputRequestActionBinding(request.action)
+    }
+
+    func permits(_ feedback: WebRTCInputFeedback) -> Bool {
+        feedback.isValid
+            && feedback.id == id
+            && feedback.screenRequestID == screenRequestID
+            && feedback.inputSessionID == inputSessionID
+            && action.permits(feedback)
     }
 }
 
 #if DEBUG
+struct WebRTCInputReceiveDebugSnapshot: Equatable, Sendable {
+    let receivedRequestHistoryCount: Int
+    let admittedRequestEventCount: Int
+    let sentFeedbackHistoryCount: Int
+    let capturedControlData: [Data]
+}
+
 /// Sender encoding limits observed after applying the product's high-fidelity Opus policy.
 struct WebRTCAudioSenderEncodingParameters: Equatable, Sendable {
     let maximumBitrateBps: Int?
@@ -2704,6 +2785,11 @@ public actor WebRTCPeer {
     private var receivedInputRequests: [UInt64: WebRTCInputRequestBinding] = [:]
     private var receivedInputRequestOrder: [UInt64] = []
     private var sentInputFeedback: [UInt64: WebRTCInputFeedback] = [:]
+    #if DEBUG
+    private var debugAdmittedInputRequestEventCount = 0
+    private var debugCapturesRemoteInputControlData = false
+    private var debugCapturedRemoteInputControlData: [Data] = []
+    #endif
     // The viewer advertises support in its current SDP answer before the host can use the strict
     // v2 evidence message. Received evidence is sequence-checked within this peer lifetime.
     private var macHostedCallEvidenceIsNegotiated = false
@@ -3883,11 +3969,18 @@ public actor WebRTCPeer {
         result: WebRTCInputFeedbackResult,
         rejectionReason: WebRTCInputRejectionReason? = nil,
         screenFormatChanging: Bool = false,
-        focus: WebRTCInputFocus = .none
+        focus: WebRTCInputFocus = .none,
+        windowResize: WebRTCWindowResizeFeedback? = nil
     ) throws {
         try ensureOpen()
         guard role == .host else { throw WebRTCTransportError.invalidRole }
+        #if DEBUG
+        if !debugCapturesRemoteInputControlData {
+            ensureDelegateEventLoop()
+        }
+        #else
         ensureDelegateEventLoop()
+        #endif
         guard let request = receivedInputRequests[id] else {
             if let highestReceivedInputRequestID, id <= highestReceivedInputRequestID {
                 throw WebRTCTransportError.staleInputRequest(id)
@@ -3907,9 +4000,12 @@ public actor WebRTCPeer {
             result: result,
             rejectionReason: rejectionReason,
             screenFormatChanging: screenFormatChanging,
-            focus: focus
+            focus: focus,
+            windowResize: windowResize
         )
-        guard feedback.isValid else { throw WebRTCTransportError.invalidInputRequest }
+        guard request.permits(feedback) else {
+            throw WebRTCTransportError.invalidInputRequest
+        }
         if let existing = sentInputFeedback[id], existing != feedback {
             throw WebRTCTransportError.conflictingInputFeedback(id)
         }
@@ -3918,7 +4014,7 @@ public actor WebRTCPeer {
         guard data.count <= capability.maxMessageBytes else {
             throw WebRTCTransportError.invalidInputRequest
         }
-        try delegateProxy.sendControlData(data)
+        try sendRemoteInputControlData(data)
         sentInputFeedback[id] = feedback
     }
 
@@ -4216,6 +4312,21 @@ public actor WebRTCPeer {
     func receiveInputRequestForTesting(_ request: WebRTCInputRequest) -> Bool {
         receiveInputRequest(request)
         return receivedInputRequests[request.id] != nil
+    }
+
+    func beginRemoteInputControlDataCaptureForTesting() {
+        debugCapturedRemoteInputControlData.removeAll(keepingCapacity: true)
+        debugCapturesRemoteInputControlData = true
+    }
+
+    func remoteInputReceiveDebugSnapshotForTesting()
+        -> WebRTCInputReceiveDebugSnapshot {
+        WebRTCInputReceiveDebugSnapshot(
+            receivedRequestHistoryCount: receivedInputRequests.count,
+            admittedRequestEventCount: debugAdmittedInputRequestEventCount,
+            sentFeedbackHistoryCount: sentInputFeedback.count,
+            capturedControlData: debugCapturedRemoteInputControlData
+        )
     }
 
     func installViewerInputSessionForTesting(
@@ -8511,17 +8622,17 @@ public actor WebRTCPeer {
                 failCloseInput("Conflicting duplicate remote-input binding.")
                 return
             }
-            // Never yield an ID twice. The payload is intentionally not retained: a duplicate
-            // with the same authenticated session binding is treated as an idempotent retry,
-            // regardless of payload, and can therefore never repeat irreversible OS work. If
-            // application work already completed, replay only its immutable feedback; otherwise
-            // wait for the original completion.
+            // Never yield an ID twice. Request content is intentionally not retained: once the
+            // non-sensitive action discriminator (and commit authority, when present) matches, a
+            // duplicate is an idempotent retry regardless of text or pointer payload and can never
+            // repeat irreversible OS work. If application work already completed, replay only its
+            // immutable feedback; otherwise wait for the original completion.
             if let feedback = sentInputFeedback[request.id] {
                 do {
                     let data = try JSONEncoder().encode(
                         ControlChannelMessage.inputFeedback(feedback)
                     )
-                    try delegateProxy.sendControlData(data)
+                    try sendRemoteInputControlData(data)
                 } catch {
                     failCloseInput("Could not replay remote-input feedback.")
                 }
@@ -8542,7 +8653,20 @@ public actor WebRTCPeer {
         highestReceivedInputRequestID = request.id
         receivedInputRequests[request.id] = binding
         receivedInputRequestOrder.append(request.id)
+        #if DEBUG
+        debugAdmittedInputRequestEventCount += 1
+        #endif
         emit(.inputRequestReceived(request, authorization: authorization))
+    }
+
+    private func sendRemoteInputControlData(_ data: Data) throws {
+        #if DEBUG
+        if debugCapturesRemoteInputControlData {
+            debugCapturedRemoteInputControlData.append(data)
+            return
+        }
+        #endif
+        try delegateProxy.sendControlData(data)
     }
 
     private static func inputCapability(
@@ -8554,6 +8678,10 @@ public actor WebRTCPeer {
             capability.supportsPrimaryDrag
         case .scroll:
             capability.supportsScroll
+        case .requestFocusedWindowResizeTarget,
+             .selectWindowForResize,
+             .commitFocusedWindowResize:
+            capability.supportsFocusedWindowResize
         case .tap, .insertText, .backspace, .returnKey:
             true
         }
@@ -8567,7 +8695,8 @@ public actor WebRTCPeer {
               feedback.screenRequestID == capability.screenRequestID,
               feedback.inputSessionID == capability.inputSessionID,
               feedback.screenRequestID == request.screenRequestID,
-              feedback.inputSessionID == request.inputSessionID else {
+              feedback.inputSessionID == request.inputSessionID,
+              request.permits(feedback) else {
             failCloseInput("Unknown, stale, or unbound remote-input feedback.")
             return
         }
