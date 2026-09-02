@@ -368,14 +368,18 @@ manual IP addresses, router configuration, or public TCP ports.
   one pixel-unit scroll-wheel event without persisting a remote gesture or mouse-button
   state. Scroll needs its own rate limit, and any input-session, presentation, scene,
   track, or rendered-size transition discards pending deltas. The Mac must revalidate
-  Accessibility focus identity and
-  a host-issued focus generation before every keyboard event. Secure AX text fields
-  stay local and must never receive a remote focus generation; AppKit private-use
-  function-key scalars are commands rather than text and must be rejected. Never transmit or log
-  field contents, arbitrary key codes, modifiers, shortcuts, clipboard data, or AX
-  values, including typed text. Keep committed text only in the bounded pre-send and
-  native-delivery window; feedback correlation and duplicate histories must retain
-  binding metadata, never the action payload. Synthesizing input needs Accessibility
+  Accessibility focus identity, secure classification, and
+  a host-issued focus generation before every keyboard event. An exact enabled secure
+  AX text field may receive a fresh generation-bound remote keyboard capability without
+  reading or writing its AX value; malformed or disabled secure elements remain a hard
+  ancestry boundary, and any secure-classification change revokes the old generation.
+  The iPhone must present secure focus with secure-entry traits and must never mirror the
+  field value. AppKit private-use function-key scalars are commands rather than text and
+  must be rejected. Never retrieve or transmit AX field values; never persist, mirror, or
+  log field contents or typed text. Never send arbitrary key codes, modifiers, shortcuts,
+  or clipboard data. Keep committed text only in the bounded pre-send and native-delivery
+  window; feedback correlation and duplicate histories must retain binding metadata,
+  never the action payload. Synthesizing input needs Accessibility
   and Post Event permission, not Input Monitoring; do not request permissions the
   feature does not use.
 - Treat ICE recovery and signaling recovery as separate protocols. The current

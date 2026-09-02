@@ -2410,6 +2410,64 @@ final class WorldwideSessionGenerationFenceTests: XCTestCase {
     }
 
     @MainActor
+    func testSecureFocusFeedbackPresentsSecureKeyboardAndUsesExactGeneration() async throws {
+        let viewModel = WorldwideSessionViewModel()
+        let peer = try makeViewerPeer()
+        let tapSent = expectation(description: "tap sent")
+        let secureTextSent = expectation(description: "secure text sent")
+        let secureGeneration: UInt64 = 808
+        var sentActions: [WebRTCInputAction] = []
+        viewModel.debugInstallRemoteInputSender { _, action, _, _, _, _ in
+            sentActions.append(action)
+            if sentActions.count == 1 {
+                tapSent.fulfill()
+            } else if sentActions.count == 2 {
+                secureTextSent.fulfill()
+            }
+            return UInt64(sentActions.count)
+        }
+        let fixture = viewModel.debugInstallActiveScreenPresentationForTests(peer: peer)
+        let capability = try XCTUnwrap(viewModel.debugRemoteInputState.capability)
+
+        viewModel.sendRemoteTap(
+            normalizedPoint: CGPoint(x: 0.25, y: 0.75),
+            viewerVideoSize: CGSize(width: 1_080, height: 2_340)
+        )
+        await fulfillment(of: [tapSent], timeout: 2)
+        for _ in 0 ..< 20 where viewModel.debugRemoteInputState.pendingActionCount == 0 {
+            await Task.yield()
+        }
+        XCTAssertEqual(viewModel.debugRemoteInputState.pendingActionCount, 1)
+
+        viewModel.debugDeliverRemoteInputFeedbackForRaceTests(
+            WebRTCInputFeedback(
+                id: 1,
+                screenRequestID: capability.screenRequestID,
+                inputSessionID: capability.inputSessionID,
+                result: .accepted,
+                focus: .editable(generation: secureGeneration, secure: true)
+            )
+        )
+
+        XCTAssertEqual(viewModel.focusedInputGeneration, secureGeneration)
+        XCTAssertTrue(viewModel.focusedInputIsSecure)
+        XCTAssertTrue(fixture.authorization.isValid)
+
+        viewModel.sendRemoteText("credential", focusGeneration: secureGeneration)
+        await fulfillment(of: [secureTextSent], timeout: 2)
+        XCTAssertEqual(
+            sentActions,
+            [
+                .tap(.init(x: 0.25, y: 0.75)),
+                .insertText("credential", focusGeneration: secureGeneration),
+            ]
+        )
+
+        viewModel.disconnect()
+        await peer.close(reason: .viewerDisconnected)
+    }
+
+    @MainActor
     func testFormatTransitionRejectionKeepsKeyboardFocusForNextCommittedText() async throws {
         let viewModel = WorldwideSessionViewModel()
         let peer = try makeViewerPeer()

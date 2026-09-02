@@ -5,22 +5,22 @@ import XCTest
 
 /// Exercises the UIKit responder bridge without involving SwiftUI presentation timing.
 /// The security-critical oracles are generation-bound callbacks, no mirrored remote text, secure
-/// focus remaining closed, and exactly one Return action for software or hardware keyboards.
+/// entry traits, and exactly one Return action for software or hardware keyboards.
 final class RemoteKeyboardInputProxyTests: XCTestCase {
     @MainActor
-    func testSecureHostFocusIsNotEligibleForRemoteKeyboard() {
-        XCTAssertNil(
-            WorldwideSessionViewModel.remoteKeyboardGeneration(
-                for: .editable(generation: 8, secure: true)
-            )
+    func testSecureHostFocusRetainsRemoteKeyboardGeneration() {
+        let secureFocus = WorldwideSessionViewModel.remoteKeyboardFocus(
+            for: .editable(generation: 8, secure: true)
         )
-        XCTAssertEqual(
-            WorldwideSessionViewModel.remoteKeyboardGeneration(
-                for: .editable(generation: 9, secure: false)
-            ),
-            9
+        XCTAssertEqual(secureFocus?.generation, 8)
+        XCTAssertEqual(secureFocus?.secure, true)
+
+        let ordinaryFocus = WorldwideSessionViewModel.remoteKeyboardFocus(
+            for: .editable(generation: 9, secure: false)
         )
-        XCTAssertNil(WorldwideSessionViewModel.remoteKeyboardGeneration(for: .none))
+        XCTAssertEqual(ordinaryFocus?.generation, 9)
+        XCTAssertEqual(ordinaryFocus?.secure, false)
+        XCTAssertNil(WorldwideSessionViewModel.remoteKeyboardFocus(for: .none))
     }
 
     func testPendingFeedbackMetadataDoesNotRetainCommittedText() {
@@ -321,14 +321,16 @@ final class RemoteKeyboardInputProxyTests: XCTestCase {
     }
 
     @MainActor
-    func testActualSwiftUIWrapperRejectsSecureHostFocus() async throws {
+    func testActualSwiftUIWrapperPresentsPrivacyPreservingSecureKeyboard() async throws {
+        var inserted: [(String, UInt64)] = []
+        var deleted: [UInt64] = []
         let rootView = AnyView(
             RemoteKeyboardInputView(
                 inputAvailable: true,
                 focusGeneration: 315,
                 isSecure: true,
-                onInsertText: { _, _ in },
-                onDeleteBackward: { _ in },
+                onInsertText: { inserted.append(($0, $1)) },
+                onDeleteBackward: { deleted.append($0) },
                 onReturn: { _ in }
             )
             .frame(width: 1, height: 1)
@@ -360,10 +362,18 @@ final class RemoteKeyboardInputProxyTests: XCTestCase {
         let proxy = try XCTUnwrap(
             firstSubview(of: RemoteKeyboardInputProxy.self, in: hostingController.view)
         )
-        XCTAssertFalse(proxy.inputAvailable)
-        XCTAssertNil(proxy.focusGeneration)
-        XCTAssertFalse(proxy.isFirstResponder)
-        XCTAssertFalse(proxy.isSecureTextEntry)
+        XCTAssertTrue(proxy.inputAvailable)
+        XCTAssertEqual(proxy.focusGeneration, 315)
+        XCTAssertTrue(proxy.isFirstResponder)
+        XCTAssertTrue(proxy.isSecureTextEntry)
+
+        proxy.insertText("credential")
+        proxy.deleteBackward()
+        XCTAssertEqual(inserted.map(\.0), ["credential"])
+        XCTAssertEqual(inserted.map(\.1), [315])
+        XCTAssertEqual(deleted, [315])
+        XCTAssertTrue(proxy.subviews.isEmpty)
+        XCTAssertNil(proxy.accessibilityValue)
     }
 
     // MARK: - UIKit responder fixtures

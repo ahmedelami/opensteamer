@@ -8245,22 +8245,21 @@ final class WorldwideSessionViewModel: ObservableObject {
     }
 
     private func applyRemoteInputFocus(_ focus: WebRTCInputFocus) {
-        guard let generation = Self.remoteKeyboardGeneration(for: focus) else {
-            if case .editable(_, secure: true) = focus {
-                lastDiagnostic = "Secure Mac text fields stay local and cannot receive remote typing."
-            }
+        guard let keyboardFocus = Self.remoteKeyboardFocus(for: focus) else {
             clearRemoteKeyboardFocus()
             return
         }
-        focusedInputGeneration = generation
-        focusedInputIsSecure = false
+        focusedInputGeneration = keyboardFocus.generation
+        focusedInputIsSecure = keyboardFocus.secure
     }
 
-    /// A second, viewer-side fail-closed boundary for older or compromised hosts.
-    /// The current Mac host never advertises editable focus for secure AX controls.
-    static func remoteKeyboardGeneration(for focus: WebRTCInputFocus) -> UInt64? {
-        guard case .editable(let generation, secure: false) = focus else { return nil }
-        return generation
+    /// Maps any host-proven editable focus into the generation and keyboard privacy mode used by
+    /// the viewer. A secure field keeps the same capability checks as ordinary editable focus.
+    static func remoteKeyboardFocus(
+        for focus: WebRTCInputFocus
+    ) -> (generation: UInt64, secure: Bool)? {
+        guard case .editable(let generation, let secure) = focus else { return nil }
+        return (generation, secure)
     }
 
     private func clearRemoteKeyboardFocus() {

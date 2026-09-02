@@ -20,7 +20,7 @@ struct RemoteKeyboardInputView: UIViewRepresentable {
     func updateUIView(_ view: RemoteKeyboardInputProxy, context: Context) {
         configure(view)
 
-        let shouldBeFirstResponder = inputAvailable && !isSecure && focusGeneration != nil
+        let shouldBeFirstResponder = inputAvailable && focusGeneration != nil
         if shouldBeFirstResponder {
             // SwiftUI can update a representable before UIKit attaches it to a window. Use a
             // short bounded retry instead of silently losing the only keyboard presentation.
@@ -40,11 +40,11 @@ struct RemoteKeyboardInputView: UIViewRepresentable {
     }
 
     private func configure(_ view: RemoteKeyboardInputProxy) {
-        // Secure AX controls are not remotely editable. Keep this UI boundary fail closed
-        // even if an older or compromised host sends a legacy secure-focus response.
-        view.inputAvailable = inputAvailable && !isSecure
-        view.focusGeneration = isSecure ? nil : focusGeneration
-        view.updateSecureEntry(false)
+        // The proxy never mirrors remote contents. Secure focus additionally opts into UIKit's
+        // protected keyboard behavior while retaining the same generation-bound send gates.
+        view.inputAvailable = inputAvailable
+        view.focusGeneration = focusGeneration
+        view.updateSecureEntry(isSecure)
         view.onInsertText = onInsertText
         view.onDeleteBackward = onDeleteBackward
         view.onReturn = onReturn
