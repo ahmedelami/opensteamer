@@ -444,8 +444,16 @@ worker.
   directory, mount it at the fixed reviewed path, and detach it without deleting or
   resetting it. Enrollment is an explicit one-time action; missing, partial, mismatched,
   or contended cache state fails closed instead of silently falling back to a cold build.
-  The sole legacy-layout migration is creation of the exact empty mode-700 `run-tmp`
-  parent beneath an already identity-pinned workspace; no other cache node is repaired.
+  Provision an absent hash-keyed checkout workspace only as a lock-owned transaction:
+  recover only an exact safe subset of empty private children in its deterministic sibling
+  staging directory, fill the fixed `run-tmp`, `DerivedData`, `Products`, and
+  `Intermediates` layout, sync, and publish it by a same-volume exclusive rename. Pin and
+  verify the immutable cache contract and image before the transaction and prove the same
+  contract, parent, lock, and staged inode afterward. This is normal workspace creation,
+  not cache enrollment. The sole legacy-layout migration is creation of the exact empty
+  mode-700 `run-tmp` parent beneath an already identity-pinned workspace. Existing
+  malformed, replaced, linked, public, missing-required-child, or unexpected cache nodes
+  are never repaired.
 - Treat cache enrollment as a transaction. Publish its exact contract atomically and
   last, and publish a durable private pending-enrollment marker before creating its key
   or cache root. If enrollment fails or the process/host dies, the next initialization

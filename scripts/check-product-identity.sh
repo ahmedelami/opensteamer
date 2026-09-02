@@ -1006,6 +1006,12 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'function verify_reviewed_cache_directory_metadata() {' 1 \
   'side-by-side TestFlight reviewed cache-directory metadata verifier'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '[[ "${directory_identity%%:*}" == "${parent_identity%%:*}" ]]' 1 \
+  'side-by-side TestFlight persistent parent-edge same-device proof'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'local required_identity=${3:-}' 1 \
+  'side-by-side TestFlight verified cache-child identity constraint'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'TESTFLIGHT_DERIVED_DATA_BACKUP_EXCLUSION_XATTR="com.apple.metadata:com_apple_backup_excludeItem"' 1 \
   'side-by-side TestFlight exact Xcode backup-exclusion xattr'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
@@ -1041,6 +1047,105 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'local workspace_root="${workspaces_root}/${TESTFLIGHT_BUILD_WORKSPACE_KEY}"' 1 \
   'side-by-side TestFlight stable checkout workspace cache'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'function initialize_or_provision_workspace_directory() {' 1 \
+  'side-by-side TestFlight atomic checkout-workspace provisioner'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'local pending_workspace_root="${workspaces_root}/.workspace-${TESTFLIGHT_BUILD_WORKSPACE_KEY}.pending"' 1 \
+  'side-by-side TestFlight deterministic checkout-workspace staging path'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'run-tmp|DerivedData|Products|Intermediates)' 2 \
+  'side-by-side TestFlight exact staged workspace child whitelist'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '(( ${#children[@]} == 4 )) || return 1' 1 \
+  'side-by-side TestFlight exact staged workspace cardinality'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '[[ "${child_identity%%:*}" == "${workspace_identity%%:*}" ]]' 1 \
+  'side-by-side TestFlight staged workspace child same-device proof'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '== "${pending_workspace_identity%%:*}" ]] || return 1' 2 \
+  'side-by-side TestFlight pending workspace child same-device proof'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'function populate_or_verify_pending_workspace_directory() {' 1 \
+  'side-by-side TestFlight safe partial workspace-staging recovery'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'function verify_existing_workspace_directory() {' 1 \
+  'side-by-side TestFlight existing workspace fail-closed verifier'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'function publish_workspace_directory_exclusively() {' 1 \
+  'side-by-side TestFlight exclusive workspace publisher'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'Fiddle.dlopen(nil)["renameatx_np"]' 1 \
+  'side-by-side TestFlight Darwin exclusive same-volume rename primitive'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'rename_excl = 0x4; rename_nofollow_any = 0x10;' 1 \
+  'side-by-side TestFlight exclusive no-follow workspace rename flags'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'rename_resolve_beneath = 0x20;' 1 \
+  'side-by-side TestFlight descriptor-beneath workspace rename flag'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'ruby_library_root = "/System/Library/Frameworks/Ruby.framework/Versions/2.6/usr/lib/ruby/2.6.0";' 1 \
+  'side-by-side TestFlight sealed system Ruby library root'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '$LOAD_PATH.replace([ruby_library_root, "#{ruby_library_root}/universal-darwin25"]);' 1 \
+  'side-by-side TestFlight sealed Ruby load path'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '$LOADED_FEATURES.grep(/fiddle/).all? { |feature| feature.start_with?(ruby_library_root) }' 1 \
+  'side-by-side TestFlight sealed Fiddle feature provenance'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '/usr/bin/ruby --disable=gems,rubyopt -e "${rename_program}" --' 1 \
+  'side-by-side TestFlight environment-scrubbed system exclusive rename caller'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'parent_file = File.open(ARGV.fetch(0), File::RDONLY | File::NOFOLLOW);' 1 \
+  'side-by-side TestFlight no-follow workspace-parent descriptor'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'parent_stat.dev == Integer(ARGV.fetch(1), 10) && parent_stat.ino == Integer(ARGV.fetch(2), 10)' 1 \
+  'side-by-side TestFlight workspace-parent descriptor identity proof'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'  publish_workspace_directory_exclusively \\\n    "${pending_workspace_root}" "${workspace_root}" "${workspaces_root}" \\\n    "${workspaces_root_identity}" \\\n    || return 1' 1 \
+  'side-by-side TestFlight exclusive checkout-workspace publication'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'  populate_or_verify_pending_workspace_directory \\\n    "${pending_workspace_root}" "${pending_workspace_identity}" || return 1\n\n  /bin/sync\n  verify_build_cache_lock_identity || return 1' 1 \
+  'side-by-side TestFlight atomic checkout-workspace lock fencing'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'  publish_workspace_directory_exclusively \\\n    "${pending_workspace_root}" "${workspace_root}" "${workspaces_root}" \\\n    "${workspaces_root_identity}" \\\n    || return 1\n  /bin/sync\n  verify_build_cache_lock_identity || return 1' 1 \
+  'side-by-side TestFlight atomic checkout-workspace lock fencing'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'  populate_or_verify_pending_workspace_directory \\\n    "${pending_workspace_root}" "${pending_workspace_identity}" || return 1\n\n  /bin/sync\n  verify_build_cache_lock_identity || return 1' 1 \
+  'side-by-side TestFlight durable checkout-workspace publication'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'  publish_workspace_directory_exclusively \\\n    "${pending_workspace_root}" "${workspace_root}" "${workspaces_root}" \\\n    "${workspaces_root_identity}" \\\n    || return 1\n  /bin/sync\n  verify_build_cache_lock_identity || return 1' 1 \
+  'side-by-side TestFlight durable checkout-workspace publication'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'      && "$(stat_identity "${workspace_root}")" \\\n        == "${pending_workspace_identity}" ]] || return 1' 1 \
+  'side-by-side TestFlight published workspace inode proof'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'TESTFLIGHT_BUILD_SANDBOX_IDENTITY="${pending_workspace_identity}"' 1 \
+  'side-by-side TestFlight published workspace identity handoff'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'TESTFLIGHT_BUILD_SANDBOX_IDENTITY="${existing_workspace_identity}"' 1 \
+  'side-by-side TestFlight existing workspace identity handoff'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'function capture_verified_workspace_child_identities() {' 1 \
+  'side-by-side TestFlight workspace-child identity handoff'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'  initialize_or_pin_cache_directory \\\n    "${TESTFLIGHT_DERIVED_DATA_DIRECTORY}" "${workspace_root}" \\\n    "${TESTFLIGHT_BUILD_EXPECTED_DERIVED_DATA_IDENTITY}" || return 1\n  initialize_or_pin_cache_directory \\\n    "${TESTFLIGHT_BUILD_PRODUCTS_DIRECTORY}" "${workspace_root}" \\\n    "${TESTFLIGHT_BUILD_EXPECTED_PRODUCTS_IDENTITY}" || return 1\n  initialize_or_pin_cache_directory \\\n    "${TESTFLIGHT_BUILD_INTERMEDIATES_DIRECTORY}" "${workspace_root}" \\\n    "${TESTFLIGHT_BUILD_EXPECTED_INTERMEDIATES_IDENTITY}" || return 1' 1 \
+  'side-by-side TestFlight verified workspace-child identity consumption'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'  initialize_or_migrate_run_tmp_parent_directory \\\n    "${TESTFLIGHT_BUILD_RUN_TMP_PARENT_DIRECTORY}" "${workspace_root}" \\\n    "${TESTFLIGHT_BUILD_SANDBOX_IDENTITY}" \\\n    "${TESTFLIGHT_BUILD_EXPECTED_RUN_TMP_PARENT_IDENTITY}" || return 1' 1 \
+  'side-by-side TestFlight verified run-TMP identity consumption'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'workspaces_root_identity=$(stat_identity "${workspaces_root}") || return 1' 1 \
+  'side-by-side TestFlight checkout-workspace parent identity fencing'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'  [[ -n "${TESTFLIGHT_BUILD_SANDBOX_IDENTITY}" \\\n      && "$(stat_identity "${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}")" \\\n        == "${TESTFLIGHT_BUILD_SANDBOX_IDENTITY}" ]] || return 1' 1 \
+  'side-by-side TestFlight verified workspace identity consumption'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'  TESTFLIGHT_BUILD_CACHE_CONTRACT_PATH="${cache_v1}/cache-contract.plist"\n  if (( TESTFLIGHT_BUILD_CACHE_INITIALIZE_MODE == 0 )); then' 1 \
+  'side-by-side TestFlight immutable contract pin before routine workspace handling'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'  initialize_or_provision_workspace_directory \\\n    "${workspace_root}" "${workspaces_root}" || return 1' 1 \
+  'side-by-side TestFlight scoped atomic checkout-workspace provisioning call'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'remove_exact_private_file "${TESTFLIGHT_BUILD_KEY_PATH}"' 1 \
   'side-by-side TestFlight failed-enrollment key rollback'
@@ -1150,8 +1255,8 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'TESTFLIGHT_XCODEBUILD_PINNED_ENVIRONMENT_SHA256' 6 \
   'side-by-side TestFlight immutable scrubbed Xcode environment'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  '/usr/bin/env -i' 2 \
-  'side-by-side TestFlight empty inherited Xcode environment'
+  '/usr/bin/env -i' 3 \
+  'side-by-side TestFlight empty inherited Xcode and exclusive-rename environments'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'function run_xcodebuild_command_for_destination_contract() {' 1 \
   'side-by-side TestFlight destination-scoped Xcode sandbox routing'
