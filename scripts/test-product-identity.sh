@@ -1710,6 +1710,34 @@ replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflig
   'EXPECTED_PACKAGE_RESOLVED_SHA256="0000000000000000000000000000000000000000000000000000000000000000"'
 require_rejection "$CASE" 'side-by-side TestFlight exact resolved package pin'
 
+CASE=$(new_case testflight-cache-enrollment-package-manifest-pin)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  'EXPECTED_TESTFLIGHT_BUILD_CACHE_ENROLLMENT_PACKAGE_MANIFEST_SHA256="b1bbbff9772b71d850ffec63a8fb1afef9d5e470c1abcedaeb7373b2c98d6d44"' \
+  'EXPECTED_TESTFLIGHT_BUILD_CACHE_ENROLLMENT_PACKAGE_MANIFEST_SHA256="0000000000000000000000000000000000000000000000000000000000000000"'
+require_rejection "$CASE" \
+  'side-by-side TestFlight exact enrolled package-manifest pin'
+
+CASE=$(new_case testflight-cache-enrollment-package-resolved-pin)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  'EXPECTED_TESTFLIGHT_BUILD_CACHE_ENROLLMENT_PACKAGE_RESOLVED_SHA256="161213e9507513e41f0acba0d7439fcf633b9d03d78c22b1e4b15fa9f83a01d9"' \
+  'EXPECTED_TESTFLIGHT_BUILD_CACHE_ENROLLMENT_PACKAGE_RESOLVED_SHA256="0000000000000000000000000000000000000000000000000000000000000000"'
+require_rejection "$CASE" \
+  'side-by-side TestFlight exact enrolled resolved-package pin'
+
+CASE=$(new_case testflight-cache-enrollment-current-package-verification)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  $'function run_initialize_build_cache() {\n  verify_package_dependency_contract \\\n    || fail "current package inputs changed before build-cache enrollment"' \
+  $'function run_initialize_build_cache() {\n  true # current package inputs not verified before enrollment'
+require_rejection "$CASE" \
+  'side-by-side TestFlight fresh enrollment current-package verification'
+
+CASE=$(new_case testflight-entrypoint-current-package-verification)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  $'verify_static_contract\nverify_package_dependency_contract \\\n  || fail "current package inputs do not match the reviewed release pins"\npin_export_options_identity' \
+  $'verify_static_contract\ntrue # current package inputs not verified at entrypoint\npin_export_options_identity'
+require_rejection "$CASE" \
+  'side-by-side TestFlight entrypoint current-package verification'
+
 CASE=$(new_case testflight-xcode-sandbox-profile-consumption)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
   'if sysread -i ${profile_reader_fd} -s 4096 \' \
@@ -3985,6 +4013,31 @@ if ! [[ "$observed_processing_tmp" \
 fi
 PROCESSINGQUERYTEST
 
+ENROLLMENT_DIVERGENCE_MARKER="$BEHAVIOR_ROOT/enrollment-divergence-initialized"
+WRAPPER_PATH="$BEHAVIOR_WRAPPER" \
+ENROLLMENT_DIVERGENCE_MARKER="$ENROLLMENT_DIVERGENCE_MARKER" \
+/bin/zsh <<'ENROLLMENTDIVERGENCETEST'
+source <(/usr/bin/sed \
+  -e 's|^readonly EXPECTED_TESTFLIGHT_BUILD_CACHE_ENROLLMENT_PACKAGE_MANIFEST_SHA256=.*$|readonly EXPECTED_TESTFLIGHT_BUILD_CACHE_ENROLLMENT_PACKAGE_MANIFEST_SHA256="0000000000000000000000000000000000000000000000000000000000000000"|' \
+  -e '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
+trap - EXIT HUP INT QUIT TERM
+
+function verify_package_dependency_contract() { return 0 }
+function initialize_private_testflight_build_volume() {
+  print -r -- initialized >"$ENROLLMENT_DIVERGENCE_MARKER"
+}
+
+if ( run_initialize_build_cache ) >/dev/null 2>&1; then
+  print -u2 -r -- 'fresh enrollment accepted divergent package provenance'
+  exit 1
+fi
+if [[ -e "$ENROLLMENT_DIVERGENCE_MARKER" \
+    || -L "$ENROLLMENT_DIVERGENCE_MARKER" ]]; then
+  print -u2 -r -- 'divergent enrollment reached cache initialization'
+  exit 1
+fi
+ENROLLMENTDIVERGENCETEST
+
 ENROLLMENT_RECOVERY_CREDENTIALS="$BEHAVIOR_ROOT/enrollment-recovery-credentials"
 ENROLLMENT_RECOVERY_BUILD_ROOT="$BEHAVIOR_ROOT/enrollment-recovery-build-root"
 ENROLLMENT_RECOVERY_MOUNT_ROOT="$BEHAVIOR_ROOT/enrollment-recovery-mount-root"
@@ -4001,9 +4054,12 @@ source <(/usr/bin/sed \
   -e 's|^readonly EXPECTED_ASC_API_KEY_DIRECTORY=.*$|readonly EXPECTED_ASC_API_KEY_DIRECTORY="${ENROLLMENT_RECOVERY_CREDENTIALS}"|' \
   -e 's|^readonly TESTFLIGHT_BUILD_ROOT=.*$|readonly TESTFLIGHT_BUILD_ROOT="${ENROLLMENT_RECOVERY_BUILD_ROOT}"|' \
   -e 's|^readonly TESTFLIGHT_BUILD_MOUNT_ROOT=.*$|readonly TESTFLIGHT_BUILD_MOUNT_ROOT="${ENROLLMENT_RECOVERY_MOUNT_ROOT}"|' \
+  -e 's|^readonly EXPECTED_TESTFLIGHT_BUILD_CACHE_ENROLLMENT_PACKAGE_MANIFEST_SHA256=.*$|readonly EXPECTED_TESTFLIGHT_BUILD_CACHE_ENROLLMENT_PACKAGE_MANIFEST_SHA256="${EXPECTED_PACKAGE_MANIFEST_SHA256}"|' \
+  -e 's|^readonly EXPECTED_TESTFLIGHT_BUILD_CACHE_ENROLLMENT_PACKAGE_RESOLVED_SHA256=.*$|readonly EXPECTED_TESTFLIGHT_BUILD_CACHE_ENROLLMENT_PACKAGE_RESOLVED_SHA256="${EXPECTED_PACKAGE_RESOLVED_SHA256}"|' \
   -e '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
 trap - EXIT HUP INT QUIT TERM
 
+function verify_package_dependency_contract() { return 0 }
 function find_current_attachment_record() { return 1 }
 function reset_enrollment_recovery_state() {
   if (( TESTFLIGHT_BUILD_ENROLLMENT_MARKER_FD >= 0 )); then

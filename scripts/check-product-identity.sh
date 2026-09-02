@@ -1021,11 +1021,17 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   '/bin/mv -- "${pending_contract}" "${TESTFLIGHT_BUILD_CACHE_CONTRACT_PATH}"' 1 \
   'side-by-side TestFlight atomic cache-contract publication'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  '"${EXPECTED_PACKAGE_MANIFEST_SHA256}"' 3 \
-  'side-by-side TestFlight cache and release package-manifest binding'
+  '"${EXPECTED_PACKAGE_MANIFEST_SHA256}"' 2 \
+  'side-by-side TestFlight current release package-manifest binding'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  '"${EXPECTED_PACKAGE_RESOLVED_SHA256}"' 3 \
-  'side-by-side TestFlight cache and release resolved-package binding'
+  '"${EXPECTED_PACKAGE_RESOLVED_SHA256}"' 2 \
+  'side-by-side TestFlight current release resolved-package binding'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '"${EXPECTED_TESTFLIGHT_BUILD_CACHE_ENROLLMENT_PACKAGE_MANIFEST_SHA256}"' 3 \
+  'side-by-side TestFlight cache-enrollment package-manifest provenance'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '"${EXPECTED_TESTFLIGHT_BUILD_CACHE_ENROLLMENT_PACKAGE_RESOLVED_SHA256}"' 3 \
+  'side-by-side TestFlight cache-enrollment resolved-package provenance'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'TESTFLIGHT_BUILD_WORKSPACE_KEY=$(string_vector_sha256 "${REPOSITORY_ROOT}")' 1 \
   'side-by-side TestFlight checkout-specific DerivedData identity'
@@ -1176,6 +1182,21 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'EXPECTED_PACKAGE_RESOLVED_SHA256="161213e9507513e41f0acba0d7439fcf633b9d03d78c22b1e4b15fa9f83a01d9"' 1 \
   'side-by-side TestFlight exact resolved package pin'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'EXPECTED_TESTFLIGHT_BUILD_CACHE_ENROLLMENT_PACKAGE_MANIFEST_SHA256="b1bbbff9772b71d850ffec63a8fb1afef9d5e470c1abcedaeb7373b2c98d6d44"' 1 \
+  'side-by-side TestFlight exact enrolled package-manifest pin'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'EXPECTED_TESTFLIGHT_BUILD_CACHE_ENROLLMENT_PACKAGE_RESOLVED_SHA256="161213e9507513e41f0acba0d7439fcf633b9d03d78c22b1e4b15fa9f83a01d9"' 1 \
+  'side-by-side TestFlight exact enrolled resolved-package pin'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'build-cache enrollment provenance pins do not match the current package inputs' 1 \
+  'side-by-side TestFlight fresh enrollment provenance gate'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'function run_initialize_build_cache() {\n  verify_package_dependency_contract \\\n    || fail "current package inputs changed before build-cache enrollment"' 1 \
+  'side-by-side TestFlight fresh enrollment current-package verification'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'verify_static_contract\nverify_package_dependency_contract \\\n  || fail "current package inputs do not match the reviewed release pins"\npin_export_options_identity' 1 \
+  'side-by-side TestFlight entrypoint current-package verification'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   '/usr/bin/sandbox-exec -p "${profile_text}"' 1 \
   'side-by-side TestFlight protected-path Xcode sandbox'

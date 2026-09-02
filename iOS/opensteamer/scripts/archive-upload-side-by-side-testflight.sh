@@ -109,6 +109,10 @@ readonly PACKAGE_MANIFEST_PATH="${REPOSITORY_ROOT}/Package.swift"
 readonly PACKAGE_RESOLVED_PATH="${REPOSITORY_ROOT}/Package.resolved"
 readonly EXPECTED_PACKAGE_MANIFEST_SHA256="914e2ce96c49ccb1376f66d5a986cfd2461f3aa8758b044cf655a1d55bca4178"
 readonly EXPECTED_PACKAGE_RESOLVED_SHA256="161213e9507513e41f0acba0d7439fcf633b9d03d78c22b1e4b15fa9f83a01d9"
+# These are immutable enrollment provenance, not the current release inputs.
+# SwiftPM validates current inputs separately before it consumes the cache.
+readonly EXPECTED_TESTFLIGHT_BUILD_CACHE_ENROLLMENT_PACKAGE_MANIFEST_SHA256="b1bbbff9772b71d850ffec63a8fb1afef9d5e470c1abcedaeb7373b2c98d6d44"
+readonly EXPECTED_TESTFLIGHT_BUILD_CACHE_ENROLLMENT_PACKAGE_RESOLVED_SHA256="161213e9507513e41f0acba0d7439fcf633b9d03d78c22b1e4b15fa9f83a01d9"
 readonly EXPECTED_APPLICATION_IDENTIFIER="${EXPECTED_TEAM_ID}.${EXPECTED_BUNDLE_IDENTIFIER}"
 readonly PROTECTED_APPLICATION_IDENTIFIER="${EXPECTED_TEAM_ID}.${PROTECTED_BUNDLE_IDENTIFIER}"
 readonly -a REJECTED_BUILD_ENVIRONMENT_VARIABLES=(
@@ -1891,10 +1895,10 @@ function verify_persistent_build_cache_contract() {
         == "${EXPECTED_XCODEBUILD_SHA256}" \
       && "$(plist_typed_raw_value \
         "${TESTFLIGHT_BUILD_CACHE_CONTRACT_PATH}" packageManifestSHA256 string)" \
-        == "${EXPECTED_PACKAGE_MANIFEST_SHA256}" \
+        == "${EXPECTED_TESTFLIGHT_BUILD_CACHE_ENROLLMENT_PACKAGE_MANIFEST_SHA256}" \
       && "$(plist_typed_raw_value \
         "${TESTFLIGHT_BUILD_CACHE_CONTRACT_PATH}" packageResolvedSHA256 string)" \
-        == "${EXPECTED_PACKAGE_RESOLVED_SHA256}" \
+        == "${EXPECTED_TESTFLIGHT_BUILD_CACHE_ENROLLMENT_PACKAGE_RESOLVED_SHA256}" \
       && "$(plist_typed_raw_value \
         "${TESTFLIGHT_BUILD_CACHE_CONTRACT_PATH}" scheme string)" \
         == "${EXPECTED_SCHEME}" \
@@ -1960,10 +1964,10 @@ function create_persistent_build_cache_contract() {
   /usr/bin/plutil -insert xcodebuildSHA256 -string "${EXPECTED_XCODEBUILD_SHA256}" \
     "${pending_contract}" || return 1
   /usr/bin/plutil -insert packageManifestSHA256 -string \
-    "${EXPECTED_PACKAGE_MANIFEST_SHA256}" \
+    "${EXPECTED_TESTFLIGHT_BUILD_CACHE_ENROLLMENT_PACKAGE_MANIFEST_SHA256}" \
     "${pending_contract}" || return 1
   /usr/bin/plutil -insert packageResolvedSHA256 -string \
-    "${EXPECTED_PACKAGE_RESOLVED_SHA256}" \
+    "${EXPECTED_TESTFLIGHT_BUILD_CACHE_ENROLLMENT_PACKAGE_RESOLVED_SHA256}" \
     "${pending_contract}" || return 1
   /usr/bin/plutil -insert scheme -string "${EXPECTED_SCHEME}" \
     "${pending_contract}" || return 1
@@ -4808,6 +4812,13 @@ function run_archive_only() {
 }
 
 function run_initialize_build_cache() {
+  verify_package_dependency_contract \
+    || fail "current package inputs changed before build-cache enrollment"
+  [[ "${EXPECTED_PACKAGE_MANIFEST_SHA256}" \
+        == "${EXPECTED_TESTFLIGHT_BUILD_CACHE_ENROLLMENT_PACKAGE_MANIFEST_SHA256}" \
+      && "${EXPECTED_PACKAGE_RESOLVED_SHA256}" \
+        == "${EXPECTED_TESTFLIGHT_BUILD_CACHE_ENROLLMENT_PACKAGE_RESOLVED_SHA256}" ]] \
+    || fail "build-cache enrollment provenance pins do not match the current package inputs"
   TESTFLIGHT_BUILD_CACHE_INITIALIZE_MODE=1
   initialize_private_testflight_build_volume
   verify_private_build_volume_identity \
@@ -4892,6 +4903,8 @@ function run_authorized_api_key_upload() {
 }
 
 verify_static_contract
+verify_package_dependency_contract \
+  || fail "current package inputs do not match the reviewed release pins"
 pin_export_options_identity \
   || fail "could not pin the reviewed export-options identity"
 reject_unsafe_build_environment

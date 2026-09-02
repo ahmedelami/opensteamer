@@ -459,6 +459,10 @@ worker.
   checkout path. Do not bind the cache to a Git commit or build number. Every release
   still creates a fresh archive destination and independently verifies its signature,
   entitlements, profile, nested code, metadata, and complete filesystem manifest.
+- Treat package hashes stored in the immutable cache contract as enrollment provenance,
+  independently pinned from the current release package hashes. A source-manifest change
+  must not invalidate the enrolled cache; validate the current manifest and resolved graph
+  before every release, and require both pin sets to agree before a fresh enrollment.
 - Give each release a fresh mode-700 TMPDIR inside the encrypted cache and remove only
   that identity-pinned run directory during cleanup; never reuse a killed run's scratch
   directory or delete the shared package/module cache.
