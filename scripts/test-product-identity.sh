@@ -1700,7 +1700,7 @@ require_rejection "$CASE" 'side-by-side TestFlight package update suppression'
 
 CASE=$(new_case testflight-package-manifest-pin)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
-  'EXPECTED_PACKAGE_MANIFEST_SHA256="b1bbbff9772b71d850ffec63a8fb1afef9d5e470c1abcedaeb7373b2c98d6d44"' \
+  'EXPECTED_PACKAGE_MANIFEST_SHA256="914e2ce96c49ccb1376f66d5a986cfd2461f3aa8758b044cf655a1d55bca4178"' \
   'EXPECTED_PACKAGE_MANIFEST_SHA256="0000000000000000000000000000000000000000000000000000000000000000"'
 require_rejection "$CASE" 'side-by-side TestFlight exact package manifest pin'
 
@@ -3077,7 +3077,7 @@ print -r -- '<?xml version="1.0" encoding="UTF-8"?>
 <key>Architectures</key><array><string>arm64</string></array>
 <key>CFBundleIdentifier</key><string>com.elamin.opensteamer</string>
 <key>CFBundleShortVersionString</key><string>0.1.0</string>
-<key>CFBundleVersion</key><string>60</string>
+<key>CFBundleVersion</key><string>61</string>
 <key>SigningIdentity</key><string>Apple Development: Ahmed Elamin (92LVX32M8K)</string>
 <key>Team</key><string>MSMG8CJLB3</string>
 </dict>
@@ -3093,7 +3093,7 @@ print -r -- '<?xml version="1.0" encoding="UTF-8"?>
 <key>Architectures</key><array><string>arm64</string></array>
 <key>CFBundleIdentifier</key><string>com.elamin.opensteamer</string>
 <key>CFBundleShortVersionString</key><string>0.1.0</string>
-<key>CFBundleVersion</key><string>60</string>
+<key>CFBundleVersion</key><string>61</string>
 <key>SigningIdentity</key><string>Apple Development: Ahmed Elamin (92LVX32M8K)</string>
 <key>Team</key><string>MSMG8CJLB3</string>
 </dict>
@@ -3108,7 +3108,7 @@ print -r -- '<?xml version="1.0" encoding="UTF-8"?>
 <key>task</key><string>distribute</string>
 <key>teamID</key><string>MSMG8CJLB3</string>
 <key>uploadDestination</key><string>App Store</string>
-<key>uploadedBuildNumber</key><string>60</string>
+<key>uploadedBuildNumber</key><string>61</string>
 <key>uploadEvent</key><dict><key>errors</key><array/><key>state</key><string>success</string></dict>
 </dict></array>
 <key>Name</key><string>opensteamerTestFlight</string>
@@ -3171,7 +3171,7 @@ expect_distribution_rejection identifier
 /usr/bin/plutil -replace Distributions.0.uploadedBuildNumber -string 40 \
   "$POSTUPLOAD_ARCHIVE_INFO"
 expect_distribution_rejection build
-/usr/bin/plutil -replace Distributions.0.uploadedBuildNumber -string 60 \
+/usr/bin/plutil -replace Distributions.0.uploadedBuildNumber -string 61 \
   "$POSTUPLOAD_ARCHIVE_INFO"
 /usr/bin/plutil -replace Distributions.0.certificateSHA1 \
   -string 0000000000000000000000000000000000000000 "$POSTUPLOAD_ARCHIVE_INFO"
@@ -4383,7 +4383,7 @@ print -r -- '{
   "app-store-attributes": {
     "buildAudienceType": "INTERNAL_ONLY",
     "processingState": "VALID",
-    "version": "60",
+    "version": "61",
     "expired": false
   }
 }' >"$PROCESSING_STATUS"
@@ -4427,7 +4427,7 @@ expect_processing_status_rejection audience
   -string 52 "$PROCESSING_STATUS"
 expect_processing_status_rejection build
 /usr/bin/plutil -replace app-store-attributes.version \
-  -string 60 "$PROCESSING_STATUS"
+  -string 61 "$PROCESSING_STATUS"
 /usr/bin/plutil -replace delivery-uuid \
   -string 11111111-2222-3333-4444-555555555555 "$PROCESSING_STATUS"
 expect_processing_status_rejection delivery

@@ -93,7 +93,6 @@
 		235E2095A9F021D79D1278C5 /* PlayerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerView.swift; sourceTree = "<group>"; };
 		2ADDF37DFF4BF8165F226443 /* opensteamerUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = opensteamerUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		2F3847AFDCAAE82502B598F0 /* ViewerPairingStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewerPairingStore.swift; sourceTree = "<group>"; };
-		33F120C227DF28ABE6BBF84F /* opensteamer */ = {isa = PBXFileReference; lastKnownFileType = folder; name = opensteamer; path = ../..; sourceTree = SOURCE_ROOT; };
 		3509D44693CBE35F3D3D8633 /* H264SampleBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = H264SampleBuilder.swift; sourceTree = "<group>"; };
 		3F4D135483CC5D23B56ADE12 /* StreamSessionViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamSessionViewModel.swift; sourceTree = "<group>"; };
 		4CA340C807653853951DB090 /* DiagnosticsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsView.swift; sourceTree = "<group>"; };
@@ -113,6 +112,7 @@
 		726474C0ACC95EEE5055A4CC /* WorldwideSessionViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorldwideSessionViewModel.swift; sourceTree = "<group>"; };
 		76F2CC18DCFD9E1ACAC69A25 /* OpensteamerApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpensteamerApp.swift; sourceTree = "<group>"; };
 		77E21C152BA0763A029B6EA5 /* PhysicalOracleEvaluator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhysicalOracleEvaluator.swift; sourceTree = "<group>"; };
+		33F120C227DF28ABE6BBF84F /* opensteamer */ = {isa = PBXFileReference; lastKnownFileType = folder; name = opensteamer; path = ../..; sourceTree = SOURCE_ROOT; };
 		89673B77A859E243F7FD3131 /* BrowserView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserView.swift; sourceTree = "<group>"; };
 		89D2E46B6C68480FE21BE89A /* RemotePrimaryDragGesturePolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemotePrimaryDragGesturePolicy.swift; sourceTree = "<group>"; };
 		8BDB3748CE96A0E684F2EF76 /* ScreenVideoClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenVideoClient.swift; sourceTree = "<group>"; };
@@ -670,7 +670,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 60;
+				CURRENT_PROJECT_VERSION = 61;
 				DEVELOPMENT_TEAM = MSMG8CJLB3;
 				INFOPLIST_FILE = Sources/Support/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
