@@ -145,6 +145,56 @@ private final class BoundedCallbackProbe<Value: Sendable>:
     }
 }
 
+private final class FixedStatisticsSingleFlightProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private let gate = WebRTCStatisticsSingleFlightGate()
+    private var samples = 0
+    private var nativeRequests = 0
+
+    func sample() async -> Bool {
+        let sample = lock.withLock {
+            samples += 1
+            return samples
+        }
+        if gate.begin() != nil {
+            lock.withLock { nativeRequests += 1 }
+            let _: Int? = await WebRTCBoundedCallback.value(
+                timeout: .milliseconds(40),
+                register: { _ in
+                    // Models a native getStats callback that never returns. The gate deliberately
+                    // remains held until this peer is retired, so later ticks cannot accumulate
+                    // uncancellable native requests.
+                }
+            )
+        }
+        return sample < 4
+    }
+
+    func snapshot() -> (samples: Int, nativeRequests: Int) {
+        lock.withLock { (samples, nativeRequests) }
+    }
+}
+
+private actor FixedStatisticsOverrunProbe {
+    private var starts: [ContinuousClock.Instant] = []
+
+    func sample() async -> Bool {
+        starts.append(ContinuousClock.now)
+        guard starts.count == 1 else { return false }
+        do {
+            try await Task.sleep(for: .milliseconds(250))
+        } catch {
+            return false
+        }
+        return true
+    }
+
+    func startGap() -> Duration? {
+        guard starts.count == 2 else { return nil }
+        return starts[0].duration(to: starts[1])
+    }
+}
+
 private final class SemanticNativeWrapper: NSObject {
     let stableIdentity: String
 
@@ -497,6 +547,147 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
         XCTAssertNil(timeoutFirst)
         lateCallback.resolve(42)
         try await Task.sleep(for: .milliseconds(10))
+    }
+
+    func testFastStatisticsDeadlineRejectsAFourHundredFiftyMillisecondCallback()
+        async throws {
+        let lateCallback = BoundedCallbackProbe<Int>()
+        Task.detached {
+            try? await Task.sleep(for: .milliseconds(450))
+            lateCallback.resolve(43)
+        }
+        let result: Int? = await WebRTCBoundedCallback.value(
+            timeout: .milliseconds(400),
+            register: { resolve in lateCallback.install(resolve) }
+        )
+        XCTAssertNil(result)
+        try await Task.sleep(for: .milliseconds(75))
+    }
+
+    func testStatisticsSingleFlightGateWaitsForTheExactLateCallback() throws {
+        let gate = WebRTCStatisticsSingleFlightGate()
+        let first = try XCTUnwrap(gate.begin())
+        XCTAssertNil(gate.begin())
+
+        gate.complete(UUID())
+        XCTAssertNil(gate.begin())
+
+        gate.complete(first)
+        XCTAssertNotNil(gate.begin())
+    }
+
+    func testStatisticsCollectionSequenceRejectsALatePreBoundaryCallback()
+        throws {
+        let sequencer = WebRTCStatisticsCollectionSequencer()
+        let preBoundarySequence = sequencer.reserveNextSequence()
+        let minimumPostBoundarySequence = sequencer.minimumNextSequence()
+
+        // Models the already-started native callback returning only after resume completed.
+        let callbackReturnedLate = WebRTCStatisticsSnapshot(
+            collectedAt: Date(timeIntervalSince1970: 200),
+            collectionSequence: preBoundarySequence
+        )
+
+        XCTAssertLessThan(
+            try XCTUnwrap(callbackReturnedLate.collectionSequence),
+            minimumPostBoundarySequence
+        )
+        XCTAssertEqual(
+            callbackReturnedLate.collectedAt,
+            Date(timeIntervalSince1970: 200)
+        )
+    }
+
+    func testStatisticsCollectionSequenceAdmitsARequestStartedAfterBoundary()
+        throws {
+        let sequencer = WebRTCStatisticsCollectionSequencer()
+        _ = sequencer.reserveNextSequence()
+        let minimumPostBoundarySequence = sequencer.minimumNextSequence()
+        let postBoundarySequence = sequencer.reserveNextSequence()
+
+        let postBoundarySnapshot = WebRTCStatisticsSnapshot(
+            collectedAt: Date(timeIntervalSince1970: 100),
+            collectionSequence: postBoundarySequence
+        )
+
+        XCTAssertGreaterThanOrEqual(
+            try XCTUnwrap(postBoundarySnapshot.collectionSequence),
+            minimumPostBoundarySequence
+        )
+        XCTAssertEqual(postBoundarySequence, minimumPostBoundarySequence)
+    }
+
+    func testPeerSharesOneCollectionSequenceAcrossWholePeerAndScreenSenderStats()
+        async throws {
+        let host = try WebRTCPeer(
+            configuration: WebRTCTransportConfiguration(
+                role: .host,
+                iceServers: []
+            )
+        )
+        defer {
+            Task { await host.close(reason: .normal) }
+        }
+
+        let wholePeerBoundary =
+            host.minimumNextStatisticsCollectionSequence()
+        let wholePeerSnapshot = await host.statisticsSnapshot()
+        XCTAssertEqual(
+            wholePeerSnapshot.collectionSequence,
+            wholePeerBoundary
+        )
+
+        let screenSenderBoundary =
+            host.minimumNextStatisticsCollectionSequence()
+        let optionalScreenSenderSnapshot =
+            await host.screenVideoStatisticsSnapshot(timeout: .seconds(1))
+        let screenSenderSnapshot = try XCTUnwrap(
+            optionalScreenSenderSnapshot
+        )
+        XCTAssertEqual(
+            screenSenderSnapshot.collectionSequence,
+            screenSenderBoundary
+        )
+        XCTAssertGreaterThan(screenSenderBoundary, wholePeerBoundary)
+        XCTAssertEqual(
+            host.minimumNextStatisticsCollectionSequence(),
+            screenSenderBoundary + 1
+        )
+    }
+
+    func testFixedStatisticsSamplerCannotAccumulateANeverReturningRequest()
+        async {
+        let probe = FixedStatisticsSingleFlightProbe()
+        let clock = ContinuousClock()
+        let startedAt = clock.now
+
+        await WebRTCFixedIntervalStatisticsSampler.run(
+            interval: .milliseconds(50)
+        ) {
+            await probe.sample()
+        }
+
+        let elapsed = startedAt.duration(to: clock.now)
+        let snapshot = probe.snapshot()
+        XCTAssertEqual(snapshot.samples, 4)
+        XCTAssertEqual(snapshot.nativeRequests, 1)
+        XCTAssertLessThan(elapsed, Duration.milliseconds(250))
+    }
+
+    func testFixedStatisticsSamplerKeepsAnOverrunOnTheAnchoredDeadline()
+        async throws {
+        let probe = FixedStatisticsOverrunProbe()
+
+        await WebRTCFixedIntervalStatisticsSampler.run(
+            interval: .milliseconds(200)
+        ) {
+            await probe.sample()
+        }
+
+        let observedGap = await probe.startGap()
+        let gap = try XCTUnwrap(observedGap)
+        XCTAssertGreaterThanOrEqual(gap, Duration.milliseconds(240))
+        XCTAssertLessThan(gap, Duration.milliseconds(400))
     }
 
     func testIPhoneMicrophoneStageRecoveryClassificationIsFailClosed() {

@@ -194,7 +194,10 @@ public enum WebRTCTransportEvent: Sendable {
     case remoteAudioTrack(WebRTCRemoteAudioTrack)
     case remoteVideoTrack(WebRTCRemoteVideoTrack)
     case routeChanged(WebRTCICERouteDiagnostics)
-    case statistics(WebRTCStatisticsSnapshot)
+    case statistics(
+        WebRTCStatisticsSnapshot,
+        wholePeerReportWasCollected: Bool
+    )
     case iceCandidateError(WebRTCIceCandidateError)
     case negotiationNeeded
     case ended(RemoteSessionEndReason)

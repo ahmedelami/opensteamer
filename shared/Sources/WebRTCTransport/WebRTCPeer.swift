@@ -379,7 +379,8 @@ private struct WebRTCIPhoneMicrophoneSenderBinding {
 }
 
 #if DEBUG && os(macOS)
-private struct WebRTCIPhoneMicrophoneOutboundRTPDebugCapture {
+private struct WebRTCIPhoneMicrophoneOutboundRTPDebugCapture:
+    @unchecked Sendable {
     let sender: LKRTCRtpSender
     let identity: WebRTCIPhoneMicrophoneOutboundRTPIdentity
 }
@@ -887,7 +888,8 @@ enum WebRTCIPhoneMicrophoneSenderStatisticsSampler {
     }
 }
 
-private struct WebRTCIPhoneMicrophoneSenderStatisticsCapture {
+private struct WebRTCIPhoneMicrophoneSenderStatisticsCapture:
+    @unchecked Sendable {
     let sender: LKRTCRtpSender
     let validation: WebRTCIPhoneMicrophoneSenderStatisticsValidation
 }
@@ -945,6 +947,79 @@ private final class WebRTCOneShotContinuation<Value: Sendable>:
     }
 }
 
+/// Bounds native getStats work even after the Swift caller's deadline expires. A timeout does not
+/// release the lease because WebRTC cannot cancel the native request; only that request's eventual
+/// callback can admit another sample.
+final class WebRTCStatisticsSingleFlightGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var activeRequestID: UUID?
+
+    func begin() -> UUID? {
+        lock.withLock {
+            guard activeRequestID == nil else { return nil }
+            let requestID = UUID()
+            activeRequestID = requestID
+            return requestID
+        }
+    }
+
+    func complete(_ requestID: UUID) {
+        lock.withLock {
+            guard activeRequestID == requestID else { return }
+            activeRequestID = nil
+        }
+    }
+}
+
+/// Assigns peer-local request order before native getStats begins. Callback completion time can
+/// then remain diagnostic metadata without being mistaken for collection ordering.
+final class WebRTCStatisticsCollectionSequencer: @unchecked Sendable {
+    private let lock = NSLock()
+    private var nextSequence: UInt64 = 1
+
+    func reserveNextSequence() -> UInt64 {
+        lock.withLock {
+            let sequence = nextSequence
+            nextSequence += 1
+            return sequence
+        }
+    }
+
+    func minimumNextSequence() -> UInt64 {
+        lock.withLock { nextSequence }
+    }
+}
+
+/// Runs one bounded collector on monotonic fixed deadlines. Collection time consumes the current
+/// interval, and an overrun starts at most one already-due catch-up tick. Native requests remain
+/// single-flight, while their collection-result metadata prevents a busy-only tick from becoming
+/// media-policy evidence.
+enum WebRTCFixedIntervalStatisticsSampler {
+    static func run(
+        interval: Duration,
+        sample: () async -> Bool
+    ) async {
+        precondition(interval > .zero)
+        let clock = ContinuousClock()
+        var nextDeadline = clock.now
+        while !Task.isCancelled {
+            do {
+                try await clock.sleep(until: nextDeadline)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled,
+                  await sample() else {
+                return
+            }
+            nextDeadline = nextDeadline.advanced(by: interval)
+            if nextDeadline < clock.now {
+                nextDeadline = clock.now
+            }
+        }
+    }
+}
+
 struct WebRTCIPhoneMicrophoneReceiverStatisticsValidation: Equatable, Sendable {
     let peerEpoch: UUID
     let negotiationEpoch: UInt64
@@ -973,12 +1048,17 @@ enum WebRTCIPhoneMicrophoneReceiverStatisticsSampler {
     }
 }
 
-private struct WebRTCIPhoneMicrophoneReceiverStatisticsCapture {
+private struct WebRTCIPhoneMicrophoneReceiverStatisticsCapture:
+    @unchecked Sendable {
     let transceiver: LKRTCRtpTransceiver
     let receiver: LKRTCRtpReceiver
     let receiverTrack: LKRTCAudioTrack
     let remoteTrack: WebRTCRemoteAudioTrack
     let validation: WebRTCIPhoneMicrophoneReceiverStatisticsValidation
+}
+
+private struct WebRTCIPhoneMicrophoneReceiverStatisticsReport: Sendable {
+    let parsed: WebRTCIPhoneMicrophoneInboundStatistics?
 }
 
 #if os(iOS)
@@ -2563,6 +2643,14 @@ public actor WebRTCPeer {
     private var screenDiagnosticsDelegateEventTask: Task<Void, Never>?
     private var screenVideoEncoderProbeEventTask: Task<Void, Never>?
     private var statisticsTask: Task<Void, Never>?
+    private nonisolated let wholePeerStatisticsRequestGate =
+        WebRTCStatisticsSingleFlightGate()
+    private nonisolated let iPhoneMicrophoneReceiverStatisticsRequestGate =
+        WebRTCStatisticsSingleFlightGate()
+    private nonisolated let iPhoneMicrophoneSenderStatisticsRequestGate =
+        WebRTCStatisticsSingleFlightGate()
+    private nonisolated let screenVideoStatisticsRequestGate =
+        WebRTCStatisticsSingleFlightGate()
     private nonisolated let screenVideoEncoderProbeEvents:
         AsyncStream<ScreenVideoEncoderResumeProbeEvent>
     private nonisolated let screenVideoEncoderProbeEventContinuation:
@@ -2587,6 +2675,9 @@ public actor WebRTCPeer {
     private var pendingSystemAudioAuthorization: WebRTCAudioAuthorization?
     private var systemAudioAdmissionEpoch: UInt64 = 0
     private var currentRoute: WebRTCICERouteDiagnostics?
+    private var currentRouteRevision: UInt64 = 0
+    private nonisolated let statisticsCollectionSequencer =
+        WebRTCStatisticsCollectionSequencer()
     private var nextControlRequestID: UInt64 = 1
     private var highestSentControlRequestID: UInt64?
     private var sentControlRequests: [UInt64: WebRTCControlRequest] = [:]
@@ -3915,16 +4006,25 @@ public actor WebRTCPeer {
     ) async -> WebRTCIPhoneMicrophoneOutboundRTPProgress? {
         guard callbackTimeout > .zero,
               let captured =
-                currentHeadlessMacIPhoneMicrophoneOutboundRTPCapture() else {
+                currentHeadlessMacIPhoneMicrophoneOutboundRTPCapture(),
+              let requestID =
+                iPhoneMicrophoneSenderStatisticsRequestGate.begin() else {
             return nil
         }
         let reportCapture: WebRTCIPhoneMicrophoneSenderStatisticsReportCapture? =
-            await withCheckedContinuation { continuation in
-                let resolver = WebRTCOneShotContinuation(
-                    continuation
-                )
+            await WebRTCBoundedCallback.value(timeout: callbackTimeout) {
+                [
+                    peerConnection,
+                    iPhoneMicrophoneSenderStatisticsRequestGate,
+                    captured,
+                ] resolve in
                 peerConnection.statistics(for: captured.sender) { report in
-                    resolver.resolve(
+                    defer {
+                        iPhoneMicrophoneSenderStatisticsRequestGate.complete(
+                            requestID
+                        )
+                    }
+                    resolve(
                         WebRTCIPhoneMicrophoneSenderStatisticsReportCapture(
                             parsed:
                                 WebRTCStatisticsParser
@@ -3940,10 +4040,6 @@ public actor WebRTCPeer {
                             callbackCompletedAt: Date()
                         )
                     )
-                }
-                Task.detached {
-                    try? await Task.sleep(for: callbackTimeout)
-                    resolver.resolve(nil)
                 }
             }
         guard let parsed = reportCapture?.parsed,
@@ -6503,57 +6599,83 @@ public actor WebRTCPeer {
         await collectStatistics(publishEvent: false)
     }
 
+    /// Returns the first collection sequence that can be assigned after this actor boundary.
+    /// A callback carrying a lower sequence belongs to a native request started before it.
+    public nonisolated func minimumNextStatisticsCollectionSequence() -> UInt64 {
+        statisticsCollectionSequencer.minimumNextSequence()
+    }
+
+    /// Collects one sender-scoped screen-video report without accelerating whole-peer audio or
+    /// the receiver-scoped microphone report used by the one-second health sampler. The native
+    /// API cannot cancel a timed-out request, so keep it single-flight until its callback arrives;
+    /// callers can use the ordinary statistics stream as a fallback while this returns `nil`.
+    public func screenVideoStatisticsSnapshot(
+        timeout: Duration
+    ) async -> WebRTCStatisticsSnapshot? {
+        precondition(timeout > .zero)
+        guard let localVideoSender,
+              let requestID = screenVideoStatisticsRequestGate.begin() else {
+            return nil
+        }
+        let collectionSequence =
+            statisticsCollectionSequencer.reserveNextSequence()
+        let expectedRouteRevision = currentRouteRevision
+        let nativeSnapshot: WebRTCStatisticsSnapshot? =
+            await WebRTCBoundedCallback.value(timeout: timeout) {
+                [
+                    peerConnection,
+                    screenVideoStatisticsRequestGate,
+                    collectionSequence,
+                ] resolve in
+                peerConnection.statistics(for: localVideoSender) { report in
+                    defer {
+                        screenVideoStatisticsRequestGate.complete(requestID)
+                    }
+                    resolve(
+                        WebRTCStatisticsParser.parse(
+                            report,
+                            collectionSequence: collectionSequence
+                        )
+                    )
+                }
+            }
+        guard let nativeSnapshot,
+              currentRouteRevision == expectedRouteRevision else {
+            return nil
+        }
+        return snapshotRestoringCurrentRouteIfNeeded(nativeSnapshot)
+    }
+
     private func collectStatistics(
         publishEvent: Bool
     ) async -> WebRTCStatisticsSnapshot {
-        let nativeSnapshot = await withCheckedContinuation {
-            (continuation: CheckedContinuation<WebRTCStatisticsSnapshot, Never>) in
-            let resolver = WebRTCOneShotContinuation(continuation)
-            peerConnection.statistics { report in
-                resolver.resolve(WebRTCStatisticsParser.parse(report))
-            }
-            Task.detached {
-                try? await Task.sleep(for: .seconds(1))
-                resolver.resolve(WebRTCStatisticsSnapshot())
-            }
-        }
-
         // The host has more than one audio transceiver. Never let the whole-peer parser's
         // array-order selection become microphone-health evidence: replace it with a report
-        // requested from, and revalidated against, the exact dedicated native receiver.
+        // requested from, and revalidated against, the exact dedicated native receiver. Start
+        // both native requests together so microphone health can never stretch the video
+        // fallback beyond the one-second request deadline.
+        let receiverCapture = role == .host
+            ? currentIPhoneMicrophoneReceiverStatisticsCapture()
+            : nil
+        async let nativeSnapshotRequest = collectNativeStatistics()
+        async let receiverStatisticsRequest =
+            collectIPhoneMicrophoneReceiverStatistics(
+                for: receiverCapture
+            )
+        let (nativeSnapshotResult, receiverStatistics) = await (
+            nativeSnapshotRequest,
+            receiverStatisticsRequest
+        )
+        let wholePeerReportWasCollected = nativeSnapshotResult != nil
+        let nativeSnapshot =
+            nativeSnapshotResult ?? WebRTCStatisticsSnapshot()
+
         let receiverReport: (
             capture: WebRTCIPhoneMicrophoneReceiverStatisticsCapture,
             parsed: WebRTCIPhoneMicrophoneInboundStatistics?
         )?
-        if role == .host,
-           let capture =
-            currentIPhoneMicrophoneReceiverStatisticsCapture() {
-            let parsed = await withCheckedContinuation {
-                (
-                    continuation:
-                        CheckedContinuation<
-                            WebRTCIPhoneMicrophoneInboundStatistics?,
-                            Never
-                        >
-                ) in
-                let resolver = WebRTCOneShotContinuation(continuation)
-                peerConnection.statistics(for: capture.receiver) { report in
-                    resolver.resolve(
-                        WebRTCStatisticsParser
-                            .parseIPhoneMicrophoneReceiver(
-                                report,
-                                expectedTrackID:
-                                    capture.validation.remoteTrackID,
-                                expectedMID: capture.validation.mid
-                            )
-                    )
-                }
-                Task.detached {
-                    try? await Task.sleep(for: .seconds(1))
-                    resolver.resolve(nil)
-                }
-            }
-            receiverReport = (capture, parsed)
+        if let receiverCapture {
+            receiverReport = (receiverCapture, receiverStatistics)
         } else {
             receiverReport = nil
         }
@@ -6592,32 +6714,108 @@ public actor WebRTCPeer {
             inboundAudio = nil
         }
 
-        let snapshot: WebRTCStatisticsSnapshot
-        if nativeSnapshot.route != nil || currentRoute == nil {
-            snapshot = replacingInboundAudio(
-                in: nativeSnapshot,
-                with: inboundAudio
-            )
-        } else {
-            snapshot = WebRTCStatisticsSnapshot(
-                collectedAt: nativeSnapshot.collectedAt,
-                route: currentRoute,
-                currentRoundTripTime: nativeSnapshot.currentRoundTripTime,
-                availableOutgoingBitrate: nativeSnapshot.availableOutgoingBitrate,
-                jitter: nativeSnapshot.jitter,
-                outboundVideo: nativeSnapshot.outboundVideo,
-                inboundVideo: nativeSnapshot.inboundVideo,
-                audioSource: nativeSnapshot.audioSource,
-                outboundAudio: nativeSnapshot.outboundAudio,
-                inboundAudio: inboundAudio,
-                remoteInboundAudio: nativeSnapshot.remoteInboundAudio
-            )
-        }
+        let snapshot = replacingInboundAudio(
+            in: snapshotRestoringCurrentRouteIfNeeded(nativeSnapshot),
+            with: inboundAudio
+        )
         if publishEvent, !isClosed {
             // No suspension is permitted between exact-receiver revalidation and this yield.
-            publishStatistics(snapshot)
+            publishStatistics(
+                snapshot,
+                wholePeerReportWasCollected: wholePeerReportWasCollected
+            )
         }
         return snapshot
+    }
+
+    private func collectNativeStatistics(
+        timeout: Duration = .seconds(1)
+    ) async -> WebRTCStatisticsSnapshot? {
+        precondition(timeout > .zero)
+        guard let requestID = wholePeerStatisticsRequestGate.begin() else {
+            return nil
+        }
+        let collectionSequence =
+            statisticsCollectionSequencer.reserveNextSequence()
+        return await WebRTCBoundedCallback.value(timeout: timeout) {
+            [
+                peerConnection,
+                wholePeerStatisticsRequestGate,
+                collectionSequence,
+            ] resolve in
+            peerConnection.statistics { report in
+                defer {
+                    wholePeerStatisticsRequestGate.complete(requestID)
+                }
+                resolve(
+                    WebRTCStatisticsParser.parse(
+                        report,
+                        collectionSequence: collectionSequence
+                    )
+                )
+            }
+        }
+    }
+
+    private func collectIPhoneMicrophoneReceiverStatistics(
+        for capture: WebRTCIPhoneMicrophoneReceiverStatisticsCapture?,
+        timeout: Duration = .seconds(1)
+    ) async -> WebRTCIPhoneMicrophoneInboundStatistics? {
+        precondition(timeout > .zero)
+        guard let capture,
+              let requestID =
+                iPhoneMicrophoneReceiverStatisticsRequestGate.begin() else {
+            return nil
+        }
+        let report: WebRTCIPhoneMicrophoneReceiverStatisticsReport? =
+            await WebRTCBoundedCallback.value(timeout: timeout) {
+                [
+                    peerConnection,
+                    iPhoneMicrophoneReceiverStatisticsRequestGate,
+                ] resolve in
+                peerConnection.statistics(for: capture.receiver) { report in
+                    defer {
+                        iPhoneMicrophoneReceiverStatisticsRequestGate.complete(
+                            requestID
+                        )
+                    }
+                    resolve(
+                        WebRTCIPhoneMicrophoneReceiverStatisticsReport(
+                            parsed: WebRTCStatisticsParser
+                                .parseIPhoneMicrophoneReceiver(
+                                    report,
+                                    expectedTrackID:
+                                        capture.validation.remoteTrackID,
+                                    expectedMID: capture.validation.mid
+                                )
+                        )
+                    )
+                }
+            }
+        return report?.parsed
+    }
+
+    private func snapshotRestoringCurrentRouteIfNeeded(
+        _ snapshot: WebRTCStatisticsSnapshot
+    ) -> WebRTCStatisticsSnapshot {
+        guard snapshot.route == nil,
+              let currentRoute else {
+            return snapshot
+        }
+        return WebRTCStatisticsSnapshot(
+            collectedAt: snapshot.collectedAt,
+            collectionSequence: snapshot.collectionSequence,
+            route: currentRoute,
+            currentRoundTripTime: snapshot.currentRoundTripTime,
+            availableOutgoingBitrate: snapshot.availableOutgoingBitrate,
+            jitter: snapshot.jitter,
+            outboundVideo: snapshot.outboundVideo,
+            inboundVideo: snapshot.inboundVideo,
+            audioSource: snapshot.audioSource,
+            outboundAudio: snapshot.outboundAudio,
+            inboundAudio: snapshot.inboundAudio,
+            remoteInboundAudio: snapshot.remoteInboundAudio
+        )
     }
 
     private func replacingInboundAudio(
@@ -6626,6 +6824,7 @@ public actor WebRTCPeer {
     ) -> WebRTCStatisticsSnapshot {
         WebRTCStatisticsSnapshot(
             collectedAt: snapshot.collectedAt,
+            collectionSequence: snapshot.collectionSequence,
             route: snapshot.route,
             currentRoundTripTime: snapshot.currentRoundTripTime,
             availableOutgoingBitrate: snapshot.availableOutgoingBitrate,
@@ -6729,16 +6928,25 @@ public actor WebRTCPeer {
     ) async -> WebRTCIPhoneMicrophoneSenderStatistics? {
         guard callbackTimeout > .zero else { return nil }
         guard let captured =
-            currentIPhoneMicrophoneSenderStatisticsCapture() else {
+                currentIPhoneMicrophoneSenderStatisticsCapture(),
+              let requestID =
+                iPhoneMicrophoneSenderStatisticsRequestGate.begin() else {
             return nil
         }
 
         let reportCapture: WebRTCIPhoneMicrophoneSenderStatisticsReportCapture? =
-            await withCheckedContinuation { continuation in
-                let resolver = WebRTCOneShotContinuation(
-                    continuation
-                )
+            await WebRTCBoundedCallback.value(timeout: callbackTimeout) {
+                [
+                    peerConnection,
+                    iPhoneMicrophoneSenderStatisticsRequestGate,
+                    captured,
+                ] resolve in
                 peerConnection.statistics(for: captured.sender) { report in
+                    defer {
+                        iPhoneMicrophoneSenderStatisticsRequestGate.complete(
+                            requestID
+                        )
+                    }
                     let parsed =
                         WebRTCStatisticsParser.parseIPhoneMicrophoneSender(
                             report,
@@ -6749,16 +6957,12 @@ public actor WebRTCPeer {
                             expectedMID:
                                 captured.validation.mid
                         )
-                    resolver.resolve(
+                    resolve(
                         WebRTCIPhoneMicrophoneSenderStatisticsReportCapture(
                             parsed: parsed,
                             callbackCompletedAt: Date()
                         )
                     )
-                }
-                Task.detached {
-                    try? await Task.sleep(for: callbackTimeout)
-                    resolver.resolve(nil)
                 }
             }
         guard let reportCapture else {
@@ -7101,14 +7305,11 @@ public actor WebRTCPeer {
         }
         guard statisticsTask == nil else { return }
         statisticsTask = Task { [weak self] in
-            while !Task.isCancelled {
-                do {
-                    try await Task.sleep(for: interval)
-                } catch {
-                    return
-                }
-                guard let self else { return }
-                await self.collectAndPublishStatistics()
+            await WebRTCFixedIntervalStatisticsSampler.run(
+                interval: interval
+            ) {
+                guard let self else { return false }
+                return await self.collectAndPublishStatistics()
             }
         }
     }
@@ -7117,9 +7318,10 @@ public actor WebRTCPeer {
     /// receiver-scoped callback has been revalidated, there is no suspension before the event is
     /// yielded. The public event stream's FIFO ordering therefore prevents the host service from
     /// applying positive media evidence to a later remote-track publication.
-    private func collectAndPublishStatistics() async {
-        guard !isClosed else { return }
+    private func collectAndPublishStatistics() async -> Bool {
+        guard !isClosed else { return false }
         _ = await collectStatistics(publishEvent: true)
+        return !isClosed
     }
 
     /// Revokes every media/input gate and idempotently releases the native peer. The result remains
@@ -7279,6 +7481,7 @@ public actor WebRTCPeer {
             currentRemoteVideoTrack = track
             emit(.remoteVideoTrack(track))
         case .route(let route):
+            currentRouteRevision &+= 1
             currentRoute = route
             emit(.routeChanged(route))
         case .iceCandidateError(let error):
@@ -8533,12 +8736,22 @@ public actor WebRTCPeer {
         return true
     }
 
-    private func publishStatistics(_ snapshot: WebRTCStatisticsSnapshot) {
+    private func publishStatistics(
+        _ snapshot: WebRTCStatisticsSnapshot,
+        wholePeerReportWasCollected: Bool
+    ) {
         if let route = snapshot.route, route != currentRoute {
+            currentRouteRevision &+= 1
             currentRoute = route
             emit(.routeChanged(route))
         }
-        emit(.statistics(snapshot))
+        emit(
+            .statistics(
+                snapshot,
+                wholePeerReportWasCollected:
+                    wholePeerReportWasCollected
+            )
+        )
     }
 
     private func nextNegotiationEpoch() -> UInt64 {
@@ -8580,6 +8793,7 @@ public actor WebRTCPeer {
     }
 
     private func invalidateCurrentRoute() {
+        currentRouteRevision &+= 1
         currentRoute = nil
         emit(
             .routeChanged(WebRTCICERouteDiagnostics(kind: .unknown))

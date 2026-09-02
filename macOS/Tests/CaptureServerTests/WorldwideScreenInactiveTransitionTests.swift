@@ -1412,7 +1412,7 @@ final class WorldwideScreenInactiveTransitionTests: XCTestCase {
         )
         let statisticsCase = try sourceSlice(
             in: serviceSource,
-            after: "        case .statistics(let snapshot):",
+            after: "        case .statistics(\n            let snapshot,",
             before: "        case .iceCandidateError(let error):"
         )
         XCTAssertTrue(

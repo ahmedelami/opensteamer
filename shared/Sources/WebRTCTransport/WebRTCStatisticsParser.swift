@@ -31,8 +31,14 @@ enum WebRTCStatisticsParser {
     }
 
     /// Parses the native report without retaining Objective-C statistics objects.
-    static func parse(_ report: LKRTCStatisticsReport) -> WebRTCStatisticsSnapshot {
-        parse(records: records(from: report))
+    static func parse(
+        _ report: LKRTCStatisticsReport,
+        collectionSequence: UInt64? = nil
+    ) -> WebRTCStatisticsSnapshot {
+        parse(
+            records: records(from: report),
+            collectionSequence: collectionSequence
+        )
     }
 
     static func records(
@@ -48,7 +54,10 @@ enum WebRTCStatisticsParser {
     }
 
     /// Parses value records; this overload is the deterministic unit-test seam.
-    static func parse(records: [WebRTCStatisticsRecord]) -> WebRTCStatisticsSnapshot {
+    static func parse(
+        records: [WebRTCStatisticsRecord],
+        collectionSequence: UInt64? = nil
+    ) -> WebRTCStatisticsSnapshot {
 
         let selectedPair = selectedCandidatePair(in: records)
         let localCandidate = candidate(
@@ -97,6 +106,7 @@ enum WebRTCStatisticsParser {
         }
 
         return WebRTCStatisticsSnapshot(
+            collectionSequence: collectionSequence,
             route: route,
             currentRoundTripTime: selectedPair.flatMap {
                 double("currentRoundTripTime", in: $0.values)

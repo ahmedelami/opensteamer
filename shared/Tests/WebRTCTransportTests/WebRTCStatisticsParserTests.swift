@@ -5,6 +5,15 @@ import XCTest
 /// Uses platform-neutral records to verify extraction of route, concealment, jitter-buffer,
 /// sender, and remote-inbound evidence without requiring a live connection.
 final class WebRTCStatisticsParserTests: XCTestCase {
+    func testParserPreservesTheSequenceAssignedBeforeNativeCollection() {
+        let snapshot = WebRTCStatisticsParser.parse(
+            records: [],
+            collectionSequence: 37
+        )
+
+        XCTAssertEqual(snapshot.collectionSequence, 37)
+    }
+
     func testSelectedCandidatePairIsOrderIndependentAcrossDuplicateTransportReferences()
         throws {
         let records = [

@@ -4846,7 +4846,7 @@ final class WorldwideSessionViewModel: ObservableObject {
         case .routeChanged(let route):
             routeText = route.kind.displayText
 
-        case .statistics(let snapshot):
+        case .statistics(let snapshot, wholePeerReportWasCollected: _):
             await handleWorldwideSessionStatistics(
                 snapshot,
                 from: sourcePeer,

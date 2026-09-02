@@ -91,14 +91,53 @@ final class WorldwideScreenAutomaticResumeCommitLatch: @unchecked Sendable {
     }
 }
 
+/// Rejects statistics whose native request began before the latest encoder-resume boundary.
+/// Ordinary WebRTC events are buffered, so callback time and event-delivery order cannot prove
+/// which encoder epoch produced a report.
+struct WorldwideScreenVideoAdaptationFreshnessFence: Equatable, Sendable {
+    private(set) var minimumCollectionSequence: UInt64?
+
+    mutating func beginPostResumeEpoch(
+        minimumCollectionSequence: UInt64
+    ) {
+        self.minimumCollectionSequence = self.minimumCollectionSequence.map {
+            max($0, minimumCollectionSequence)
+        } ?? minimumCollectionSequence
+    }
+
+    mutating func reset() {
+        minimumCollectionSequence = nil
+    }
+
+    func admits(_ snapshot: WebRTCStatisticsSnapshot) -> Bool {
+        guard let minimumCollectionSequence else { return true }
+        guard let collectionSequence = snapshot.collectionSequence else {
+            return false
+        }
+        return collectionSequence >= minimumCollectionSequence
+    }
+}
+
 /// Owns one consume-once rendezvous and its Mac-side WebRTC screen session.
 ///
 /// The invitation authenticates and encrypts signaling. Reachability still comes from
 /// ICE/STUN and, when a direct candidate pair is impossible, the configured TURN service.
 actor WorldwideScreenService {
+    private enum ScreenVideoAdaptationEvidenceLane: Equatable {
+        case fastSender
+        case ordinaryFallback
+    }
+
     private static let maximumDisplayModeStartupRetries = 3
     private static let maximumForwardingStartupProofPolls = 40
     private static let forwardingStartupProofPollInterval = Duration.milliseconds(25)
+    static let screenVideoAdaptationStatisticsInterval = Duration.milliseconds(
+        WorldwideScreenVideoAdaptationPolicy.sampleIntervalMilliseconds
+    )
+    static let screenVideoAdaptationStatisticsTimeout = Duration.milliseconds(400)
+    static let screenVideoAdaptationFallbackStatisticsInterval =
+        Duration.seconds(1)
+    static let screenVideoAdaptationMaximumEvidenceGap = Duration.seconds(2)
     private static let automaticScreenMediaResumeTimeout = Duration.seconds(12)
     private static let screenClientDiagnosticsStaleInterval: TimeInterval = 5
     private static let maximumSharedClockEpochQuiescencePolls = 20
@@ -475,6 +514,15 @@ actor WorldwideScreenService {
     private var signalingTask: Task<Void, Never>?
     private var peerEventTask: Task<Void, Never>?
     private var screenClientDiagnosticsEventTask: Task<Void, Never>?
+    private var screenVideoAdaptationTask: Task<Void, Never>?
+    private var screenVideoAdaptationFastStatisticsAreAvailable = false
+    private var screenVideoAdaptationPolicyRevision: UInt64 = 0
+    private var screenVideoAdaptationEvidenceLane:
+        ScreenVideoAdaptationEvidenceLane?
+    private var screenVideoAdaptationLastEvidenceTime:
+        ContinuousClock.Instant?
+    private var screenVideoAdaptationFreshnessFence =
+        WorldwideScreenVideoAdaptationFreshnessFence()
     private var keyFrameControlTask: Task<Void, Never>?
     private var peer: WebRTCPeer?
     private var recoveryCoordinator: ICERecoveryCoordinator?
@@ -888,6 +936,13 @@ actor WorldwideScreenService {
         peerEventTask = nil
         screenClientDiagnosticsEventTask?.cancel()
         screenClientDiagnosticsEventTask = nil
+        screenVideoAdaptationTask?.cancel()
+        screenVideoAdaptationTask = nil
+        screenVideoAdaptationFastStatisticsAreAvailable = false
+        screenVideoAdaptationEvidenceLane = nil
+        screenVideoAdaptationLastEvidenceTime = nil
+        screenVideoAdaptationFreshnessFence.reset()
+        screenVideoAdaptationPolicyRevision &+= 1
         keyFrameControlTask?.cancel()
         keyFrameControlTask = nil
         let coordinator = recoveryCoordinator
@@ -1095,6 +1150,11 @@ actor WorldwideScreenService {
         resetAutomaticScreenMediaSuspensionState()
         resetScreenClientDiagnosticsFreshness()
         screenVideoAdaptationPolicy.bind(toPeerGeneration: generation)
+        screenVideoAdaptationPolicyRevision &+= 1
+        screenVideoAdaptationFastStatisticsAreAvailable = false
+        screenVideoAdaptationEvidenceLane = nil
+        screenVideoAdaptationLastEvidenceTime = nil
+        screenVideoAdaptationFreshnessFence.reset()
         appliedScreenVideoRecommendation = nil
         highestRestartRequestID = nil
         peerIsConnected = false
@@ -1151,8 +1211,17 @@ actor WorldwideScreenService {
                 sourcePeerGeneration: generation
             )
         }
-        try await peer.startStatistics()
+        try await peer.startStatistics(
+            interval: Self.screenVideoAdaptationFallbackStatisticsInterval
+        )
         try await peer.start()
+        screenVideoAdaptationFastStatisticsAreAvailable = false
+        screenVideoAdaptationTask = Task { [weak self] in
+            await self?.sampleScreenVideoAdaptationStatistics(
+                sourcePeer: peer,
+                sourcePeerGeneration: generation
+            )
+        }
         logger.info("Worldwide WebRTC negotiation started")
     }
 
@@ -1451,9 +1520,15 @@ actor WorldwideScreenService {
 
         case .routeChanged(let route):
             logger.info("Worldwide WebRTC route: \(route.kind.rawValue)")
+            screenVideoAdaptationPolicyRevision &+= 1
             screenVideoAdaptationPolicy.invalidateSelectedRoute()
+            screenVideoAdaptationEvidenceLane = nil
+            screenVideoAdaptationLastEvidenceTime = nil
 
-        case .statistics(let snapshot):
+        case .statistics(
+            let snapshot,
+            let wholePeerReportWasCollected
+        ):
             guard peer === sourcePeer,
                   peerGeneration == sourcePeerGeneration else {
                 return
@@ -1557,11 +1632,37 @@ actor WorldwideScreenService {
                   peerGeneration == sourcePeerGeneration else {
                 return
             }
-            await adaptScreenVideoForNetworkConditions(
-                snapshot,
-                sourcePeer: sourcePeer,
-                sourcePeerGeneration: sourcePeerGeneration
-            )
+            let ordinaryFallbackOwnsVideoPolicy =
+                screenMediaSuspension.isAutomaticallySuspended
+                    || !screenVideoAdaptationFastStatisticsAreAvailable
+            if wholePeerReportWasCollected,
+               screenVideoAdaptationFreshnessFence.admits(snapshot),
+               ordinaryFallbackOwnsVideoPolicy {
+                let expectedPolicyRevision =
+                    prepareScreenVideoAdaptationEvidence(
+                        from: .ordinaryFallback
+                    )
+                await adaptScreenVideoForNetworkConditions(
+                    snapshot,
+                    sourcePeer: sourcePeer,
+                    sourcePeerGeneration: sourcePeerGeneration,
+                    expectedPolicyRevision: expectedPolicyRevision,
+                    allowsAutomaticResume: true
+                )
+            } else if !wholePeerReportWasCollected,
+                      ordinaryFallbackOwnsVideoPolicy {
+                // The microphone-health event still fires when the native whole-peer request is
+                // busy or times out. Missing telemetry is not transport evidence; it may only
+                // expire an already-raised, time-bounded application-limited video probe.
+                await adaptScreenVideoForNetworkConditions(
+                    nil,
+                    sourcePeer: sourcePeer,
+                    sourcePeerGeneration: sourcePeerGeneration,
+                    expectedPolicyRevision:
+                        screenVideoAdaptationPolicyRevision,
+                    allowsAutomaticResume: false
+                )
+            }
             // Client diagnostics are an observability-only lane. Evaluate freshness strictly
             // after media adaptation so these best-effort heartbeats can never drive policy.
             await observeScreenClientDiagnosticsFreshness(
@@ -1713,17 +1814,132 @@ actor WorldwideScreenService {
         )
     }
 
+    /// Starts a fresh threshold window whenever statistics switch between native request lanes or
+    /// arrive after a long gap. This prevents nominally consecutive evidence from being assembled
+    /// out of samples that were actually separated by a timeout or a cadence change.
+    private func prepareScreenVideoAdaptationEvidence(
+        from lane: ScreenVideoAdaptationEvidenceLane
+    ) -> UInt64 {
+        let now = ContinuousClock.now
+        let exceededMaximumGap = screenVideoAdaptationLastEvidenceTime.map {
+            $0.duration(to: now)
+                > Self.screenVideoAdaptationMaximumEvidenceGap
+        } ?? false
+        if let previousLane = screenVideoAdaptationEvidenceLane,
+           previousLane != lane || exceededMaximumGap {
+            screenVideoAdaptationPolicy.resetIncompleteEvidenceWindow()
+            screenVideoAdaptationPolicyRevision &+= 1
+        }
+        screenVideoAdaptationEvidenceLane = lane
+        screenVideoAdaptationLastEvidenceTime = now
+        return screenVideoAdaptationPolicyRevision
+    }
+
+    /// Samples only the candidate-pair and outbound-video report on a fixed half-second cadence.
+    /// The ordinary one-second sampler retains microphone freshness and route-maintenance timing.
+    private func sampleScreenVideoAdaptationStatistics(
+        sourcePeer: WebRTCPeer,
+        sourcePeerGeneration: UInt64
+    ) async {
+        let clock = ContinuousClock()
+        var nextDeadline = clock.now.advanced(
+            by: Self.screenVideoAdaptationStatisticsInterval
+        )
+        while !Task.isCancelled {
+            do {
+                try await clock.sleep(until: nextDeadline)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled,
+                  !isStopped,
+                  peer === sourcePeer,
+                  peerGeneration == sourcePeerGeneration else {
+                return
+            }
+            guard captureSource != nil else {
+                screenVideoAdaptationFastStatisticsAreAvailable = false
+                nextDeadline = clock.now.advanced(
+                    by: Self.screenVideoAdaptationStatisticsInterval
+                )
+                continue
+            }
+            guard automaticScreenMediaResumeContext == nil else {
+                // The exact resume attempt owns the sender ceiling until both the ACK and the
+                // ordinary encoder limits have committed. Do not launch a request inside that
+                // interval: its result could otherwise arrive just after the context is released
+                // and cause a second back-to-back encoder transition from pre-restoration data.
+                nextDeadline = nextDeadline.advanced(
+                    by: Self.screenVideoAdaptationStatisticsInterval
+                )
+                if nextDeadline < clock.now {
+                    nextDeadline = clock.now
+                }
+                continue
+            }
+
+            let expectedPolicyRevision =
+                screenVideoAdaptationPolicyRevision
+            let snapshot = await sourcePeer.screenVideoStatisticsSnapshot(
+                timeout: Self.screenVideoAdaptationStatisticsTimeout
+            )
+            guard !Task.isCancelled,
+                  !isStopped,
+                  peer === sourcePeer,
+                  peerGeneration == sourcePeerGeneration else {
+                return
+            }
+            if let snapshot,
+               screenVideoAdaptationFreshnessFence.admits(snapshot),
+               screenVideoAdaptationPolicyRevision
+                == expectedPolicyRevision {
+                screenVideoAdaptationFastStatisticsAreAvailable = true
+                let adaptationRevision =
+                    prepareScreenVideoAdaptationEvidence(
+                        from: .fastSender
+                    )
+                await adaptScreenVideoForNetworkConditions(
+                    snapshot,
+                    sourcePeer: sourcePeer,
+                    sourcePeerGeneration: sourcePeerGeneration,
+                    expectedPolicyRevision: adaptationRevision,
+                    allowsAutomaticResume: false
+                )
+            } else {
+                // A timeout, an outstanding native request, or an ordered route/policy change
+                // makes the ordinary one-second event the authoritative fallback until a fresh
+                // sender-scoped sample succeeds.
+                screenVideoAdaptationFastStatisticsAreAvailable = false
+            }
+
+            nextDeadline = nextDeadline.advanced(
+                by: Self.screenVideoAdaptationStatisticsInterval
+            )
+            if nextDeadline < clock.now {
+                nextDeadline = clock.now
+            }
+        }
+    }
+
     /// Applies a new sender ceiling only after the current capture and peer identities survive
     /// the cross-actor parameter update. Failed native updates are retried by the next sample.
     private func adaptScreenVideoForNetworkConditions(
-        _ snapshot: WebRTCStatisticsSnapshot,
+        _ snapshot: WebRTCStatisticsSnapshot?,
         sourcePeer: WebRTCPeer,
-        sourcePeerGeneration: UInt64
+        sourcePeerGeneration: UInt64,
+        expectedPolicyRevision: UInt64,
+        allowsAutomaticResume: Bool
     ) async {
         // Marker and real-frame RTP deltas are valid only while the exact sender configuration
         // remains frozen. The bounded probe owns its temporary ceiling; the first statistics
         // sample after success or retry reapplies ordinary policy.
-        guard automaticScreenMediaResumeContext == nil else { return }
+        guard automaticScreenMediaResumeContext == nil,
+              peer === sourcePeer,
+              peerGeneration == sourcePeerGeneration,
+              screenVideoAdaptationPolicyRevision
+                == expectedPolicyRevision else {
+            return
+        }
         let forwardingAuthorization = captureForwardingAuthorization
         let isCaptureActive = captureSource != nil
             && captureSink != nil
@@ -1732,20 +1948,32 @@ actor WorldwideScreenService {
             && forwardingAuthorization.map {
                 captureSink?.allowsActiveUse(authorizedBy: $0) == true
             } == true
+        guard isCaptureActive || allowsAutomaticResume else { return }
 
         var proposedPolicy = screenVideoAdaptationPolicy
-        let changedRecommendation = proposedPolicy.update(
-            peerGeneration: sourcePeerGeneration,
-            isCaptureActive: isCaptureActive,
-            isAutomaticallySuspended:
-                screenMediaSuspension.isAutomaticallySuspended,
-            availableOutgoingBitrateBps: snapshot.availableOutgoingBitrate,
-            currentRoundTripTimeSeconds: snapshot.currentRoundTripTime,
-            selectedRoute: snapshot.route,
-            outboundVideoPacketsSent: snapshot.outboundVideo?.packets,
-            outboundVideoTotalPacketSendDelaySeconds:
-                snapshot.outboundVideo?.totalPacketSendDelay
-        )
+        let changedRecommendation:
+            WorldwideScreenVideoEncodingRecommendation?
+        if let snapshot {
+            changedRecommendation = proposedPolicy.update(
+                peerGeneration: sourcePeerGeneration,
+                isCaptureActive: isCaptureActive,
+                isAutomaticallySuspended:
+                    screenMediaSuspension.isAutomaticallySuspended,
+                availableOutgoingBitrateBps: snapshot.availableOutgoingBitrate,
+                currentRoundTripTimeSeconds: snapshot.currentRoundTripTime,
+                selectedRoute: snapshot.route,
+                outboundVideoPacketsSent: snapshot.outboundVideo?.packets,
+                outboundVideoTotalPacketSendDelaySeconds:
+                    snapshot.outboundVideo?.totalPacketSendDelay
+            )
+        } else {
+            changedRecommendation = proposedPolicy
+                .expireApplicationLimitedProbeWithoutReport(
+                    peerGeneration: sourcePeerGeneration,
+                    isCaptureActive: isCaptureActive
+                )
+            guard changedRecommendation != nil else { return }
+        }
         let recommendation = changedRecommendation
             ?? proposedPolicy.currentRecommendation
         logger.debug(
@@ -1753,11 +1981,11 @@ actor WorldwideScreenService {
                 + "fullVideoKbps=\(proposedPolicy.maximumTierVideoBitrateBps / 1_000) "
                 + "tier=\(String(describing: recommendation.tier)) "
                 + "bweKbps="
-                + (snapshot.availableOutgoingBitrate.map {
+                + (snapshot?.availableOutgoingBitrate.map {
                     String(format: "%.0f", $0 / 1_000)
                 } ?? "unknown")
                 + " rttMs="
-                + (snapshot.currentRoundTripTime.map {
+                + (snapshot?.currentRoundTripTime.map {
                     String(format: "%.1f", $0 * 1_000)
                 } ?? "unknown")
                 + " sendQueueMs="
@@ -1765,7 +1993,7 @@ actor WorldwideScreenService {
                     String(format: "%.1f", $0 * 1_000)
                 } ?? "unknown")
                 + " encoded="
-                + (snapshot.outboundVideo.flatMap { video in
+                + (snapshot?.outboundVideo.flatMap { video in
                     guard let width = video.frameWidth,
                           let height = video.frameHeight else {
                         return nil
@@ -1773,19 +2001,22 @@ actor WorldwideScreenService {
                     return "\(width)x\(height)"
                 } ?? "unknown")
                 + " fps="
-                + (snapshot.outboundVideo?.framesPerSecond.map {
+                + (snapshot?.outboundVideo?.framesPerSecond.map {
                     String(format: "%.1f", $0)
                 } ?? "unknown")
         )
         guard isCaptureActive else {
             if peer === sourcePeer,
-               peerGeneration == sourcePeerGeneration {
+               peerGeneration == sourcePeerGeneration,
+               screenVideoAdaptationPolicyRevision
+                == expectedPolicyRevision {
                 let decision = proposedPolicy.automaticSuspensionDecision(
                     isCaptureActive: false,
                     isAutomaticallySuspended:
                         screenMediaSuspension.isAutomaticallySuspended
                 )
                 screenVideoAdaptationPolicy = proposedPolicy
+                screenVideoAdaptationPolicyRevision &+= 1
                 if decision == .resume {
                     await beginAutomaticScreenMediaResumeIfPossible(
                         peer: sourcePeer,
@@ -1812,6 +2043,8 @@ actor WorldwideScreenService {
                 )
                 guard peer === sourcePeer,
                       peerGeneration == sourcePeerGeneration,
+                      screenVideoAdaptationPolicyRevision
+                        == expectedPolicyRevision,
                       captureSource === source,
                       captureSink === sink,
                       self.captureAuthorization === captureAuthorization,
@@ -1852,7 +2085,9 @@ actor WorldwideScreenService {
                 )
             } catch {
                 guard peer === sourcePeer,
-                      peerGeneration == sourcePeerGeneration else {
+                      peerGeneration == sourcePeerGeneration,
+                      screenVideoAdaptationPolicyRevision
+                        == expectedPolicyRevision else {
                     return
                 }
                 logger.error(
@@ -1864,10 +2099,13 @@ actor WorldwideScreenService {
         }
 
         guard peer === sourcePeer,
-              peerGeneration == sourcePeerGeneration else {
+              peerGeneration == sourcePeerGeneration,
+              screenVideoAdaptationPolicyRevision
+                == expectedPolicyRevision else {
             return
         }
         screenVideoAdaptationPolicy = proposedPolicy
+        screenVideoAdaptationPolicyRevision &+= 1
     }
 
     private func beginAutomaticScreenMediaResumeIfPossible(
@@ -1892,6 +2130,7 @@ actor WorldwideScreenService {
             return
         }
         screenVideoAdaptationPolicy.automaticResumeAttemptBegan()
+        screenVideoAdaptationPolicyRevision &+= 1
         automaticScreenMediaResumeContext = AutomaticScreenMediaResumeContext(
             binding: binding,
             notice: notice,
@@ -2067,6 +2306,23 @@ actor WorldwideScreenService {
         automaticScreenMediaResumeTimeoutTask = nil
     }
 
+    /// Opens a new statistics epoch only after the resumed sender ceiling and capturer FPS are
+    /// restored. It also discards partial threshold evidence from the suspended encoder state.
+    private func beginPostResumeScreenVideoAdaptationEpoch() {
+        if let peer {
+            screenVideoAdaptationFreshnessFence.beginPostResumeEpoch(
+                minimumCollectionSequence:
+                    peer.minimumNextStatisticsCollectionSequence()
+            )
+        } else {
+            screenVideoAdaptationFreshnessFence.reset()
+        }
+        screenVideoAdaptationPolicy.resetIncompleteEvidenceWindow()
+        screenVideoAdaptationEvidenceLane = nil
+        screenVideoAdaptationLastEvidenceTime = nil
+        screenVideoAdaptationPolicyRevision &+= 1
+    }
+
     private func automaticScreenMediaResumeTimedOut(
         attemptID: UUID,
         peerGeneration sourcePeerGeneration: UInt64,
@@ -2098,8 +2354,9 @@ actor WorldwideScreenService {
             // The irreversible send won the same latch. The viewer can already uncover, so a
             // concurrent display/route lifecycle owns any subsequent capture transition.
             cancelAutomaticScreenMediaResumeTimeout()
-            automaticScreenMediaResumeContext = nil
             screenVideoAdaptationPolicy.automaticResumeAttemptSucceeded()
+            beginPostResumeScreenVideoAdaptationEpoch()
+            automaticScreenMediaResumeContext = nil
             return
         }
         let ownedSource = captureSource
@@ -2133,6 +2390,7 @@ actor WorldwideScreenService {
         )
         let failureDiagnostic = screenMediaSuspension.diagnosticSnapshot
         screenVideoAdaptationPolicy.automaticResumeAttemptFailed()
+        screenVideoAdaptationPolicyRevision &+= 1
         await sourcePeer.cancelScreenMediaResumeProbe(
             attemptID: attemptID,
             reason: reason
@@ -2528,6 +2786,7 @@ actor WorldwideScreenService {
                 }
             )
             screenVideoAdaptationPolicy.automaticResumeAttemptSucceeded()
+            screenVideoAdaptationPolicyRevision &+= 1
         } catch {
             await failAutomaticScreenMediaResume(
                 peer: sourcePeer,
@@ -2550,13 +2809,14 @@ actor WorldwideScreenService {
               screenMediaSuspension.owns(context.binding) else {
             return
         }
-        automaticScreenMediaResumeContext = nil
 
         let recommendation = screenVideoAdaptationPolicy.currentRecommendation
         guard let source = captureSource,
               let captureAuthorization,
               let capturer = sourcePeer.externalVideoCapturer,
               let baseDimensions = captureVideoBaseDimensions else {
+            beginPostResumeScreenVideoAdaptationEpoch()
+            automaticScreenMediaResumeContext = nil
             appliedScreenVideoRecommendation = nil
             logger.info("Worldwide screen video resumed after exact receiver presentation")
             return
@@ -2567,7 +2827,10 @@ actor WorldwideScreenService {
             )
             guard peer === sourcePeer,
                   peerGeneration == sourcePeerGeneration,
-                  automaticScreenMediaResumeContext == nil,
+                  let finalizing = automaticScreenMediaResumeContext,
+                  finalizing.attemptID == context.attemptID,
+                  finalizing.binding == context.binding,
+                  finalizing.boundary == boundary,
                   captureSource === source,
                   captureSink === sink,
                   self.captureAuthorization === captureAuthorization,
@@ -2579,6 +2842,12 @@ actor WorldwideScreenService {
                   screenMediaSuspension.owns(context.binding) else {
                 _ = try? await sourcePeer
                     .rollbackScreenVideoEncodingUpdateIfCurrent(senderUpdate)
+                if let current = automaticScreenMediaResumeContext,
+                   current.attemptID == context.attemptID,
+                   current.binding == context.binding {
+                    beginPostResumeScreenVideoAdaptationEpoch()
+                    automaticScreenMediaResumeContext = nil
+                }
                 return
             }
             capturer.adaptOutput(
@@ -2589,9 +2858,17 @@ actor WorldwideScreenService {
                 )
             )
             appliedScreenVideoRecommendation = recommendation
+            beginPostResumeScreenVideoAdaptationEpoch()
+            automaticScreenMediaResumeContext = nil
         } catch {
             // The typed resume already committed. Keep the safe probe ceiling and let the next
             // statistics sample retry ordinary adaptation without hiding the screen.
+            if let current = automaticScreenMediaResumeContext,
+               current.attemptID == context.attemptID,
+               current.binding == context.binding {
+                beginPostResumeScreenVideoAdaptationEpoch()
+                automaticScreenMediaResumeContext = nil
+            }
             appliedScreenVideoRecommendation = nil
             logger.error(
                 "Worldwide screen resumed with its probe ceiling: "
@@ -2617,8 +2894,10 @@ actor WorldwideScreenService {
         if let context = automaticScreenMediaResumeContext {
             if context.finalAcknowledgementCommit.claimFailure() {
                 screenVideoAdaptationPolicy.automaticResumeAttemptFailed()
+                screenVideoAdaptationPolicyRevision &+= 1
             } else {
                 screenVideoAdaptationPolicy.automaticResumeAttemptSucceeded()
+                beginPostResumeScreenVideoAdaptationEpoch()
             }
         }
         automaticScreenMediaResumeContext?.probeAuthorization?.revoke()
@@ -5639,6 +5918,7 @@ actor WorldwideScreenService {
                 // yet cleared its bookkeeping context.
                 cancelAutomaticScreenMediaResumeTimeout()
                 screenVideoAdaptationPolicy.automaticResumeAttemptSucceeded()
+                beginPostResumeScreenVideoAdaptationEpoch()
                 automaticScreenMediaResumeContext = nil
             } else {
                 if let peer {

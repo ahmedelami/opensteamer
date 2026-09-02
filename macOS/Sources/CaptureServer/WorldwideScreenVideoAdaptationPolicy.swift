@@ -86,22 +86,43 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
         let applicationLimitedProbeFailureCount: Int
     }
 
-    static let requiredHealthyUpgradeSampleCount = 8
-    static let requiredPositiveBandwidthBootstrapSampleCount = 3
-    static let requiredApplicationLimitedUpgradeSampleCount = 4
-    static let applicationLimitedProbeGraceSampleCount = 5
-    static let initialApplicationLimitedProbeCooldownSampleCount = 8
-    static let maximumApplicationLimitedProbeCooldownSampleCount = 64
+    /// The dedicated video sampler runs independently from the one-second microphone-health
+    /// stream. Calibrate evidence windows to its 500 ms cadence, then keep first-reaction counts
+    /// bounded below five seconds when the one-second statistics stream is used as a fallback.
+    static let sampleIntervalMilliseconds = 500
+    static let fallbackSampleIntervalMilliseconds = 1_000
+    static let requiredHealthyUpgradeSampleCount = sampleCount(for: 1_000)
+    static let requiredSuspendedHealthyUpgradeSampleCount = fallbackSampleCount(
+        for: 8_000
+    )
+    static let requiredPositiveBandwidthBootstrapSampleCount = sampleCount(for: 500)
+    static let requiredApplicationLimitedUpgradeSampleCount = sampleCount(for: 1_000)
+    static let applicationLimitedProbeGraceSampleCount = sampleCount(for: 2_000)
+    static let applicationLimitedProbeGraceDuration = Duration.milliseconds(2_000)
+    static let initialApplicationLimitedProbeCooldownSampleCount = sampleCount(for: 8_000)
+    static let maximumApplicationLimitedProbeCooldownSampleCount = sampleCount(for: 64_000)
+    /// A visible sender drains stale probe cooldown within two one-second fallback samples even
+    /// when an older failed probe installed the longer backoff retained for suspended recovery.
+    static let maximumActiveApplicationLimitedProbeCooldownSampleCount =
+        sampleCount(for: 1_000)
     /// When native candidate-pair bandwidth is unavailable, use a slower additive probe backed by
     /// both a stable RTT baseline and advancing low-delay outbound packets. This prevents an
     /// optional stats field from pinning a healthy session at its conservative startup tier.
-    static let requiredUnavailableBandwidthUpgradeSampleCount = 4
-    static let requiredSuspensionPressureSampleCount = 3
+    /// With no optional BWE field, require two consecutive low-delay RTT/queue reports for each
+    /// additive tier. This reacts within one second while preventing alternating pressure samples
+    /// from bouncing the encoder ceiling every poll.
+    static let requiredUnavailableBandwidthUpgradeSampleCount = sampleCount(for: 1_000)
+    static let requiredSuspensionPressureSampleCount = fallbackSampleCount(
+        for: 3_000
+    )
     /// A paused sender cannot produce a useful outbound bitrate estimate. Even when the last
     /// estimate remains positive-but-low, a long latency-stable window permits one bounded probe;
     /// a failed probe resets this counter and therefore supplies the same full cooldown again.
-    static let requiredStableSuspensionResumeProbeSampleCount = 16
-    static let requiredMaximumSuspensionResumeProbeSampleCount = 64
+    static let requiredStableSuspensionResumeProbeSampleCount =
+        fallbackSampleCount(for: 16_000)
+    static let requiredMaximumSuspensionResumeProbeSampleCount =
+        fallbackSampleCount(for: 64_000)
+    static let requiredBandwidthOnlyDowngradeSampleCount = sampleCount(for: 1_000)
 
     private static let minimumVideoBitrateBps = 32_000
     private static let audioAndControlReserveBps = 320_000.0
@@ -116,9 +137,27 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
     private static let roundTripTimeRelativeInflationMultiplier = 1.5
     private static let roundTripTimeAbsoluteInflationSeconds = 0.050
     private static let maximumRoundTripTimeBaselineFallPerSample = 0.010
-    private static let roundTripTimeBootstrapSampleCount = 3
+    static let roundTripTimeBootstrapSampleCount = 3
     private static let maximumAveragePacketSendDelaySeconds = 0.100
     private static let maximumUpgradePacketSendDelaySeconds = 0.020
+
+    private static func sampleCount(for windowMilliseconds: Int) -> Int {
+        max(
+            1,
+            (windowMilliseconds + sampleIntervalMilliseconds - 1)
+                / sampleIntervalMilliseconds
+        )
+    }
+
+    private static func fallbackSampleCount(
+        for windowMilliseconds: Int
+    ) -> Int {
+        max(
+            1,
+            (windowMilliseconds + fallbackSampleIntervalMilliseconds - 1)
+                / fallbackSampleIntervalMilliseconds
+        )
+    }
 
     let configuredTotalRTPBitrateBps: Int
     let maximumTierVideoBitrateBps: Int
@@ -126,10 +165,13 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
     private(set) var peerGeneration: UInt64?
     private(set) var currentTier: WorldwideScreenVideoAdaptationTier
     private(set) var healthyUpgradeSampleCount = 0
+    private(set) var bandwidthOnlyDowngradeSampleCount = 0
     private(set) var unavailableBandwidthSampleCount = 0
     private(set) var positiveBandwidthBootstrapSampleCount = 0
     private(set) var applicationLimitedUpgradeSampleCount = 0
     private(set) var applicationLimitedProbeGraceSamplesRemaining = 0
+    private(set) var applicationLimitedProbeDeadline:
+        ContinuousClock.Instant?
     private(set) var applicationLimitedProbeCooldownSamplesRemaining = 0
     private(set) var applicationLimitedProbeFailureCount = 0
     private(set) var belowReserveProbeDisprovedSenderLimitation = false
@@ -217,6 +259,17 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
         resetPathMeasurements()
     }
 
+    /// Prevents threshold evidence collected on one cadence, or before a long observation gap,
+    /// from being combined with a later sample. Stable route baselines and any already-applied
+    /// probe remain intact; only incomplete evidence windows are discarded.
+    mutating func resetIncompleteEvidenceWindow() {
+        healthyUpgradeSampleCount = 0
+        bandwidthOnlyDowngradeSampleCount = 0
+        unavailableBandwidthSampleCount = 0
+        positiveBandwidthBootstrapSampleCount = 0
+        applicationLimitedUpgradeSampleCount = 0
+    }
+
     /// Returns a recommendation only when the current sender should apply new limits.
     mutating func update(
         peerGeneration generation: UInt64,
@@ -226,7 +279,8 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
         currentRoundTripTimeSeconds: Double?,
         selectedRoute: WebRTCICERouteDiagnostics? = nil,
         outboundVideoPacketsSent: UInt64? = nil,
-        outboundVideoTotalPacketSendDelaySeconds: Double? = nil
+        outboundVideoTotalPacketSendDelaySeconds: Double? = nil,
+        observedAt: ContinuousClock.Instant = .now
     ) -> WorldwideScreenVideoEncodingRecommendation? {
         let didResetForNewPeer = bind(toPeerGeneration: generation)
         if let selectedRoute,
@@ -280,12 +334,17 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
                 && (currentRoundTripTimeSeconds == nil
                     || roundTripTimeAllowsUpgrade)
         } ?? roundTripTimeAllowsUpgrade
+        let strictUpgradeEvidenceIsHealthy = packetQueueAllowsUpgrade
+            && roundTripTimeAllowsUpgrade
         let latencyPressure = roundTripTimeIsInflated || packetQueueIsInflated
+        let latencyEvidenceIsPositivelyHealthy = !latencyPressure
+            && directUpgradeEvidenceIsHealthy
         lastSampleHasLatencyPressure = latencyPressure
 
         guard let availableOutgoingBitrateBps,
               availableOutgoingBitrateBps.isFinite,
               availableOutgoingBitrateBps > 0 else {
+            bandwidthOnlyDowngradeSampleCount = 0
             applicationLimitedUpgradeSampleCount = 0
             if let probeOriginTier = applicationLimitedProbeOriginTier {
                 if latencyPressure {
@@ -329,8 +388,9 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
                 currentTier = lowerTier
                 return isCaptureActive ? currentRecommendation : nil
             }
-            if applicationLimitedProbeCooldownSamplesRemaining > 0 {
-                applicationLimitedProbeCooldownSamplesRemaining -= 1
+            if consumeApplicationLimitedProbeCooldown(
+                isCaptureActive: isCaptureActive
+            ) {
                 healthyUpgradeSampleCount = 0
                 return isCaptureActive && didResetForNewPeer
                     ? currentRecommendation
@@ -417,8 +477,6 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
             }
         }
 
-        let strictUpgradeEvidenceIsHealthy = packetQueueAllowsUpgrade
-            && roundTripTimeAllowsUpgrade
         if let probeOriginTier = applicationLimitedProbeOriginTier {
             let probeCapacityCollapsed =
                 effectiveAvailableOutgoingBitrateBps
@@ -482,10 +540,12 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
             || (audioPriorityProbeIsFeasible
                 && !belowReserveProbeDisprovedSenderLimitation)
         let applicationLimitedHoldIsHealthy = !latencyPressure
+            && isCaptureActive
             && independentlyQualifiedUpgradeTier == nil
             && estimatorMayBeApplicationLimited
             && senderLimitedEstimateCanHoldCurrentTier
         if applicationLimitedHoldIsHealthy {
+            bandwidthOnlyDowngradeSampleCount = 0
             guard currentTier.nextHigherQuality != nil else {
                 applicationLimitedUpgradeSampleCount = 0
                 lastSampleHasPositiveSuspensionPressure = false
@@ -493,8 +553,9 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
                     ? currentRecommendation
                     : nil
             }
-            guard applicationLimitedProbeCooldownSamplesRemaining == 0 else {
-                applicationLimitedProbeCooldownSamplesRemaining -= 1
+            guard !consumeApplicationLimitedProbeCooldown(
+                isCaptureActive: isCaptureActive
+            ) else {
                 applicationLimitedUpgradeSampleCount = 0
                 lastSampleHasPositiveSuspensionPressure = false
                 return isCaptureActive && didResetForNewPeer
@@ -519,6 +580,9 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
                     currentTier = probeTier
                     applicationLimitedProbeGraceSamplesRemaining =
                         Self.applicationLimitedProbeGraceSampleCount
+                    applicationLimitedProbeDeadline = observedAt.advanced(
+                        by: Self.applicationLimitedProbeGraceDuration
+                    )
                     healthyUpgradeSampleCount = 0
                     lastSampleHasPositiveSuspensionPressure = false
                     return isCaptureActive ? currentRecommendation : nil
@@ -545,10 +609,23 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
             sustainableTier = lowerTier
         }
         if sustainableTier.rawValue > currentTier.rawValue {
-            currentTier = sustainableTier
             healthyUpgradeSampleCount = 0
+            if latencyEvidenceIsPositivelyHealthy {
+                if bandwidthOnlyDowngradeSampleCount < Int.max {
+                    bandwidthOnlyDowngradeSampleCount += 1
+                }
+                guard bandwidthOnlyDowngradeSampleCount
+                        >= Self.requiredBandwidthOnlyDowngradeSampleCount else {
+                    return isCaptureActive && didResetForNewPeer
+                        ? currentRecommendation
+                        : nil
+                }
+            }
+            bandwidthOnlyDowngradeSampleCount = 0
+            currentTier = sustainableTier
             return isCaptureActive ? currentRecommendation : nil
         }
+        bandwidthOnlyDowngradeSampleCount = 0
 
         guard sustainableTier.rawValue < currentTier.rawValue,
               let highestUpgradeTier = independentlyQualifiedUpgradeTier else {
@@ -572,8 +649,11 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
         }
 
         healthyUpgradeSampleCount += 1
+        let requiredUpgradeSampleCount = isCaptureActive
+            ? Self.requiredHealthyUpgradeSampleCount
+            : Self.requiredSuspendedHealthyUpgradeSampleCount
         guard healthyUpgradeSampleCount
-                >= Self.requiredHealthyUpgradeSampleCount else {
+                >= requiredUpgradeSampleCount else {
             return isCaptureActive && didResetForNewPeer
                 ? currentRecommendation
                 : nil
@@ -583,6 +663,26 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
         // next tier's raw sustainable band can never make recovery worse.
         currentTier = upgradeTier
         healthyUpgradeSampleCount = 0
+        bandwidthOnlyDowngradeSampleCount = 0
+        return isCaptureActive ? currentRecommendation : nil
+    }
+
+    /// Expires only an already-raised application-limited probe when both statistics lanes stop
+    /// producing native reports. Absence is neither healthy nor congested evidence, so this path
+    /// cannot alter baselines, evidence counts, ordinary tiers, or automatic-suspension state.
+    mutating func expireApplicationLimitedProbeWithoutReport(
+        peerGeneration generation: UInt64,
+        isCaptureActive: Bool,
+        observedAt: ContinuousClock.Instant = .now
+    ) -> WorldwideScreenVideoEncodingRecommendation? {
+        guard peerGeneration == generation,
+              isCaptureActive,
+              let originTier = applicationLimitedProbeOriginTier,
+              let deadline = applicationLimitedProbeDeadline,
+              observedAt >= deadline else {
+            return nil
+        }
+        failApplicationLimitedProbe(revertingTo: originTier)
         return isCaptureActive ? currentRecommendation : nil
     }
 
@@ -671,8 +771,10 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
         automaticResumeProbeRestoration = nil
         currentTier = .audioPriority
         healthyUpgradeSampleCount = 0
+        bandwidthOnlyDowngradeSampleCount = 0
         applicationLimitedUpgradeSampleCount = 0
         applicationLimitedProbeGraceSamplesRemaining = 0
+        applicationLimitedProbeDeadline = nil
         applicationLimitedProbeOriginTier = nil
         resetAutomaticSuspensionMeasurements()
     }
@@ -783,6 +885,7 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
     private mutating func completeApplicationLimitedProbe() {
         applicationLimitedProbeOriginTier = nil
         applicationLimitedProbeGraceSamplesRemaining = 0
+        applicationLimitedProbeDeadline = nil
         applicationLimitedUpgradeSampleCount = 0
         belowReserveProbeDisprovedSenderLimitation = false
         automaticResumeProbeRestoration = nil
@@ -794,12 +897,32 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
         currentTier = applicationLimitedProbeOriginTier
     }
 
+    /// Retains the long exponential backoff for an actually suspended legacy sender, but never
+    /// lets stale failure history hide a changed network from a currently visible session for
+    /// longer than the active reevaluation window.
+    private mutating func consumeApplicationLimitedProbeCooldown(
+        isCaptureActive: Bool
+    ) -> Bool {
+        if isCaptureActive {
+            applicationLimitedProbeCooldownSamplesRemaining = min(
+                applicationLimitedProbeCooldownSamplesRemaining,
+                Self.maximumActiveApplicationLimitedProbeCooldownSampleCount
+            )
+        }
+        guard applicationLimitedProbeCooldownSamplesRemaining > 0 else {
+            return false
+        }
+        applicationLimitedProbeCooldownSamplesRemaining -= 1
+        return true
+    }
+
     private mutating func failApplicationLimitedProbe(
         revertingTo originTier: WorldwideScreenVideoAdaptationTier
     ) {
         currentTier = originTier
         applicationLimitedProbeOriginTier = nil
         applicationLimitedProbeGraceSamplesRemaining = 0
+        applicationLimitedProbeDeadline = nil
         applicationLimitedUpgradeSampleCount = 0
         applicationLimitedProbeFailureCount = min(
             applicationLimitedProbeFailureCount + 1,
@@ -823,10 +946,12 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
 
     private mutating func resetPathMeasurements() {
         healthyUpgradeSampleCount = 0
+        bandwidthOnlyDowngradeSampleCount = 0
         unavailableBandwidthSampleCount = 0
         positiveBandwidthBootstrapSampleCount = 0
         applicationLimitedUpgradeSampleCount = 0
         applicationLimitedProbeGraceSamplesRemaining = 0
+        applicationLimitedProbeDeadline = nil
         applicationLimitedProbeOriginTier = nil
         belowReserveProbeDisprovedSenderLimitation = false
         automaticResumeProbeRestoration = nil

@@ -227,6 +227,9 @@ public struct WebRTCAudioStatistics: Codable, Equatable, Sendable {
 /// A timestamped diagnostic snapshot across route, video, and audio statistics.
 public struct WebRTCStatisticsSnapshot: Codable, Equatable, Sendable {
     public let collectedAt: Date
+    /// The peer-local order in which the native statistics request was started. Synthetic and
+    /// parser-only snapshots leave this unset because no native request was assigned to them.
+    public let collectionSequence: UInt64?
     public let route: WebRTCICERouteDiagnostics?
     public let currentRoundTripTime: Double?
     public let availableOutgoingBitrate: Double?
@@ -240,6 +243,7 @@ public struct WebRTCStatisticsSnapshot: Codable, Equatable, Sendable {
 
     public init(
         collectedAt: Date = Date(),
+        collectionSequence: UInt64? = nil,
         route: WebRTCICERouteDiagnostics? = nil,
         currentRoundTripTime: Double? = nil,
         availableOutgoingBitrate: Double? = nil,
@@ -252,6 +256,7 @@ public struct WebRTCStatisticsSnapshot: Codable, Equatable, Sendable {
         remoteInboundAudio: WebRTCAudioStatistics? = nil
     ) {
         self.collectedAt = collectedAt
+        self.collectionSequence = collectionSequence
         self.route = route
         self.currentRoundTripTime = currentRoundTripTime
         self.availableOutgoingBitrate = availableOutgoingBitrate
