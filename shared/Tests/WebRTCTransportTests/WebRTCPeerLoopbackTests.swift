@@ -460,6 +460,9 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
                 .screenVideoPriorityForTesting()
             XCTAssertEqual(preservedPriority, expectedVideoPriority)
         }
+        let initialTotalRTPCeiling =
+            await host.maximumTotalRTPBitrateBpsForTesting()
+        XCTAssertEqual(initialTotalRTPCeiling, 12_000_000)
 
         let staleUpdate = try XCTUnwrap(firstUpdate)
         let staleRollback = try await host
@@ -469,9 +472,18 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
         XCTAssertFalse(staleRollback)
 
         let priorLimits = try XCTUnwrap(profiles.last)
-        let reversibleUpdate = try await host.applyScreenVideoEncodingLimits(
-            profiles[5]
+        let reversibleProfile = WebRTCScreenVideoEncodingLimits(
+            maximumBitrateBps: profiles[5].maximumBitrateBps,
+            maximumFramesPerSecond: profiles[5].maximumFramesPerSecond,
+            scaleResolutionDownBy: profiles[5].scaleResolutionDownBy,
+            maximumTotalRTPBitrateBps: 2_000_000
         )
+        let reversibleUpdate = try await host.applyScreenVideoEncodingLimits(
+            reversibleProfile
+        )
+        let loweredTotalRTPCeiling =
+            await host.maximumTotalRTPBitrateBpsForTesting()
+        XCTAssertEqual(loweredTotalRTPCeiling, 2_000_000)
         let currentRollback = try await host
             .rollbackScreenVideoEncodingUpdateIfCurrent(
                 reversibleUpdate
@@ -480,6 +492,9 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
         let limitsAfterRollback =
             await host.screenVideoEncodingLimitsForTesting()
         XCTAssertEqual(limitsAfterRollback, priorLimits)
+        let restoredTotalRTPCeiling =
+            await host.maximumTotalRTPBitrateBpsForTesting()
+        XCTAssertEqual(restoredTotalRTPCeiling, 12_000_000)
         let priorityAfterRollback = await host
             .screenVideoPriorityForTesting()
         XCTAssertEqual(priorityAfterRollback, expectedVideoPriority)
@@ -506,6 +521,29 @@ final class WebRTCPeerLoopbackTests: XCTestCase {
             priorLimits,
             "Rejected limits must not mutate the last native sender profile."
         )
+        let totalRTPCeilingAfterSenderRejection =
+            await host.maximumTotalRTPBitrateBpsForTesting()
+        XCTAssertEqual(totalRTPCeilingAfterSenderRejection, 12_000_000)
+
+        do {
+            _ = try await host.applyScreenVideoEncodingLimits(
+                WebRTCScreenVideoEncodingLimits(
+                    maximumBitrateBps: 280_320,
+                    maximumFramesPerSecond: 5,
+                    scaleResolutionDownBy: 4,
+                    maximumTotalRTPBitrateBps: 12_000_001
+                )
+            )
+            XCTFail("A total RTP ceiling above the configured cap must fail closed.")
+        } catch let error as WebRTCTransportError {
+            guard case .nativeFailure = error else {
+                XCTFail("Unexpected error: \(error)")
+                return
+            }
+        }
+        let totalRTPCeilingAfterCapRejection =
+            await host.maximumTotalRTPBitrateBpsForTesting()
+        XCTAssertEqual(totalRTPCeilingAfterCapRejection, 12_000_000)
 
         _ = try await host.setScreenVideoEncodingActive(true)
         let activeBeforeTransportUncertainty = await host

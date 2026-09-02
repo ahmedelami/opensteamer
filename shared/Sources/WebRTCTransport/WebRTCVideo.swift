@@ -19,15 +19,20 @@ public struct WebRTCScreenVideoEncodingLimits: Equatable, Sendable {
     public let maximumBitrateBps: Int
     public let maximumFramesPerSecond: Int
     public let scaleResolutionDownBy: Double
+    /// Optional peer-wide RTP ceiling applied with this sender profile. Raising this native BWE
+    /// ceiling uses WebRTC's no-ALR mid-call probe path; it includes the audio/control reserve.
+    public let maximumTotalRTPBitrateBps: Int?
 
     public init(
         maximumBitrateBps: Int,
         maximumFramesPerSecond: Int,
-        scaleResolutionDownBy: Double
+        scaleResolutionDownBy: Double,
+        maximumTotalRTPBitrateBps: Int? = nil
     ) {
         self.maximumBitrateBps = maximumBitrateBps
         self.maximumFramesPerSecond = maximumFramesPerSecond
         self.scaleResolutionDownBy = scaleResolutionDownBy
+        self.maximumTotalRTPBitrateBps = maximumTotalRTPBitrateBps
     }
 }
 
@@ -38,8 +43,10 @@ public struct WebRTCScreenVideoEncodingUpdate: Sendable {
     let previousMinimumBitrateBps: Int?
     let previousMaximumFramesPerSecond: Int?
     let previousScaleResolutionDownBy: Double?
+    let previousMaximumTotalRTPBitrateBps: Int?
     let previousIsActive: [Bool]
     let appliedIsActive: [Bool]
+    let appliedMaximumTotalRTPBitrateBps: Int?
     let appliedLimits: WebRTCScreenVideoEncodingLimits
 
     init(
@@ -48,8 +55,10 @@ public struct WebRTCScreenVideoEncodingUpdate: Sendable {
         previousMinimumBitrateBps: Int?,
         previousMaximumFramesPerSecond: Int?,
         previousScaleResolutionDownBy: Double?,
+        previousMaximumTotalRTPBitrateBps: Int?,
         previousIsActive: [Bool],
         appliedIsActive: [Bool],
+        appliedMaximumTotalRTPBitrateBps: Int?,
         appliedLimits: WebRTCScreenVideoEncodingLimits
     ) {
         self.generation = generation
@@ -57,8 +66,12 @@ public struct WebRTCScreenVideoEncodingUpdate: Sendable {
         self.previousMinimumBitrateBps = previousMinimumBitrateBps
         self.previousMaximumFramesPerSecond = previousMaximumFramesPerSecond
         self.previousScaleResolutionDownBy = previousScaleResolutionDownBy
+        self.previousMaximumTotalRTPBitrateBps =
+            previousMaximumTotalRTPBitrateBps
         self.previousIsActive = previousIsActive
         self.appliedIsActive = appliedIsActive
+        self.appliedMaximumTotalRTPBitrateBps =
+            appliedMaximumTotalRTPBitrateBps
         self.appliedLimits = appliedLimits
     }
 }

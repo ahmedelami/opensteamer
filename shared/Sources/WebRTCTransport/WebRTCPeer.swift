@@ -2662,6 +2662,7 @@ public actor WebRTCPeer {
     private nonisolated let screenVideoEncoderResumeProbe:
         ScreenVideoEncoderResumeProbe
     private var screenVideoEncodingUpdateGeneration: UInt64 = 0
+    private var currentMaximumTotalRTPBitrateBps: Int?
     private let localIPhoneMicrophoneTrack: LKRTCAudioTrack?
     private let iPhoneMicrophoneReceiverID: String?
     private let iPhoneMicrophonePeerEpoch = UUID()
@@ -3281,6 +3282,7 @@ public actor WebRTCPeer {
                     "WebRTC rejected the configured total RTP bandwidth ceiling."
                 )
             }
+            currentMaximumTotalRTPBitrateBps = maximumVideoBitrate
         }
         guard screenVideoEncoderResumeProbe.installEventHandler({ event in
             probeEventContinuation.yield(event)
@@ -6194,8 +6196,14 @@ public actor WebRTCPeer {
             throw WebRTCTransportError.invalidRole
         }
         let maximumAllowedBitrate = configuredMaximumVideoBitrate ?? Int.max
+        let requestedMaximumTotalRTPBitrateBps =
+            limits.maximumTotalRTPBitrateBps
+                ?? currentMaximumTotalRTPBitrateBps
         guard limits.maximumBitrateBps >= 1,
               limits.maximumBitrateBps <= maximumAllowedBitrate,
+              (requestedMaximumTotalRTPBitrateBps.map {
+                  $0 >= 1 && $0 <= maximumAllowedBitrate
+              } ?? true),
               (1 ... 240).contains(limits.maximumFramesPerSecond),
               limits.scaleResolutionDownBy.isFinite,
               (1 ... 16).contains(limits.scaleResolutionDownBy) else {
@@ -6237,6 +6245,29 @@ public actor WebRTCPeer {
                     : "WebRTC rejected the screen-video encoding limits and their rollback."
             )
         }
+        let previousMaximumTotalRTPBitrateBps =
+            currentMaximumTotalRTPBitrateBps
+        if requestedMaximumTotalRTPBitrateBps
+            != previousMaximumTotalRTPBitrateBps {
+            guard setMaximumTotalRTPBitrateBps(
+                requestedMaximumTotalRTPBitrateBps
+            ) else {
+                let senderRestored = Self.setScreenVideoEncodingState(
+                    previousState,
+                    on: localVideoSender
+                )
+                let ceilingRestored = setMaximumTotalRTPBitrateBps(
+                    previousMaximumTotalRTPBitrateBps
+                )
+                throw WebRTCTransportError.nativeFailure(
+                    senderRestored && ceilingRestored
+                        ? "WebRTC rejected the total RTP bandwidth ceiling."
+                        : "WebRTC rejected the total RTP bandwidth ceiling and its rollback."
+                )
+            }
+            currentMaximumTotalRTPBitrateBps =
+                requestedMaximumTotalRTPBitrateBps
+        }
 
         screenVideoEncodingUpdateGeneration &+= 1
         return WebRTCScreenVideoEncodingUpdate(
@@ -6247,8 +6278,12 @@ public actor WebRTCPeer {
                 previousState.maximumFramesPerSecond,
             previousScaleResolutionDownBy:
                 previousState.scaleResolutionDownBy,
+            previousMaximumTotalRTPBitrateBps:
+                previousMaximumTotalRTPBitrateBps,
             previousIsActive: previousState.isActive,
             appliedIsActive: requestedState.isActive,
+            appliedMaximumTotalRTPBitrateBps:
+                requestedMaximumTotalRTPBitrateBps,
             appliedLimits: limits
         )
     }
@@ -6284,7 +6319,8 @@ public actor WebRTCPeer {
         guard Self.screenVideoEncodingStatesMatch(
             currentState,
             appliedState
-        ) else {
+        ), currentMaximumTotalRTPBitrateBps
+            == update.appliedMaximumTotalRTPBitrateBps else {
             return false
         }
         try rejectScreenVideoEncodingMutationDuringResumeProbe(
@@ -6309,8 +6345,34 @@ public actor WebRTCPeer {
                 "WebRTC rejected a stale screen-video encoding rollback."
             )
         }
+        if currentMaximumTotalRTPBitrateBps
+            != update.previousMaximumTotalRTPBitrateBps {
+            guard setMaximumTotalRTPBitrateBps(
+                update.previousMaximumTotalRTPBitrateBps
+            ) else {
+                let senderRestored = Self.setScreenVideoEncodingState(
+                    appliedState,
+                    on: localVideoSender
+                )
+                throw WebRTCTransportError.nativeFailure(
+                    senderRestored
+                        ? "WebRTC rejected a stale total RTP ceiling rollback."
+                        : "WebRTC rejected a stale total RTP ceiling rollback and sender restoration."
+                )
+            }
+            currentMaximumTotalRTPBitrateBps =
+                update.previousMaximumTotalRTPBitrateBps
+        }
         screenVideoEncodingUpdateGeneration &+= 1
         return true
+    }
+
+    private func setMaximumTotalRTPBitrateBps(_ value: Int?) -> Bool {
+        peerConnection.setBweMinBitrateBps(
+            nil,
+            currentBitrateBps: nil,
+            maxBitrateBps: value.map(NSNumber.init)
+        )
     }
 
     /// Atomically changes every RTP encoding's activity bit, reads the native state back, and
@@ -6478,6 +6540,10 @@ public actor WebRTCPeer {
     func screenVideoEncodingLimitsForTesting()
         -> WebRTCScreenVideoEncodingLimits? {
         localVideoSender.flatMap(Self.screenVideoEncodingLimits)
+    }
+
+    func maximumTotalRTPBitrateBpsForTesting() -> Int? {
+        currentMaximumTotalRTPBitrateBps
     }
 
     func screenVideoEncodingActivityForTesting() -> [Bool]? {

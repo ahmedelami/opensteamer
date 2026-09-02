@@ -61,6 +61,7 @@ enum WorldwideScreenVideoAdaptationTier: Int, CaseIterable, Equatable, Sendable 
 struct WorldwideScreenVideoEncodingRecommendation: Equatable, Sendable {
     let tier: WorldwideScreenVideoAdaptationTier
     let maximumBitrateBps: Int
+    let maximumTotalRTPBitrateBps: Int
     let maximumFramesPerSecond: Int
     let scaleResolutionDownBy: Double
 
@@ -68,7 +69,8 @@ struct WorldwideScreenVideoEncodingRecommendation: Equatable, Sendable {
         WebRTCScreenVideoEncodingLimits(
             maximumBitrateBps: maximumBitrateBps,
             maximumFramesPerSecond: maximumFramesPerSecond,
-            scaleResolutionDownBy: scaleResolutionDownBy
+            scaleResolutionDownBy: scaleResolutionDownBy,
+            maximumTotalRTPBitrateBps: maximumTotalRTPBitrateBps
         )
     }
 }
@@ -80,6 +82,12 @@ enum WorldwideScreenVideoAutomaticSuspensionDecision: Equatable, Sendable {
 
 /// Converts transport capacity into a stable, single-layer screen-video encoding ceiling.
 struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
+    private enum PacketQueueObservation: Equatable, Sendable {
+        case measured(Double)
+        case noNewPackets
+        case unavailableOrReset
+    }
+
     private struct AutomaticResumeProbeRestoration: Equatable, Sendable {
         let belowReserveProbeDisprovedSenderLimitation: Bool
         let applicationLimitedProbeCooldownSamplesRemaining: Int
@@ -96,9 +104,12 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
         for: 8_000
     )
     static let requiredPositiveBandwidthBootstrapSampleCount = sampleCount(for: 500)
-    static let requiredApplicationLimitedUpgradeSampleCount = sampleCount(for: 1_000)
-    static let applicationLimitedProbeGraceSampleCount = sampleCount(for: 2_000)
-    static let applicationLimitedProbeGraceDuration = Duration.milliseconds(2_000)
+    // Raising the peer-wide BWE ceiling does not change decoded geometry. Once RTT and advancing
+    // low-delay packet evidence are established, one fresh 500 ms sample may request the bounded
+    // native probe instead of waiting through another visible-quality interval.
+    static let requiredApplicationLimitedUpgradeSampleCount = sampleCount(for: 500)
+    static let applicationLimitedProbeGraceSampleCount = sampleCount(for: 3_500)
+    static let applicationLimitedProbeGraceDuration = Duration.milliseconds(3_500)
     static let initialApplicationLimitedProbeCooldownSampleCount = sampleCount(for: 8_000)
     static let maximumApplicationLimitedProbeCooldownSampleCount = sampleCount(for: 64_000)
     /// A visible sender drains stale probe cooldown within two one-second fallback samples even
@@ -123,6 +134,10 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
     static let requiredMaximumSuspensionResumeProbeSampleCount =
         fallbackSampleCount(for: 64_000)
     static let requiredBandwidthOnlyDowngradeSampleCount = sampleCount(for: 1_000)
+    /// Encoder reconfiguration and key-frame bursts can produce one high packet-send-delay delta
+    /// even when the path is healthy. Require a second consecutive queue-pressure sample before
+    /// treating queue delay as congestion; RTT inflation and bandwidth collapse remain immediate.
+    static let requiredQueuePressureSampleCount = sampleCount(for: 1_000)
 
     private static let minimumVideoBitrateBps = 32_000
     private static let audioAndControlReserveBps = 320_000.0
@@ -132,14 +147,17 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
     /// The native controller is capped at the same configured total. Treat a small estimator gap
     /// at that ceiling as cap saturation rather than requiring an exact floating-point sample.
     private static let configuredCapacitySaturationRatio = 0.95
-    private static let applicationLimitedSaturationRatio = 0.85
+    private static let applicationLimitedSaturationRatio = 0.80
     private static let applicationLimitedProbeImmediateAbortRatio = 0.75
     private static let roundTripTimeRelativeInflationMultiplier = 1.5
     private static let roundTripTimeAbsoluteInflationSeconds = 0.050
     private static let maximumRoundTripTimeBaselineFallPerSample = 0.010
     static let roundTripTimeBootstrapSampleCount = 3
     private static let maximumAveragePacketSendDelaySeconds = 0.100
+    private static let immediateAveragePacketSendDelaySeconds = 0.200
     private static let maximumUpgradePacketSendDelaySeconds = 0.020
+    private static let lowDelayPacketQueueObservationValidity =
+        Duration.milliseconds(1_500)
 
     private static func sampleCount(for windowMilliseconds: Int) -> Int {
         max(
@@ -166,9 +184,11 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
     private(set) var currentTier: WorldwideScreenVideoAdaptationTier
     private(set) var healthyUpgradeSampleCount = 0
     private(set) var bandwidthOnlyDowngradeSampleCount = 0
+    private(set) var queuePressureSampleCount = 0
     private(set) var unavailableBandwidthSampleCount = 0
     private(set) var positiveBandwidthBootstrapSampleCount = 0
     private(set) var applicationLimitedUpgradeSampleCount = 0
+    private(set) var applicationLimitedProbeHealthySampleCount = 0
     private(set) var applicationLimitedProbeGraceSamplesRemaining = 0
     private(set) var applicationLimitedProbeDeadline:
         ContinuousClock.Instant?
@@ -179,6 +199,9 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
         AutomaticResumeProbeRestoration?
     private(set) var applicationLimitedProbeOriginTier:
         WorldwideScreenVideoAdaptationTier?
+    private(set) var applicationLimitedProbeBestQualifiedTier:
+        WorldwideScreenVideoAdaptationTier?
+    private(set) var applicationLimitedProbeMaximumTotalRTPBitrateBps: Int?
     private(set) var automaticSuspensionPressureSampleCount = 0
     private(set) var stableSuspensionResumeProbeSampleCount = 0
     private(set) var maximumSuspensionResumeProbeSampleCount = 0
@@ -186,6 +209,10 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
     private(set) var lastSampleHasLatencyPressure = false
     private(set) var lastSampleHasPositiveSuspensionPressure = false
     private(set) var lastAveragePacketSendDelaySeconds: Double?
+    private var lastLowDelayPacketQueueObservation:
+        ContinuousClock.Instant?
+    private var lastSoftPacketQueuePressureObservation:
+        ContinuousClock.Instant?
     private(set) var roundTripTimeBaselineSeconds: Double?
     private var roundTripTimeBootstrapSamples: [Double] = []
     private(set) var selectedRoute: WebRTCICERouteDiagnostics?
@@ -216,7 +243,44 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
     }
 
     var currentRecommendation: WorldwideScreenVideoEncodingRecommendation {
-        recommendation(for: currentTier)
+        let ordinaryRecommendation = recommendation(for: currentTier)
+        guard applicationLimitedProbeOriginTier != nil,
+              let applicationLimitedProbeMaximumTotalRTPBitrateBps else {
+            return ordinaryRecommendation
+        }
+        // A capacity probe raises libwebrtc's peer-wide BWE ceiling in bounded steps while keeping
+        // scale and frame cadence stable. The global-ceiling path can initiate or extend a native
+        // probe without requiring ALR; the 2x bound prevents its padding burst from starving audio.
+        return WorldwideScreenVideoEncodingRecommendation(
+            tier: currentTier,
+            maximumBitrateBps: maximumTierVideoBitrateBps,
+            maximumTotalRTPBitrateBps:
+                applicationLimitedProbeMaximumTotalRTPBitrateBps,
+            maximumFramesPerSecond:
+                ordinaryRecommendation.maximumFramesPerSecond,
+            scaleResolutionDownBy:
+                ordinaryRecommendation.scaleResolutionDownBy
+        )
+    }
+
+    var currentTierMinimumSustainableBitrateBps: Int {
+        Int(requiredOutgoingBitrateBps(for: currentTier).rounded(.up))
+    }
+
+    var nextHigherTierMinimumDirectUpgradeBitrateBps: Int? {
+        guard let nextHigherTier = currentTier.nextHigherQuality else {
+            return nil
+        }
+        let requiredBitrate = requiredOutgoingBitrateBps(for: nextHigherTier)
+        guard requiredBitrate <= Double(configuredTotalRTPBitrateBps) else {
+            return nil
+        }
+        return Int(
+            min(
+                Double(configuredTotalRTPBitrateBps),
+                requiredBitrate * Self.upgradeMarginMultiplier
+            ).rounded(.up)
+        )
     }
 
     func recommendation(
@@ -229,6 +293,8 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
         return WorldwideScreenVideoEncodingRecommendation(
             tier: tier,
             maximumBitrateBps: maximumBitrateBps,
+            maximumTotalRTPBitrateBps:
+                maximumTotalRTPBitrateBps(for: tier),
             maximumFramesPerSecond: min(
                 baseFramesPerSecond,
                 tier.framesPerSecond
@@ -265,9 +331,14 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
     mutating func resetIncompleteEvidenceWindow() {
         healthyUpgradeSampleCount = 0
         bandwidthOnlyDowngradeSampleCount = 0
+        queuePressureSampleCount = 0
+        lastLowDelayPacketQueueObservation = nil
+        lastSoftPacketQueuePressureObservation = nil
         unavailableBandwidthSampleCount = 0
         positiveBandwidthBootstrapSampleCount = 0
         applicationLimitedUpgradeSampleCount = 0
+        applicationLimitedProbeHealthySampleCount = 0
+        applicationLimitedProbeBestQualifiedTier = nil
     }
 
     /// Returns a recommendation only when the current sender should apply new limits.
@@ -313,19 +384,88 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
         if let currentRoundTripTimeSeconds {
             updateRoundTripTimeBaseline(currentRoundTripTimeSeconds)
         }
-        let averagePacketSendDelaySeconds =
-            averagePacketSendDelaySinceLastSample(
+        let packetQueueObservation = packetQueueObservationSinceLastSample(
                 packetsSent: outboundVideoPacketsSent,
                 totalPacketSendDelaySeconds:
                     outboundVideoTotalPacketSendDelaySeconds
             )
+        let averagePacketSendDelaySeconds: Double?
+        switch packetQueueObservation {
+        case let .measured(value):
+            averagePacketSendDelaySeconds = value
+        case .noNewPackets, .unavailableOrReset:
+            averagePacketSendDelaySeconds = nil
+        }
         lastAveragePacketSendDelaySeconds = averagePacketSendDelaySeconds
-        let packetQueueIsInflated = averagePacketSendDelaySeconds.map {
+        let packetQueueSampleIsInflated = averagePacketSendDelaySeconds.map {
             $0 > Self.maximumAveragePacketSendDelaySeconds
         } ?? false
-        let packetQueueAllowsUpgrade = averagePacketSendDelaySeconds.map {
-            $0 <= Self.maximumUpgradePacketSendDelaySeconds
-        } ?? false
+        let packetQueueSampleRequiresImmediateResponse =
+            averagePacketSendDelaySeconds.map {
+                $0 >= Self.immediateAveragePacketSendDelaySeconds
+            } ?? false
+        switch packetQueueObservation {
+        case .measured where packetQueueSampleIsInflated
+            && !roundTripTimeIsInflated:
+            if let lastSoftPacketQueuePressureObservation,
+               !isFreshPacketQueueObservation(
+                   lastSoftPacketQueuePressureObservation,
+                   at: observedAt
+               ) {
+                queuePressureSampleCount = 0
+            }
+            if queuePressureSampleCount < Int.max {
+                queuePressureSampleCount += 1
+            }
+            lastSoftPacketQueuePressureObservation = observedAt
+        case .noNewPackets where !roundTripTimeIsInflated:
+            if let lastSoftPacketQueuePressureObservation,
+               !isFreshPacketQueueObservation(
+                   lastSoftPacketQueuePressureObservation,
+                   at: observedAt
+               ) {
+                queuePressureSampleCount = 0
+                self.lastSoftPacketQueuePressureObservation = nil
+            }
+        case .measured, .unavailableOrReset, .noNewPackets:
+            queuePressureSampleCount = 0
+            lastSoftPacketQueuePressureObservation = nil
+        }
+        let packetQueueIsInflated = packetQueueSampleIsInflated
+            && (packetQueueSampleRequiresImmediateResponse
+                || queuePressureSampleCount >= Self.requiredQueuePressureSampleCount)
+        switch packetQueueObservation {
+        case let .measured(averagePacketSendDelaySeconds):
+            lastLowDelayPacketQueueObservation =
+                averagePacketSendDelaySeconds
+                    <= Self.maximumUpgradePacketSendDelaySeconds
+                ? observedAt
+                : nil
+        case .noNewPackets:
+            if let lastLowDelayPacketQueueObservation,
+               !isFreshPacketQueueObservation(
+                   lastLowDelayPacketQueueObservation,
+                   at: observedAt
+               ) {
+                self.lastLowDelayPacketQueueObservation = nil
+            }
+        case .unavailableOrReset:
+            lastLowDelayPacketQueueObservation = nil
+        }
+        let packetQueueAllowsUpgrade: Bool
+        if let averagePacketSendDelaySeconds {
+            packetQueueAllowsUpgrade = averagePacketSendDelaySeconds
+                <= Self.maximumUpgradePacketSendDelaySeconds
+        } else if let lastLowDelayPacketQueueObservation {
+            let observationAge = lastLowDelayPacketQueueObservation.duration(
+                to: observedAt
+            )
+            packetQueueAllowsUpgrade = observationAge >= .zero
+                && observationAge
+                    <= Self.lowDelayPacketQueueObservationValidity
+        } else {
+            packetQueueAllowsUpgrade = false
+        }
         let roundTripTimeAllowsUpgrade = roundTripTimeAllowsUpgrade(
             currentRoundTripTimeSeconds
         )
@@ -347,10 +487,21 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
             bandwidthOnlyDowngradeSampleCount = 0
             applicationLimitedUpgradeSampleCount = 0
             if let probeOriginTier = applicationLimitedProbeOriginTier {
+                let probeDeadlineExpired = applicationLimitedProbeDeadline.map {
+                    observedAt >= $0
+                } ?? true
                 if latencyPressure {
                     failApplicationLimitedProbe(
                         revertingTo: probeOriginTier
                     )
+                    lastSampleHasPositiveSuspensionPressure = true
+                    return isCaptureActive ? currentRecommendation : nil
+                } else if probeDeadlineExpired {
+                    finishApplicationLimitedProbe(
+                        revertingTo: probeOriginTier
+                    )
+                    lastSampleHasPositiveSuspensionPressure = false
+                    return isCaptureActive ? currentRecommendation : nil
                 } else if applicationLimitedProbeGraceSamplesRemaining > 1 {
                     applicationLimitedProbeGraceSamplesRemaining -= 1
                     lastSampleHasPositiveSuspensionPressure = false
@@ -358,7 +509,7 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
                         ? currentRecommendation
                         : nil
                 } else {
-                    failApplicationLimitedProbe(
+                    finishApplicationLimitedProbe(
                         revertingTo: probeOriginTier
                     )
                     lastSampleHasPositiveSuspensionPressure = false
@@ -386,6 +537,7 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
                         : nil
                 }
                 currentTier = lowerTier
+                resetQueueEvidenceForTierTransition()
                 return isCaptureActive ? currentRecommendation : nil
             }
             if consumeApplicationLimitedProbeCooldown(
@@ -419,6 +571,7 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
                     : nil
             }
             currentTier = upgradeTier
+            resetQueueEvidenceForTierTransition()
             healthyUpgradeSampleCount = 0
             return currentRecommendation
         }
@@ -437,6 +590,9 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
         } else {
             effectiveAvailableOutgoingBitrateBps = availableOutgoingBitrateBps
         }
+        let capacitySustainableTier = sustainableTier(
+            for: effectiveAvailableOutgoingBitrateBps
+        )
         let independentlyQualifiedUpgradeTier = highestQualifiedUpgradeTier(
             for: effectiveAvailableOutgoingBitrateBps
         )
@@ -478,6 +634,10 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
         }
 
         if let probeOriginTier = applicationLimitedProbeOriginTier {
+            let probeQualifiedTier = capacitySustainableTier.rawValue
+                < probeOriginTier.rawValue
+                ? capacitySustainableTier
+                : nil
             let probeCapacityCollapsed =
                 effectiveAvailableOutgoingBitrateBps
                     < max(
@@ -487,6 +647,9 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
                                 .maximumBitrateBps
                         ) * Self.applicationLimitedProbeImmediateAbortRatio
                     )
+            let probeDeadlineExpired = applicationLimitedProbeDeadline.map {
+                observedAt >= $0
+            } ?? true
             if latencyPressure || probeCapacityCollapsed {
                 if probeCapacityCollapsed,
                    effectiveAvailableOutgoingBitrateBps
@@ -497,25 +660,100 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
                     belowReserveProbeDisprovedSenderLimitation = true
                 }
                 failApplicationLimitedProbe(revertingTo: probeOriginTier)
-            } else if estimatorMayBeApplicationLimited,
-                      strictUpgradeEvidenceIsHealthy {
-                completeApplicationLimitedProbe()
-                lastSampleHasPositiveSuspensionPressure = false
-                return isCaptureActive && didResetForNewPeer
-                    ? currentRecommendation
-                    : nil
-            } else if applicationLimitedProbeGraceSamplesRemaining > 1 {
-                applicationLimitedProbeGraceSamplesRemaining -= 1
+                if capacitySustainableTier.rawValue > probeOriginTier.rawValue {
+                    // This is still one terminal decision for the report: independently worse BWE
+                    // may protect the audio/control reserve, while probe-only latency merely
+                    // restores the unchanged visible origin tier.
+                    currentTier = capacitySustainableTier
+                    resetQueueEvidenceForTierTransition()
+                }
+                lastSampleHasPositiveSuspensionPressure = latencyPressure
+                    || effectiveAvailableOutgoingBitrateBps
+                        < requiredAudioPriorityBitrateBps
+                return isCaptureActive ? currentRecommendation : nil
+            } else if packetQueueSampleIsInflated,
+                      !packetQueueIsInflated,
+                      !roundTripTimeIsInflated {
+                // A single transition burst neither confirms capacity nor consumes sample grace.
+                // The absolute deadline still bounds the ceiling-only probe.
                 applicationLimitedUpgradeSampleCount = 0
                 lastSampleHasPositiveSuspensionPressure = false
+                if probeDeadlineExpired {
+                    if applicationLimitedProbeBestQualifiedTier == nil,
+                       effectiveAvailableOutgoingBitrateBps
+                        < requiredAudioPriorityBitrateBps {
+                        belowReserveProbeDisprovedSenderLimitation = true
+                    }
+                    finishApplicationLimitedProbe(
+                        revertingTo: probeOriginTier
+                    )
+                    return isCaptureActive ? currentRecommendation : nil
+                }
                 return isCaptureActive && didResetForNewPeer
                     ? currentRecommendation
                     : nil
+            }
+
+            if strictUpgradeEvidenceIsHealthy,
+               let qualifiedTier = probeQualifiedTier {
+                if applicationLimitedProbeBestQualifiedTier == qualifiedTier {
+                    if applicationLimitedProbeHealthySampleCount < Int.max {
+                        applicationLimitedProbeHealthySampleCount += 1
+                    }
+                } else {
+                    applicationLimitedProbeBestQualifiedTier = qualifiedTier
+                    applicationLimitedProbeHealthySampleCount = 1
+                }
             } else {
-                failApplicationLimitedProbe(revertingTo: probeOriginTier)
+                applicationLimitedProbeHealthySampleCount = 0
+            }
+
+            if applicationLimitedProbeHealthySampleCount
+                >= Self.requiredHealthyUpgradeSampleCount,
+               applicationLimitedProbeBestQualifiedTier == .full {
+                completeApplicationLimitedProbe(committing: .full)
                 lastSampleHasPositiveSuspensionPressure = false
                 return isCaptureActive ? currentRecommendation : nil
             }
+
+            if !probeDeadlineExpired,
+               applicationLimitedProbeGraceSamplesRemaining > 1,
+               strictUpgradeEvidenceIsHealthy,
+               let currentProbeCeiling =
+                applicationLimitedProbeMaximumTotalRTPBitrateBps {
+                let nextProbeCeiling = boundedApplicationLimitedProbeCeiling(
+                    availableOutgoingBitrateBps:
+                        effectiveAvailableOutgoingBitrateBps,
+                    currentCeilingBps: currentProbeCeiling
+                )
+                if nextProbeCeiling > currentProbeCeiling {
+                    applicationLimitedProbeMaximumTotalRTPBitrateBps =
+                        nextProbeCeiling
+                    applicationLimitedProbeGraceSamplesRemaining -= 1
+                    applicationLimitedUpgradeSampleCount = 0
+                    lastSampleHasPositiveSuspensionPressure = false
+                    return isCaptureActive ? currentRecommendation : nil
+                }
+            }
+
+            if applicationLimitedProbeGraceSamplesRemaining > 0 {
+                applicationLimitedProbeGraceSamplesRemaining -= 1
+            }
+            applicationLimitedUpgradeSampleCount = 0
+            lastSampleHasPositiveSuspensionPressure = false
+            if probeDeadlineExpired
+                || applicationLimitedProbeGraceSamplesRemaining == 0 {
+                if applicationLimitedProbeBestQualifiedTier == nil,
+                   effectiveAvailableOutgoingBitrateBps
+                    < requiredAudioPriorityBitrateBps {
+                    belowReserveProbeDisprovedSenderLimitation = true
+                }
+                finishApplicationLimitedProbe(revertingTo: probeOriginTier)
+                return isCaptureActive ? currentRecommendation : nil
+            }
+            return isCaptureActive && didResetForNewPeer
+                ? currentRecommendation
+                : nil
         }
 
         if independentlyQualifiedUpgradeTier != nil,
@@ -573,17 +811,12 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
             if applicationLimitedUpgradeSampleCount
                 >= Self.requiredApplicationLimitedUpgradeSampleCount {
                 applicationLimitedUpgradeSampleCount = 0
-                if let probeTier = currentTier.nextHigherQuality,
-                   requiredOutgoingBitrateBps(for: probeTier)
-                    <= Double(configuredTotalRTPBitrateBps) {
-                    applicationLimitedProbeOriginTier = currentTier
-                    currentTier = probeTier
-                    applicationLimitedProbeGraceSamplesRemaining =
-                        Self.applicationLimitedProbeGraceSampleCount
-                    applicationLimitedProbeDeadline = observedAt.advanced(
-                        by: Self.applicationLimitedProbeGraceDuration
-                    )
-                    healthyUpgradeSampleCount = 0
+                if beginApplicationLimitedProbe(
+                    from: currentTier,
+                    availableOutgoingBitrateBps:
+                        effectiveAvailableOutgoingBitrateBps,
+                    observedAt: observedAt
+                ) {
                     lastSampleHasPositiveSuspensionPressure = false
                     return isCaptureActive ? currentRecommendation : nil
                 }
@@ -596,14 +829,34 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
             applicationLimitedUpgradeSampleCount = 0
         }
 
+        if packetQueueSampleIsInflated,
+           !packetQueueIsInflated,
+           !roundTripTimeIsInflated,
+           capacitySustainableTier.rawValue <= currentTier.rawValue {
+            // One transition-sized queue delta is neither healthy upgrade evidence nor proof that
+            // a sender-censored BWE is the path capacity. Hold the visible tier for one sample.
+            healthyUpgradeSampleCount = 0
+            bandwidthOnlyDowngradeSampleCount = 0
+            lastSampleHasPositiveSuspensionPressure = false
+            return isCaptureActive && didResetForNewPeer
+                ? currentRecommendation
+                : nil
+        }
+
         lastSampleHasPositiveSuspensionPressure = latencyPressure
             || effectiveAvailableOutgoingBitrateBps
                 < requiredOutgoingBitrateBps(for: .audioPriority)
 
-        var sustainableTier = sustainableTier(
-            for: effectiveAvailableOutgoingBitrateBps
-        )
-        if latencyPressure,
+        var sustainableTier = capacitySustainableTier
+        if packetQueueIsInflated,
+           !roundTripTimeIsInflated,
+           let lowerTier = currentTier.nextLowerQuality {
+            // Queue-only congestion walks down one tier per fresh sample. This remains a fast
+            // 500 ms response while avoiding a direct collapse based on a censored BWE.
+            if lowerTier.rawValue > sustainableTier.rawValue {
+                sustainableTier = lowerTier
+            }
+        } else if latencyPressure,
            let lowerTier = currentTier.nextLowerQuality,
            lowerTier.rawValue > sustainableTier.rawValue {
             sustainableTier = lowerTier
@@ -623,6 +876,7 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
             }
             bandwidthOnlyDowngradeSampleCount = 0
             currentTier = sustainableTier
+            resetQueueEvidenceForTierTransition()
             return isCaptureActive ? currentRecommendation : nil
         }
         bandwidthOnlyDowngradeSampleCount = 0
@@ -662,6 +916,7 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
         // upgrade margin. Select the highest independently qualified tier so crossing into the
         // next tier's raw sustainable band can never make recovery worse.
         currentTier = upgradeTier
+        resetQueueEvidenceForTierTransition()
         healthyUpgradeSampleCount = 0
         bandwidthOnlyDowngradeSampleCount = 0
         return isCaptureActive ? currentRecommendation : nil
@@ -682,7 +937,7 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
               observedAt >= deadline else {
             return nil
         }
-        failApplicationLimitedProbe(revertingTo: originTier)
+        finishApplicationLimitedProbe(revertingTo: originTier)
         return isCaptureActive ? currentRecommendation : nil
     }
 
@@ -770,12 +1025,16 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
         }
         automaticResumeProbeRestoration = nil
         currentTier = .audioPriority
+        resetQueueEvidenceForTierTransition()
         healthyUpgradeSampleCount = 0
         bandwidthOnlyDowngradeSampleCount = 0
         applicationLimitedUpgradeSampleCount = 0
+        applicationLimitedProbeHealthySampleCount = 0
         applicationLimitedProbeGraceSamplesRemaining = 0
         applicationLimitedProbeDeadline = nil
         applicationLimitedProbeOriginTier = nil
+        applicationLimitedProbeBestQualifiedTier = nil
+        applicationLimitedProbeMaximumTotalRTPBitrateBps = nil
         resetAutomaticSuspensionMeasurements()
     }
 
@@ -817,16 +1076,24 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
     private func requiredOutgoingBitrateBps(
         for tier: WorldwideScreenVideoAdaptationTier
     ) -> Double {
-        let referenceVideoBitrate = referenceVideoBitrateBps(
-            for: tier
-        )
-        let videoBitrate = max(
-            referenceVideoBitrate,
-            recommendation(for: tier).maximumBitrateBps
-        )
-        return Double(videoBitrate)
+        // Tier selection is based on calibrated codec demand. The separately configured 50 Mbps
+        // RTP value remains a native sender ceiling, but must not multiply the bandwidth required
+        // to choose a resolution/fps tier.
+        return Double(Self.baselineReferenceVideoBitrateBps(for: tier))
             * Self.downgradeHeadroomMultiplier
             + Self.audioAndControlReserveBps
+    }
+
+    private func maximumTotalRTPBitrateBps(
+        for tier: WorldwideScreenVideoAdaptationTier
+    ) -> Int {
+        Int(
+            min(
+                Double(configuredTotalRTPBitrateBps),
+                requiredOutgoingBitrateBps(for: tier)
+                    * Self.upgradeMarginMultiplier
+            ).rounded(.up)
+        )
     }
 
     private static func initialTier(
@@ -874,16 +1141,78 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
         )
     }
 
+    private func boundedApplicationLimitedProbeCeiling(
+        availableOutgoingBitrateBps: Double,
+        currentCeilingBps: Int
+    ) -> Int {
+        guard availableOutgoingBitrateBps.isFinite,
+              availableOutgoingBitrateBps > 0 else {
+            return currentCeilingBps
+        }
+        let fullProbeCeiling = maximumTotalRTPBitrateBps(for: .full)
+        let doubledEstimate = min(
+            Double(fullProbeCeiling),
+            availableOutgoingBitrateBps * 2
+        )
+        return max(
+            currentCeilingBps,
+            Int(doubledEstimate.rounded(.down))
+        )
+    }
+
     private func estimatorIsApplicationLimited(
         _ availableOutgoingBitrateBps: Double
     ) -> Bool {
         return availableOutgoingBitrateBps
-            >= Double(currentRecommendation.maximumBitrateBps)
+            >= Double(maximumTotalRTPBitrateBps(for: currentTier))
                 * Self.applicationLimitedSaturationRatio
     }
 
-    private mutating func completeApplicationLimitedProbe() {
+    private mutating func beginApplicationLimitedProbe(
+        from originTier: WorldwideScreenVideoAdaptationTier,
+        availableOutgoingBitrateBps: Double,
+        observedAt: ContinuousClock.Instant
+    ) -> Bool {
+        guard let probeTier = originTier.nextHigherQuality,
+              requiredOutgoingBitrateBps(for: probeTier)
+                <= Double(configuredTotalRTPBitrateBps) else {
+            return false
+        }
+        applicationLimitedProbeOriginTier = originTier
+        applicationLimitedProbeBestQualifiedTier = nil
+        applicationLimitedProbeHealthySampleCount = 0
+        let ordinaryCeiling = maximumTotalRTPBitrateBps(for: originTier)
+        let probeCeiling = boundedApplicationLimitedProbeCeiling(
+            availableOutgoingBitrateBps: availableOutgoingBitrateBps,
+            currentCeilingBps: ordinaryCeiling
+        )
+        guard probeCeiling > ordinaryCeiling else {
+            applicationLimitedProbeOriginTier = nil
+            return false
+        }
+        applicationLimitedProbeMaximumTotalRTPBitrateBps = probeCeiling
+        // This is a bitrate/BWE-ceiling-only transition. Preserve the fresh low-delay packet
+        // observation so a 1 fps sender can evaluate the next no-packet poll; visible tier changes
+        // still reset queue evidence through complete/fail paths.
+        applicationLimitedProbeGraceSamplesRemaining =
+            Self.applicationLimitedProbeGraceSampleCount
+        applicationLimitedProbeDeadline = observedAt.advanced(
+            by: Self.applicationLimitedProbeGraceDuration
+        )
+        applicationLimitedUpgradeSampleCount = 0
+        healthyUpgradeSampleCount = 0
+        return true
+    }
+
+    private mutating func completeApplicationLimitedProbe(
+        committing tier: WorldwideScreenVideoAdaptationTier
+    ) {
+        currentTier = tier
+        resetQueueEvidenceForTierTransition()
         applicationLimitedProbeOriginTier = nil
+        applicationLimitedProbeBestQualifiedTier = nil
+        applicationLimitedProbeMaximumTotalRTPBitrateBps = nil
+        applicationLimitedProbeHealthySampleCount = 0
         applicationLimitedProbeGraceSamplesRemaining = 0
         applicationLimitedProbeDeadline = nil
         applicationLimitedUpgradeSampleCount = 0
@@ -892,9 +1221,28 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
         resetApplicationLimitedProbeBackoff()
     }
 
+    private mutating func finishApplicationLimitedProbe(
+        revertingTo originTier: WorldwideScreenVideoAdaptationTier
+    ) {
+        if applicationLimitedProbeHealthySampleCount
+            >= Self.requiredHealthyUpgradeSampleCount,
+           let qualifiedTier = applicationLimitedProbeBestQualifiedTier {
+            completeApplicationLimitedProbe(committing: qualifiedTier)
+        } else {
+            failApplicationLimitedProbe(revertingTo: originTier)
+        }
+    }
+
     private mutating func revertApplicationLimitedProbeIfActive() {
         guard let applicationLimitedProbeOriginTier else { return }
         currentTier = applicationLimitedProbeOriginTier
+        resetQueueEvidenceForTierTransition()
+        self.applicationLimitedProbeOriginTier = nil
+        applicationLimitedProbeBestQualifiedTier = nil
+        applicationLimitedProbeMaximumTotalRTPBitrateBps = nil
+        applicationLimitedProbeHealthySampleCount = 0
+        applicationLimitedProbeGraceSamplesRemaining = 0
+        applicationLimitedProbeDeadline = nil
     }
 
     /// Retains the long exponential backoff for an actually suspended legacy sender, but never
@@ -920,7 +1268,11 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
         revertingTo originTier: WorldwideScreenVideoAdaptationTier
     ) {
         currentTier = originTier
+        resetQueueEvidenceForTierTransition()
         applicationLimitedProbeOriginTier = nil
+        applicationLimitedProbeBestQualifiedTier = nil
+        applicationLimitedProbeMaximumTotalRTPBitrateBps = nil
+        applicationLimitedProbeHealthySampleCount = 0
         applicationLimitedProbeGraceSamplesRemaining = 0
         applicationLimitedProbeDeadline = nil
         applicationLimitedUpgradeSampleCount = 0
@@ -947,12 +1299,18 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
     private mutating func resetPathMeasurements() {
         healthyUpgradeSampleCount = 0
         bandwidthOnlyDowngradeSampleCount = 0
+        queuePressureSampleCount = 0
+        lastLowDelayPacketQueueObservation = nil
+        lastSoftPacketQueuePressureObservation = nil
         unavailableBandwidthSampleCount = 0
         positiveBandwidthBootstrapSampleCount = 0
         applicationLimitedUpgradeSampleCount = 0
+        applicationLimitedProbeHealthySampleCount = 0
         applicationLimitedProbeGraceSamplesRemaining = 0
         applicationLimitedProbeDeadline = nil
         applicationLimitedProbeOriginTier = nil
+        applicationLimitedProbeBestQualifiedTier = nil
+        applicationLimitedProbeMaximumTotalRTPBitrateBps = nil
         belowReserveProbeDisprovedSenderLimitation = false
         automaticResumeProbeRestoration = nil
         resetApplicationLimitedProbeBackoff()
@@ -964,6 +1322,12 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
         lastSampleHasLatencyPressure = false
         lastSampleHasPositiveSuspensionPressure = false
         lastAveragePacketSendDelaySeconds = nil
+    }
+
+    private mutating func resetQueueEvidenceForTierTransition() {
+        queuePressureSampleCount = 0
+        lastLowDelayPacketQueueObservation = nil
+        lastSoftPacketQueuePressureObservation = nil
     }
 
     private mutating func resetAutomaticSuspensionMeasurements() {
@@ -1025,15 +1389,26 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
         return current <= inflationThreshold
     }
 
-    private mutating func averagePacketSendDelaySinceLastSample(
+    private func isFreshPacketQueueObservation(
+        _ observation: ContinuousClock.Instant,
+        at observedAt: ContinuousClock.Instant
+    ) -> Bool {
+        let age = observation.duration(to: observedAt)
+        return age >= .zero
+            && age <= Self.lowDelayPacketQueueObservationValidity
+    }
+
+    private mutating func packetQueueObservationSinceLastSample(
         packetsSent: UInt64?,
         totalPacketSendDelaySeconds: Double?
-    ) -> Double? {
+    ) -> PacketQueueObservation {
         guard let packetsSent,
               let totalPacketSendDelaySeconds,
               totalPacketSendDelaySeconds.isFinite,
               totalPacketSendDelaySeconds >= 0 else {
-            return nil
+            lastOutboundVideoPacketsSent = nil
+            lastOutboundVideoTotalPacketSendDelaySeconds = nil
+            return .unavailableOrReset
         }
         defer {
             lastOutboundVideoPacketsSent = packetsSent
@@ -1042,12 +1417,21 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
         }
         guard let previousPackets = lastOutboundVideoPacketsSent,
               let previousDelay =
-                lastOutboundVideoTotalPacketSendDelaySeconds,
-              packetsSent > previousPackets,
-              totalPacketSendDelaySeconds >= previousDelay else {
-            return nil
+                lastOutboundVideoTotalPacketSendDelaySeconds else {
+            return .unavailableOrReset
         }
-        return (totalPacketSendDelaySeconds - previousDelay)
-            / Double(packetsSent - previousPackets)
+        guard packetsSent >= previousPackets,
+              totalPacketSendDelaySeconds >= previousDelay else {
+            return .unavailableOrReset
+        }
+        guard packetsSent > previousPackets else {
+            return totalPacketSendDelaySeconds == previousDelay
+                ? .noNewPackets
+                : .unavailableOrReset
+        }
+        return .measured(
+            (totalPacketSendDelaySeconds - previousDelay)
+                / Double(packetsSent - previousPackets)
+        )
     }
 }

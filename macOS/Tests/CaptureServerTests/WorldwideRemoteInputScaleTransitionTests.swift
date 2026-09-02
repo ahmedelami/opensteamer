@@ -647,6 +647,16 @@ final class WorldwideRemoteInputScaleTransitionTests: XCTestCase {
         XCTAssertTrue(adaptation.contains("capturer.adaptOutput("))
         XCTAssertTrue(
             adaptation.contains(
+                "appliedScreenVideoRecommendation?.maximumFramesPerSecond"
+            )
+        )
+        XCTAssertTrue(
+            adaptation.contains(
+                "!= recommendation.maximumFramesPerSecond"
+            )
+        )
+        XCTAssertTrue(
+            adaptation.contains(
                 "guard isCaptureActive || allowsAutomaticResume else { return }"
             )
         )

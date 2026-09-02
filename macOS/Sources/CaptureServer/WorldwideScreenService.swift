@@ -2073,6 +2073,26 @@ actor WorldwideScreenService {
             "Worldwide screen network totalCapKbps=\(maximumVideoBitrate / 1_000) "
                 + "fullVideoKbps=\(proposedPolicy.maximumTierVideoBitrateBps / 1_000) "
                 + "tier=\(String(describing: recommendation.tier)) "
+                + "sustainKbps="
+                + "\(proposedPolicy.currentTierMinimumSustainableBitrateBps / 1_000) "
+                + "directUpgradeKbps="
+                + (proposedPolicy.nextHigherTierMinimumDirectUpgradeBitrateBps.map {
+                    String($0 / 1_000)
+                } ?? "none")
+                + " appliedCeilingKbps=\(recommendation.maximumBitrateBps / 1_000)"
+                + " appliedTotalCapKbps="
+                + "\(recommendation.maximumTotalRTPBitrateBps / 1_000)"
+                + " probeOrigin="
+                + (proposedPolicy.applicationLimitedProbeOriginTier.map {
+                    String(describing: $0)
+                } ?? "none")
+                + " probeBest="
+                + (proposedPolicy.applicationLimitedProbeBestQualifiedTier.map {
+                    String(describing: $0)
+                } ?? "none")
+                + " probeHealthySamples="
+                + "\(proposedPolicy.applicationLimitedProbeHealthySampleCount)"
+                + " queuePressureSamples=\(proposedPolicy.queuePressureSampleCount) "
                 + "bweKbps="
                 + (snapshot?.availableOutgoingBitrate.map {
                     String(format: "%.0f", $0 / 1_000)
@@ -2162,13 +2182,16 @@ actor WorldwideScreenService {
                     }
                     return
                 }
-                capturer.adaptOutput(
-                    width: Int32(baseDimensions.width),
-                    height: Int32(baseDimensions.height),
-                    framesPerSecond: Int32(
-                        recommendation.maximumFramesPerSecond
+                if appliedScreenVideoRecommendation?.maximumFramesPerSecond
+                    != recommendation.maximumFramesPerSecond {
+                    capturer.adaptOutput(
+                        width: Int32(baseDimensions.width),
+                        height: Int32(baseDimensions.height),
+                        framesPerSecond: Int32(
+                            recommendation.maximumFramesPerSecond
+                        )
                     )
-                )
+                }
                 appliedScreenVideoRecommendation = recommendation
                 logger.info(
                     "Worldwide screen video tier=\(String(describing: recommendation.tier)) "
