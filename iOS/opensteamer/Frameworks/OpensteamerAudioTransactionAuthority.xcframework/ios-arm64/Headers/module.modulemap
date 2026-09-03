@@ -1,0 +1,4 @@
+module OpensteamerAudioTransactionAuthority {
+    header "opensteamer_audio_transaction_authority.h"
+    export *
+}

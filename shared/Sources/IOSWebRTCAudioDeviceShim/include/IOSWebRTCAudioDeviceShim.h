@@ -144,6 +144,8 @@ typedef struct ASIOSStereoPlayoutDiagnostics {
 @interface ASIOSMicrophoneAuthorization : NSObject
 
 @property(nonatomic, readonly, getter=isValid) BOOL valid;
+/// Process-global, immutable identity used only to bind an app tag to this exact native enable.
+@property(nonatomic, readonly) uint64_t audioPolicyOperationGeneration;
 @property(nonatomic, readonly) uint64_t microphoneRecordingGeneration;
 @property(nonatomic, readonly)
     ASIOSMicrophoneStageFailureReason microphoneStageFailureReason;
@@ -183,6 +185,16 @@ typedef NS_ENUM(NSInteger, ASIOSStereoPlayoutRecoveryTerminalOutcome) {
 @property(nonatomic, readonly) uint64_t terminalGeneration;
 @property(nonatomic, readonly)
     ASIOSStereoPlayoutRecoveryTerminalOutcome terminalOutcome;
+/// False until a terminal outcome is published. For an accepted, target-bound recovery this is
+/// true only when the final native category, mode, options, sharing policy, and input-bus state
+/// exactly match the one-shot requested input policy. Read after `terminalGeneration` matches.
+@property(nonatomic, readonly) BOOL policyMatchesRequestedTarget;
+
+/// Binds the requested input policy exactly once while this authorization is still pending.
+/// Production recovery requires this target binding; only DEBUG harnesses may submit an unbound
+/// authorization, and those submissions can never publish a positive policy match.
+- (BOOL)bindRequestedInputRequired:(BOOL)inputRequired
+    NS_SWIFT_NAME(bindRequestedInputRequired(_:));
 
 - (void)revoke;
 
@@ -195,6 +207,18 @@ typedef NS_ENUM(NSInteger, ASIOSStereoPlayoutRecoveryTerminalOutcome) {
 /// Deterministically publishes a native rejection without executing recovery side effects.
 - (BOOL)debugRejectIfValidForTesting;
 #endif
+
+@end
+
+/// Revocable, one-shot native capability for one output-only microphone policy write.
+/// The exact capability generation binds app correlation to that native effect; it never grants
+/// microphone input or opens a realtime gate.
+@interface ASIOSOutputOnlyAudioPolicyAuthorization : NSObject
+
+@property(nonatomic, readonly, getter=isValid) BOOL valid;
+@property(nonatomic, readonly) uint64_t generation;
+
+- (void)revoke;
 
 @end
 
@@ -289,6 +313,136 @@ typedef void (^ASIOSRouteConfigurationChangeObservationHandler)(
 
 /// Stops new observations and fences every delayed resolution already waiting for native code.
 - (void)invalidate;
+
+@end
+
+/// Observational classification of one native category-change ingress.
+///
+/// Zero is deliberately non-authorizing. Even the two expected dispositions are correlation
+/// evidence only: callers must keep their independent runtime proof and authorization gates.
+typedef NS_ENUM(NSInteger, ASIOSAudioCategoryObservationDisposition) {
+    ASIOSAudioCategoryObservationDispositionUnrelated = 0,
+    ASIOSAudioCategoryObservationDispositionTrackedPolicyMismatch = 1,
+    ASIOSAudioCategoryObservationDispositionExpectedUncorrelatedTransaction = 2,
+    ASIOSAudioCategoryObservationDispositionExpectedCurrentAppOperation = 3,
+    ASIOSAudioCategoryObservationDispositionExpectedRetiredAppOperation = 4,
+};
+
+/// Immutable native transaction state captured at notification ingress.
+typedef NS_ENUM(NSInteger, ASIOSAudioCategoryTransactionState) {
+    ASIOSAudioCategoryTransactionStateNone = 0,
+    ASIOSAudioCategoryTransactionStatePending = 1,
+    ASIOSAudioCategoryTransactionStatePrepared = 2,
+    ASIOSAudioCategoryTransactionStateStarting = 3,
+    ASIOSAudioCategoryTransactionStateConsumed = 4,
+    ASIOSAudioCategoryTransactionStateRejected = 5,
+};
+
+/// Immutable receipt for one AVAudioSession category-change observation.
+///
+/// Every observed and expected policy field is copied from the native transaction's locked
+/// ingress snapshot. A receipt never opens a realtime gate, proves playout/capture, or grants
+/// microphone authority. `appOperationIdentifier` is present only when an exact one-shot app tag
+/// was already attached to this native transaction before the notification entered.
+@interface ASIOSAudioCategoryObservationReceipt : NSObject
+
+@property(nonatomic, readonly) ASIOSAudioCategoryObservationDisposition disposition;
+@property(nonatomic, readonly) ASIOSAudioCategoryTransactionState transactionStateAtIngress;
+@property(nonatomic, readonly) uint64_t deviceInstanceGeneration;
+@property(nonatomic, copy, readonly, nullable) NSUUID *appOperationIdentifier;
+@property(nonatomic, readonly) uint64_t appAuthorityEpoch;
+@property(nonatomic, readonly) uint64_t appOperationRevision;
+@property(nonatomic, readonly) uint64_t appOperationTagGeneration;
+@property(nonatomic, readonly) uint64_t nativeTransactionIdentifier;
+@property(nonatomic, readonly) uint64_t notificationSequence;
+@property(nonatomic, readonly) uint64_t transactionObserverSequenceBaseline;
+@property(nonatomic, readonly) uint64_t transactionConfigurationGeneration;
+@property(nonatomic, readonly) uint64_t observedConfigurationGeneration;
+@property(nonatomic, readonly) uint64_t transactionSystemAudioGeneration;
+@property(nonatomic, readonly) uint64_t observedSystemAudioGeneration;
+@property(nonatomic, readonly) uint64_t observedAtNanoseconds;
+@property(nonatomic, readonly) uint64_t transactionDeadlineNanoseconds;
+@property(nonatomic, readonly) BOOL inputRequired;
+@property(nonatomic, copy, readonly) NSString *observedCategory;
+@property(nonatomic, copy, readonly) NSString *observedMode;
+@property(nonatomic, readonly) NSUInteger observedCategoryOptions;
+@property(nonatomic, readonly) NSInteger observedRouteSharingPolicy;
+@property(nonatomic, copy, readonly) NSString *expectedCategory;
+@property(nonatomic, copy, readonly) NSString *expectedMode;
+@property(nonatomic, readonly) NSUInteger expectedCategoryOptions;
+@property(nonatomic, readonly) NSInteger expectedRouteSharingPolicy;
+@property(nonatomic, readonly) BOOL policyTupleIsExact;
+@property(nonatomic, readonly) BOOL transactionEvidenceIsExact;
+
+- (instancetype)init NS_UNAVAILABLE;
+
+@end
+
+typedef void (^ASIOSAudioCategoryObservationHandler)(
+    ASIOSAudioCategoryObservationReceipt *receipt
+);
+
+typedef NS_ENUM(NSInteger, ASIOSAudioCategoryDrainBindingState) {
+    ASIOSAudioCategoryDrainBindingStateStaged = 1,
+    ASIOSAudioCategoryDrainBindingStateBound = 2,
+};
+
+/// Immutable proof that every category receipt capable of carrying one exact app-operation tag
+/// was delivered earlier on the same registration. This is garbage-collection evidence only.
+@interface ASIOSAudioCategoryDrainReceipt : NSObject
+
+@property(nonatomic, copy, readonly) NSUUID *appOperationIdentifier;
+@property(nonatomic, readonly) uint64_t appAuthorityEpoch;
+@property(nonatomic, readonly) uint64_t appOperationRevision;
+@property(nonatomic, readonly) uint64_t appOperationTagGeneration;
+@property(nonatomic, readonly) uint64_t nativeTransactionIdentifier;
+@property(nonatomic, readonly) uint64_t transactionConfigurationGeneration;
+@property(nonatomic, readonly) uint64_t systemAudioGeneration;
+@property(nonatomic, readonly) uint64_t notificationSequenceWatermark;
+@property(nonatomic, readonly) uint64_t observationRegistrationGeneration;
+@property(nonatomic, readonly) uint64_t drainGeneration;
+@property(nonatomic, readonly) uint64_t deviceInstanceGeneration;
+@property(nonatomic, readonly) ASIOSAudioCategoryDrainBindingState bindingState;
+/// Always zero: the evidence-queue barrier has processed every ingress snapshot that could carry
+/// this receipt's exact tag. Later notification ingress is untagged.
+@property(nonatomic, readonly) uint32_t ingressInFlightCount;
+@property(nonatomic, readonly) uint64_t completedAtNanoseconds;
+
+- (instancetype)init NS_UNAVAILABLE;
+
+@end
+
+typedef void (^ASIOSAudioCategoryDrainHandler)(
+    ASIOSAudioCategoryDrainReceipt *receipt
+);
+
+/// Ordered terminal proof for one native audio-device receipt namespace. This receipt carries no
+/// operation and cannot authorize recovery. Its registration is already invalid when the handler
+/// begins, and peer retirement does not return until the handler has returned.
+@interface ASIOSAudioCategoryDeviceTeardownReceipt : NSObject
+
+@property(nonatomic, readonly) uint64_t deviceInstanceGeneration;
+@property(nonatomic, readonly) uint64_t observationRegistrationGeneration;
+@property(nonatomic, readonly) uint64_t notificationSequenceWatermark;
+@property(nonatomic, readonly) uint64_t teardownGeneration;
+@property(nonatomic, readonly) uint32_t ingressInFlightCount;
+
+- (instancetype)init NS_UNAVAILABLE;
+
+@end
+
+typedef void (^ASIOSAudioCategoryDeviceTeardownHandler)(
+    ASIOSAudioCategoryDeviceTeardownReceipt *receipt
+);
+
+/// Generation-fenced ownership of one device-local receipt stream. Replacing or invalidating a
+/// registration prevents its queued, not-yet-started deliveries from invoking the old handler.
+@interface ASIOSAudioCategoryObservationRegistration : NSObject
+
+@property(nonatomic, readonly) uint64_t generation;
+
+- (void)invalidate;
+- (instancetype)init NS_UNAVAILABLE;
 
 @end
 
@@ -399,6 +553,14 @@ typedef NS_ENUM(NSInteger, ASIOSExpectedCategoryObservationTestScenario) {
     ASIOSExpectedCategoryObservationTestScenarioExpired = 9,
 };
 
+typedef NS_ENUM(NSInteger, ASIOSAudioCategoryReceiptTestScenario) {
+    ASIOSAudioCategoryReceiptTestScenarioExpectedCurrentTagged = 0,
+    ASIOSAudioCategoryReceiptTestScenarioExpectedRetiredTagged = 1,
+    ASIOSAudioCategoryReceiptTestScenarioTrackedPolicyMismatch = 2,
+    ASIOSAudioCategoryReceiptTestScenarioUnrelated = 3,
+    ASIOSAudioCategoryReceiptTestScenarioExpectedUncorrelated = 4,
+};
+
 /// Drives the real queued recovery boundary without starting playout or touching audio hardware.
 @interface ASIOSStereoPlayoutRecoveryTestHarness : NSObject
 
@@ -457,6 +619,20 @@ typedef NS_ENUM(NSInteger, ASIOSExpectedCategoryObservationTestScenario) {
 - (BOOL)debugDriveRetiredExpectedCategoryObservationForTestingWithExactPolicy:
     (BOOL)exactPolicy
     NS_SWIFT_NAME(debugDriveRetiredExpectedCategoryObservationForTesting(exactPolicy:));
+- (BOOL)debugAudioCategoryReceiptForTesting:
+    (ASIOSAudioCategoryReceiptTestScenario)scenario
+    NS_SWIFT_NAME(debugAudioCategoryReceiptForTesting(_:));
+- (BOOL)debugAppAudioPolicyOperationTagFencingForTesting;
+- (BOOL)debugAppAudioPolicyCarrierOrderingForTesting;
+- (BOOL)debugAcceptedRecoveryRetiresUnconsumedStagedTagForTesting;
+- (BOOL)debugAudioCategoryObservationRegistrationFencingForTesting;
+- (BOOL)debugAudioCategoryDrainOrderingForTesting;
+- (BOOL)debugAudioCategoryDrainLateIngressIsUntaggedForTesting;
+- (BOOL)debugAudioCategoryDrainRejectsDuplicateAndMismatchForTesting;
+- (BOOL)debugAudioCategoryDeviceTeardownOrderingAndIdempotenceForTesting;
+- (BOOL)debugAudioCategoryDeviceTeardownNilHandlerForTesting;
+- (BOOL)debugExactAudioPolicyEffectsRejectMissingTagForTesting;
+- (BOOL)debugInitializedMicrophoneCloseFailsClosedWithoutDelegateForTesting;
 - (BOOL)debugRemoteIOStartSettlementAcceptsDelayedObservationForTesting;
 - (BOOL)debugSupersededRouteObservationIsSuppressedForTestingWithOldDeviceUnavailable:
     (BOOL)oldDeviceUnavailable
@@ -536,15 +712,113 @@ typedef NS_ENUM(NSInteger, ASIOSExpectedCategoryObservationTestScenario) {
 
 @property(nonatomic, readonly) ASIOSStereoPlayoutDiagnostics diagnostics;
 @property(atomic, copy, readonly, nullable) NSString *lastLifecycleFailureMessage;
+/// Process-global, monotonic, nonzero identity allocated synchronously at device construction.
+@property(nonatomic, readonly) uint64_t audioCategoryDeviceInstanceGeneration;
 
-/// Explicitly authorizes a safe rebuild after the application has applied its interruption/route
-/// policy and recovered the manual WebRTC audio gate. System notifications only fail closed; they
-/// never call this method implicitly. It may be called from any thread and mutates the device on
-/// WebRTC's ADM thread. The exact attempt authorization is checked again inside that queued native
-/// operation immediately around the recovery side effects.
+/// Installs the sole device-local observer for immutable native category receipts. A replacement
+/// invalidates the prior registration before it can receive another queued delivery. Receipt
+/// delivery occurs on a private non-realtime serial queue and is observational only.
+- (ASIOSAudioCategoryObservationRegistration *_Nullable)observeAudioCategoryChanges:
+    (ASIOSAudioCategoryObservationHandler)handler
+    NS_SWIFT_NAME(observeAudioCategoryChanges(_:));
+
+/// Installs one generation-fenced, totally ordered stream for category observations and exact
+/// operation-drain receipts. Both handlers run on the same private non-realtime serial queue.
+- (ASIOSAudioCategoryObservationRegistration *_Nullable)observeAudioCategoryChanges:
+    (ASIOSAudioCategoryObservationHandler)handler
+                                                       drainHandler:
+    (ASIOSAudioCategoryDrainHandler _Nullable)drainHandler
+    NS_SWIFT_NAME(observeAudioCategoryChanges(_:drainHandler:));
+
+/// Installs one stream for observations, drains, and the final ordered device-teardown receipt.
+- (ASIOSAudioCategoryObservationRegistration *_Nullable)observeAudioCategoryChanges:
+    (ASIOSAudioCategoryObservationHandler)handler
+                                                       drainHandler:
+    (ASIOSAudioCategoryDrainHandler _Nullable)drainHandler
+                                              deviceTeardownHandler:
+    (ASIOSAudioCategoryDeviceTeardownHandler _Nullable)deviceTeardownHandler
+    NS_SWIFT_NAME(observeAudioCategoryChanges(_:drainHandler:deviceTeardownHandler:));
+
+/// Stages an opaque app operation tag for exactly one native audio-policy transaction.
+///
+/// `nativeTransactionIdentifier == 0` targets only a transaction started from the supplied exact
+/// recovery authorization. Its native transaction counter, system-audio generation, deadline, and
+/// input policy must also match the staging snapshot. A nonzero identifier targets only an exact
+/// current transaction already bound to that same recovery authorization. Authority epoch and
+/// operation revision must be nonzero and lexicographically newer than every tag previously
+/// accepted by this device. The returned nonzero generation identifies the staged tag; zero means
+/// fail-closed rejection. The tag is correlation metadata only and grants no native authority.
+- (uint64_t)stageAppAudioPolicyOperationWithIdentifier:
+                (NSUUID *)appOperationIdentifier
+                                      authorityEpoch:
+                (uint64_t)authorityEpoch
+                                   operationRevision:
+                (uint64_t)operationRevision
+                              recoveryAuthorization:
+                (ASIOSStereoPlayoutRecoveryAuthorization *)recoveryAuthorization
+                          nativeTransactionIdentifier:
+                (uint64_t)nativeTransactionIdentifier
+                                        inputRequired:
+                (BOOL)inputRequired
+    NS_SWIFT_NAME(stageAppAudioPolicyOperation(identifier:authorityEpoch:operationRevision:recoveryAuthorization:nativeTransactionIdentifier:inputRequired:));
+
+/// Exact-capability overload for a microphone-enable native effect.
+- (uint64_t)stageAppAudioPolicyOperationWithIdentifier:
+                (NSUUID *)appOperationIdentifier
+                                      authorityEpoch:
+                (uint64_t)authorityEpoch
+                                   operationRevision:
+                (uint64_t)operationRevision
+                            microphoneAuthorization:
+                (ASIOSMicrophoneAuthorization *)microphoneAuthorization
+                          nativeTransactionIdentifier:
+                (uint64_t)nativeTransactionIdentifier
+                                        inputRequired:
+                (BOOL)inputRequired
+    NS_SWIFT_NAME(stageAppAudioPolicyOperation(identifier:authorityEpoch:operationRevision:microphoneAuthorization:nativeTransactionIdentifier:inputRequired:));
+
+/// Exact-capability overload for an output-only microphone native effect.
+- (uint64_t)stageAppAudioPolicyOperationWithIdentifier:
+                (NSUUID *)appOperationIdentifier
+                                      authorityEpoch:
+                (uint64_t)authorityEpoch
+                                   operationRevision:
+                (uint64_t)operationRevision
+                             outputOnlyAuthorization:
+                (ASIOSOutputOnlyAudioPolicyAuthorization *)outputOnlyAuthorization
+                          nativeTransactionIdentifier:
+                (uint64_t)nativeTransactionIdentifier
+                                        inputRequired:
+                (BOOL)inputRequired
+    NS_SWIFT_NAME(stageAppAudioPolicyOperation(identifier:authorityEpoch:operationRevision:outputOnlyAuthorization:nativeTransactionIdentifier:inputRequired:));
+
+/// Retires only a still-pending next-transaction tag with this exact generation. An already bound
+/// transaction keeps its immutable historical tag so delayed receipts cannot be relabeled.
+- (BOOL)retireStagedAppAudioPolicyOperationWithTagGeneration:
+    (uint64_t)tagGeneration
+    NS_SWIFT_NAME(retireStagedAppAudioPolicyOperation(tagGeneration:));
+
+/// Atomically retires one exact pending or transaction-bound app tag and schedules a drain proof.
+/// Success only means the exact cutoff was installed; the immutable proof arrives asynchronously
+/// after every earlier matching receipt on the registered delivery stream. Mismatch or duplicate
+/// requests fail closed and emit no synthetic watermark.
+- (BOOL)requestAudioCategoryDrainForAppOperationIdentifier:
+                (NSUUID *)appOperationIdentifier
+                                      authorityEpoch:
+                (uint64_t)authorityEpoch
+                                   operationRevision:
+                (uint64_t)operationRevision
+                                       tagGeneration:
+                (uint64_t)tagGeneration
+    NS_SWIFT_NAME(requestAudioCategoryDrain(appOperationIdentifier:authorityEpoch:operationRevision:tagGeneration:));
+
+/// Exact app-tag overload. The authorization must carry a bound target and a nonzero generation
+/// naming the tag staged with this exact authorization; otherwise no recovery side effect begins.
 - (void)requestPlayoutRecoveryWithAuthorization:
-    (ASIOSStereoPlayoutRecoveryAuthorization *)authorization
-    NS_SWIFT_NAME(requestPlayoutRecovery(authorization:));
+            (ASIOSStereoPlayoutRecoveryAuthorization *)authorization
+                           appOperationTagGeneration:
+                               (uint64_t)appOperationTagGeneration
+    NS_SWIFT_NAME(requestPlayoutRecovery(authorization:appOperationTagGeneration:));
 
 /// Authorizes exactly one output-only rebuild for an interruption-origin hosted-call policy.
 /// Active interruptions remain fail-closed; the app may submit this only after interruption-ended
@@ -560,21 +834,23 @@ typedef NS_ENUM(NSInteger, ASIOSExpectedCategoryObservationTestScenario) {
     (ASIOSHostedCallPlayoutAuthorization *)authorization
     NS_SWIFT_NAME(armStartupConnectedCallPlayout(authorization:));
 
-/// Synchronously applies or revokes the current microphone generation on
-/// WebRTC's ADM queue. A nonnull authorization stages and starts the complete
-/// playAndRecord/default RemoteIO topology, but leaves both realtime
-/// publication gates closed. A nil authorization synchronously retires any
-/// staged or approved generation and restores playback/default.
+/// Exact output-only capability overload. `authorization` must be nil and the nonzero tag must
+/// have been staged with this exact one-shot output-only capability.
 - (BOOL)setMicrophoneAuthorization:
-    (ASIOSMicrophoneAuthorization *_Nullable)authorization
-    NS_SWIFT_NAME(setMicrophoneAuthorization(_:));
+            (ASIOSMicrophoneAuthorization *_Nullable)authorization
+                outputOnlyAuthorization:
+                    (ASIOSOutputOnlyAudioPolicyAuthorization *_Nullable)outputOnlyAuthorization
+              appOperationTagGeneration:
+                  (uint64_t)appOperationTagGeneration
+    NS_SWIFT_NAME(setMicrophoneAuthorization(_:outputOnlyAuthorization:appOperationTagGeneration:));
 
-/// Builds and starts the complete authorized duplex topology while leaving
-/// microphone PCM publication closed. Returns the exact nonzero staged
-/// recording generation, or zero after a fail-closed rejection.
+/// Exact app-tag overload. The nonzero tag must have been staged with this exact microphone
+/// authorization; otherwise no enable side effect begins.
 - (uint64_t)stageMicrophoneAuthorization:
-    (ASIOSMicrophoneAuthorization *)authorization
-    NS_SWIFT_NAME(stageMicrophoneAuthorization(_:));
+            (ASIOSMicrophoneAuthorization *)authorization
+                       appOperationTagGeneration:
+                           (uint64_t)appOperationTagGeneration
+    NS_SWIFT_NAME(stageMicrophoneAuthorization(_:appOperationTagGeneration:));
 
 /// Opens realtime microphone publication only when `authorization` still owns
 /// the exact current, unapproved staged generation. Approval is synchronous and
@@ -592,7 +868,20 @@ typedef NS_ENUM(NSInteger, ASIOSExpectedCategoryObservationTestScenario) {
 - (BOOL)terminateForPeerRetirement
     NS_SWIFT_NAME(terminateForPeerRetirement());
 
+/// Synchronously closes and drains microphone publication during permanent peer shutdown. This
+/// operation can only remove microphone authority; it never rebuilds or activates an audio policy.
+/// The caller must immediately complete `terminateForPeerRetirement()` on this same peer.
+- (BOOL)closeMicrophoneForPeerRetirement
+    NS_SWIFT_NAME(closeMicrophoneForPeerRetirement());
+
 #if DEBUG
+/// DEBUG-only legacy seam. Release clients cannot stage or apply an untagged microphone policy.
+- (BOOL)setMicrophoneAuthorization:
+    (ASIOSMicrophoneAuthorization *_Nullable)authorization
+    NS_SWIFT_NAME(setMicrophoneAuthorization(_:));
+- (uint64_t)stageMicrophoneAuthorization:
+    (ASIOSMicrophoneAuthorization *)authorization
+    NS_SWIFT_NAME(stageMicrophoneAuthorization(_:));
 + (BOOL)debugArmNextPeerRetirementTerminationBlockForTesting;
 + (BOOL)debugWaitForPeerRetirementTerminationBlockForTestingWithTimeout:
     (NSTimeInterval)timeout

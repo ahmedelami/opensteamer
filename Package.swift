@@ -121,6 +121,10 @@ let package = Package(
             dependencies: [
                 "RemoteSessionCore",
                 .target(
+                    name: "OpensteamerAudioTransactionAuthority",
+                    condition: .when(platforms: [.iOS])
+                ),
+                .target(
                     name: "IOSWebRTCAudioDeviceShim",
                     condition: .when(platforms: [.iOS])
                 ),
@@ -134,6 +138,10 @@ let package = Package(
                 )
             ],
             path: "shared/Sources/WebRTCTransport"
+        ),
+        .binaryTarget(
+            name: "OpensteamerAudioTransactionAuthority",
+            path: "iOS/opensteamer/Frameworks/OpensteamerAudioTransactionAuthority.xcframework"
         ),
         .target(
             name: "MacWebRTCAudioDeviceShim",

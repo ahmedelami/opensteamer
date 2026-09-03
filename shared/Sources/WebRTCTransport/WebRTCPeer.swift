@@ -1167,14 +1167,449 @@ public enum WebRTCIOSPlayoutRecoveryTerminalOutcome: Equatable, Sendable {
     }
 }
 
+/// Immutable application authority staged before one native iOS audio-policy transaction.
+///
+/// The tuple is correlation metadata only. Native recovery still requires its independent
+/// one-shot authorization, and a delayed receipt may affect Swift policy only when all three
+/// fields still identify the operation that originally staged it.
+public struct WebRTCIOSAudioTransactionContext: Equatable, Sendable {
+    public let operationID: UUID
+    public let authorityEpoch: UInt64
+    public let operationRevision: UInt64
+
+    public init(
+        operationID: UUID,
+        authorityEpoch: UInt64,
+        operationRevision: UInt64
+    ) {
+        self.operationID = operationID
+        self.authorityEpoch = authorityEpoch
+        self.operationRevision = operationRevision
+    }
+}
+
+public enum WebRTCIOSAudioCategoryObservationDisposition:
+    Equatable,
+    Sendable
+{
+    case unrelated
+    case trackedPolicyMismatch
+    case expectedUncorrelatedTransaction
+    case expectedCurrentAppOperation
+    case expectedRetiredAppOperation
+
+    fileprivate init?(
+        native: ASIOSAudioCategoryObservationDisposition
+    ) {
+        switch native {
+        case .unrelated:
+            self = .unrelated
+        case .trackedPolicyMismatch:
+            self = .trackedPolicyMismatch
+        case .expectedUncorrelatedTransaction:
+            self = .expectedUncorrelatedTransaction
+        case .expectedCurrentAppOperation:
+            self = .expectedCurrentAppOperation
+        case .expectedRetiredAppOperation:
+            self = .expectedRetiredAppOperation
+        @unknown default:
+            return nil
+        }
+    }
+}
+
+public enum WebRTCIOSAudioCategoryTransactionState:
+    Equatable,
+    Sendable
+{
+    case none
+    case pending
+    case prepared
+    case starting
+    case consumed
+    case rejected
+
+    fileprivate init?(native: ASIOSAudioCategoryTransactionState) {
+        switch native {
+        case .none:
+            self = .none
+        case .pending:
+            self = .pending
+        case .prepared:
+            self = .prepared
+        case .starting:
+            self = .starting
+        case .consumed:
+            self = .consumed
+        case .rejected:
+            self = .rejected
+        @unknown default:
+            return nil
+        }
+    }
+}
+
+/// Value copy of one device-local AVAudioSession category observation. The native object never
+/// crosses the actor/event boundary; all policy and provenance fields are copied on receipt.
+public struct WebRTCIOSAudioCategoryObservationReceipt:
+    Equatable,
+    Sendable
+{
+    public let disposition:
+        WebRTCIOSAudioCategoryObservationDisposition
+    public let transactionStateAtIngress:
+        WebRTCIOSAudioCategoryTransactionState
+    public let transaction: WebRTCIOSAudioTransactionContext?
+    public let appOperationTagGeneration: UInt64
+    public let deviceInstanceGeneration: UInt64
+    public let nativeTransactionIdentifier: UInt64
+    public let notificationSequence: UInt64
+    public let transactionObserverSequenceBaseline: UInt64
+    public let transactionConfigurationGeneration: UInt64
+    public let observedConfigurationGeneration: UInt64
+    public let transactionSystemAudioGeneration: UInt64
+    public let observedSystemAudioGeneration: UInt64
+    public let observedAtNanoseconds: UInt64
+    public let transactionDeadlineNanoseconds: UInt64
+    public let inputRequired: Bool
+    public let observedCategory: String
+    public let observedMode: String
+    public let observedCategoryOptionsRawValue: UInt
+    public let observedRouteSharingPolicyRawValue: Int
+    public let expectedCategory: String
+    public let expectedMode: String
+    public let expectedCategoryOptionsRawValue: UInt
+    public let expectedRouteSharingPolicyRawValue: Int
+    public let policyTupleIsExact: Bool
+    public let transactionEvidenceIsExact: Bool
+
+    init(
+        disposition: WebRTCIOSAudioCategoryObservationDisposition,
+        transactionStateAtIngress: WebRTCIOSAudioCategoryTransactionState,
+        transaction: WebRTCIOSAudioTransactionContext?,
+        appOperationTagGeneration: UInt64,
+        deviceInstanceGeneration: UInt64,
+        nativeTransactionIdentifier: UInt64,
+        notificationSequence: UInt64,
+        transactionObserverSequenceBaseline: UInt64,
+        transactionConfigurationGeneration: UInt64,
+        observedConfigurationGeneration: UInt64,
+        transactionSystemAudioGeneration: UInt64,
+        observedSystemAudioGeneration: UInt64,
+        observedAtNanoseconds: UInt64,
+        transactionDeadlineNanoseconds: UInt64,
+        inputRequired: Bool,
+        observedCategory: String,
+        observedMode: String,
+        observedCategoryOptionsRawValue: UInt,
+        observedRouteSharingPolicyRawValue: Int,
+        expectedCategory: String,
+        expectedMode: String,
+        expectedCategoryOptionsRawValue: UInt,
+        expectedRouteSharingPolicyRawValue: Int,
+        policyTupleIsExact: Bool,
+        transactionEvidenceIsExact: Bool
+    ) {
+        self.disposition = disposition
+        self.transactionStateAtIngress = transactionStateAtIngress
+        self.transaction = transaction
+        self.appOperationTagGeneration = appOperationTagGeneration
+        self.deviceInstanceGeneration = deviceInstanceGeneration
+        self.nativeTransactionIdentifier = nativeTransactionIdentifier
+        self.notificationSequence = notificationSequence
+        self.transactionObserverSequenceBaseline =
+            transactionObserverSequenceBaseline
+        self.transactionConfigurationGeneration =
+            transactionConfigurationGeneration
+        self.observedConfigurationGeneration =
+            observedConfigurationGeneration
+        self.transactionSystemAudioGeneration =
+            transactionSystemAudioGeneration
+        self.observedSystemAudioGeneration =
+            observedSystemAudioGeneration
+        self.observedAtNanoseconds = observedAtNanoseconds
+        self.transactionDeadlineNanoseconds =
+            transactionDeadlineNanoseconds
+        self.inputRequired = inputRequired
+        self.observedCategory = observedCategory
+        self.observedMode = observedMode
+        self.observedCategoryOptionsRawValue =
+            observedCategoryOptionsRawValue
+        self.observedRouteSharingPolicyRawValue =
+            observedRouteSharingPolicyRawValue
+        self.expectedCategory = expectedCategory
+        self.expectedMode = expectedMode
+        self.expectedCategoryOptionsRawValue =
+            expectedCategoryOptionsRawValue
+        self.expectedRouteSharingPolicyRawValue =
+            expectedRouteSharingPolicyRawValue
+        self.policyTupleIsExact = policyTupleIsExact
+        self.transactionEvidenceIsExact =
+            transactionEvidenceIsExact
+    }
+
+    fileprivate init?(native: ASIOSAudioCategoryObservationReceipt) {
+        guard let disposition =
+                WebRTCIOSAudioCategoryObservationDisposition(
+                    native: native.disposition
+                ),
+              let transactionStateAtIngress =
+                WebRTCIOSAudioCategoryTransactionState(
+                    native: native.transactionStateAtIngress
+                ),
+              native.deviceInstanceGeneration != 0 else {
+            return nil
+        }
+        self.disposition = disposition
+        self.transactionStateAtIngress = transactionStateAtIngress
+        if let operationID = native.appOperationIdentifier,
+           native.appAuthorityEpoch != 0,
+           native.appOperationRevision != 0 {
+            transaction = WebRTCIOSAudioTransactionContext(
+                operationID: operationID,
+                authorityEpoch: native.appAuthorityEpoch,
+                operationRevision: native.appOperationRevision
+            )
+        } else {
+            transaction = nil
+        }
+        appOperationTagGeneration = native.appOperationTagGeneration
+        deviceInstanceGeneration = native.deviceInstanceGeneration
+        nativeTransactionIdentifier = native.nativeTransactionIdentifier
+        notificationSequence = native.notificationSequence
+        transactionObserverSequenceBaseline =
+            native.transactionObserverSequenceBaseline
+        transactionConfigurationGeneration =
+            native.transactionConfigurationGeneration
+        observedConfigurationGeneration =
+            native.observedConfigurationGeneration
+        transactionSystemAudioGeneration =
+            native.transactionSystemAudioGeneration
+        observedSystemAudioGeneration =
+            native.observedSystemAudioGeneration
+        observedAtNanoseconds = native.observedAtNanoseconds
+        transactionDeadlineNanoseconds =
+            native.transactionDeadlineNanoseconds
+        inputRequired = native.inputRequired
+        observedCategory = native.observedCategory
+        observedMode = native.observedMode
+        observedCategoryOptionsRawValue = native.observedCategoryOptions
+        observedRouteSharingPolicyRawValue =
+            native.observedRouteSharingPolicy
+        expectedCategory = native.expectedCategory
+        expectedMode = native.expectedMode
+        expectedCategoryOptionsRawValue = native.expectedCategoryOptions
+        expectedRouteSharingPolicyRawValue =
+            native.expectedRouteSharingPolicy
+        policyTupleIsExact = native.policyTupleIsExact
+        transactionEvidenceIsExact = native.transactionEvidenceIsExact
+    }
+}
+
+public enum WebRTCIOSAudioCategoryDrainBindingState: Equatable, Sendable {
+    case staged
+    case bound
+
+    fileprivate init?(native: ASIOSAudioCategoryDrainBindingState) {
+        switch native {
+        case .staged:
+            self = .staged
+        case .bound:
+            self = .bound
+        @unknown default:
+            return nil
+        }
+    }
+}
+
+/// Immutable barrier proving that every native category receipt capable of carrying this exact
+/// app-operation tag was delivered earlier on the same generation-fenced serial stream.
+public struct WebRTCIOSAudioCategoryDrainReceipt: Equatable, Sendable {
+    public let transaction: WebRTCIOSAudioTransactionContext
+    public let appOperationTagGeneration: UInt64
+    public let nativeTransactionIdentifier: UInt64
+    public let transactionConfigurationGeneration: UInt64
+    public let systemAudioGeneration: UInt64
+    public let notificationSequenceWatermark: UInt64
+    public let observationRegistrationGeneration: UInt64
+    public let drainGeneration: UInt64
+    public let deviceInstanceGeneration: UInt64
+    public let bindingState: WebRTCIOSAudioCategoryDrainBindingState
+    public let ingressInFlightCount: UInt32
+
+    public init(
+        transaction: WebRTCIOSAudioTransactionContext,
+        appOperationTagGeneration: UInt64,
+        nativeTransactionIdentifier: UInt64,
+        transactionConfigurationGeneration: UInt64,
+        systemAudioGeneration: UInt64,
+        notificationSequenceWatermark: UInt64,
+        observationRegistrationGeneration: UInt64,
+        drainGeneration: UInt64,
+        deviceInstanceGeneration: UInt64,
+        bindingState: WebRTCIOSAudioCategoryDrainBindingState,
+        ingressInFlightCount: UInt32
+    ) {
+        self.transaction = transaction
+        self.appOperationTagGeneration = appOperationTagGeneration
+        self.nativeTransactionIdentifier = nativeTransactionIdentifier
+        self.transactionConfigurationGeneration =
+            transactionConfigurationGeneration
+        self.systemAudioGeneration = systemAudioGeneration
+        self.notificationSequenceWatermark =
+            notificationSequenceWatermark
+        self.observationRegistrationGeneration =
+            observationRegistrationGeneration
+        self.drainGeneration = drainGeneration
+        self.deviceInstanceGeneration = deviceInstanceGeneration
+        self.bindingState = bindingState
+        self.ingressInFlightCount = ingressInFlightCount
+    }
+
+    fileprivate init?(native: ASIOSAudioCategoryDrainReceipt) {
+        guard native.appAuthorityEpoch != 0,
+              native.appOperationRevision != 0,
+              native.deviceInstanceGeneration != 0,
+              let bindingState =
+                WebRTCIOSAudioCategoryDrainBindingState(
+                    native: native.bindingState
+                ) else {
+            return nil
+        }
+        self.init(
+            transaction: WebRTCIOSAudioTransactionContext(
+                operationID: native.appOperationIdentifier,
+                authorityEpoch: native.appAuthorityEpoch,
+                operationRevision: native.appOperationRevision
+            ),
+            appOperationTagGeneration:
+                native.appOperationTagGeneration,
+            nativeTransactionIdentifier:
+                native.nativeTransactionIdentifier,
+            transactionConfigurationGeneration:
+                native.transactionConfigurationGeneration,
+            systemAudioGeneration: native.systemAudioGeneration,
+            notificationSequenceWatermark:
+                native.notificationSequenceWatermark,
+            observationRegistrationGeneration:
+                native.observationRegistrationGeneration,
+            drainGeneration: native.drainGeneration,
+            deviceInstanceGeneration:
+                native.deviceInstanceGeneration,
+            bindingState: bindingState,
+            ingressInFlightCount: native.ingressInFlightCount
+        )
+    }
+}
+
+/// Ordered terminal proof for one native audio-device receipt namespace. It is used only to
+/// retire the reducer's old device binding after native ingress and delivery have both drained.
+public struct WebRTCIOSAudioCategoryDeviceTeardownReceipt:
+    Equatable,
+    Sendable
+{
+    public let deviceInstanceGeneration: UInt64
+    public let observationRegistrationGeneration: UInt64
+    public let notificationSequenceWatermark: UInt64
+    public let teardownGeneration: UInt64
+    public let ingressInFlightCount: UInt32
+
+    init(
+        deviceInstanceGeneration: UInt64,
+        observationRegistrationGeneration: UInt64,
+        notificationSequenceWatermark: UInt64,
+        teardownGeneration: UInt64,
+        ingressInFlightCount: UInt32
+    ) {
+        self.deviceInstanceGeneration = deviceInstanceGeneration
+        self.observationRegistrationGeneration =
+            observationRegistrationGeneration
+        self.notificationSequenceWatermark =
+            notificationSequenceWatermark
+        self.teardownGeneration = teardownGeneration
+        self.ingressInFlightCount = ingressInFlightCount
+    }
+
+    fileprivate init?(native: ASIOSAudioCategoryDeviceTeardownReceipt) {
+        guard native.deviceInstanceGeneration != 0,
+              native.observationRegistrationGeneration != 0,
+              native.teardownGeneration != 0 else {
+            return nil
+        }
+        deviceInstanceGeneration = native.deviceInstanceGeneration
+        observationRegistrationGeneration =
+            native.observationRegistrationGeneration
+        notificationSequenceWatermark =
+            native.notificationSequenceWatermark
+        teardownGeneration = native.teardownGeneration
+        ingressInFlightCount = native.ingressInFlightCount
+    }
+}
+
+public struct WebRTCIOSAudioTransactionDeviceBinding:
+    Equatable,
+    Sendable
+{
+    public let deviceInstanceGeneration: UInt64
+    public let observationRegistrationGeneration: UInt64
+}
+
+/// Dedicated lossless stream for reducer authority. Keeping these receipts out of the general
+/// bounded WebRTC event stream prevents unrelated signaling/statistics bursts from dropping or
+/// reordering native audio evidence.
+public enum WebRTCIOSAudioTransactionEvent: Equatable, Sendable {
+    case observation(WebRTCIOSAudioCategoryObservationReceipt)
+    case drain(WebRTCIOSAudioCategoryDrainReceipt)
+    case deviceTeardown(WebRTCIOSAudioCategoryDeviceTeardownReceipt)
+}
+
+/// Terminal native recovery evidence bound to the exact application transaction staged before
+/// the recovery request. Reading this value is valid only after the authorization's native
+/// terminal-generation publication fence has closed.
+public struct WebRTCIOSPlayoutRecoveryReceipt: Equatable, Sendable {
+    public let transaction: WebRTCIOSAudioTransactionContext
+    public let authorizationGeneration: UInt64
+    public let terminalGeneration: UInt64
+    public let outcome: WebRTCIOSPlayoutRecoveryTerminalOutcome
+    public let policyMatchesRequestedTarget: Bool
+
+    public init(
+        transaction: WebRTCIOSAudioTransactionContext,
+        authorizationGeneration: UInt64,
+        terminalGeneration: UInt64,
+        outcome: WebRTCIOSPlayoutRecoveryTerminalOutcome,
+        policyMatchesRequestedTarget: Bool
+    ) {
+        self.transaction = transaction
+        self.authorizationGeneration = authorizationGeneration
+        self.terminalGeneration = terminalGeneration
+        self.outcome = outcome
+        self.policyMatchesRequestedTarget =
+            policyMatchesRequestedTarget
+    }
+}
+
 /// Revocable ownership for one explicit native RemoteIO recovery attempt.
 ///
 /// The Objective-C gate is linearizable: revocation shares the lock held across the final native
 /// rebuild, so an ADM block queued by a retired peer cannot reactivate audio for a newer session.
 public final class WebRTCIOSPlayoutRecoveryAuthorization: @unchecked Sendable {
     fileprivate let native = ASIOSStereoPlayoutRecoveryAuthorization()
+    public let transaction: WebRTCIOSAudioTransactionContext?
+    private let transactionStageLock = NSLock()
+    private weak var transactionStager:
+        WebRTCIOSAudioTransactionStager?
+    private var transactionTagGeneration: UInt64 = 0
 
-    public init() {}
+    #if DEBUG
+    public init() {
+        transaction = nil
+    }
+    #endif
+
+    public init(transaction: WebRTCIOSAudioTransactionContext) {
+        self.transaction = transaction
+    }
 
     public var isValid: Bool { native.isValid }
     public var generation: UInt64 { native.generation }
@@ -1195,8 +1630,74 @@ public final class WebRTCIOSPlayoutRecoveryAuthorization: @unchecked Sendable {
             && terminalOutcome == .accepted
     }
 
+    /// Exact receipt for a terminal native result. Legacy authorizations that were not staged
+    /// against an application transaction deliberately cannot synthesize one after the fact.
+    public var terminalReceipt: WebRTCIOSPlayoutRecoveryReceipt? {
+        guard let transaction,
+              terminalGeneration == generation,
+              terminalOutcome != .pending else {
+            return nil
+        }
+        return WebRTCIOSPlayoutRecoveryReceipt(
+            transaction: transaction,
+            authorizationGeneration: generation,
+            terminalGeneration: terminalGeneration,
+            outcome: terminalOutcome,
+            policyMatchesRequestedTarget:
+                native.policyMatchesRequestedTarget
+        )
+    }
+
+    public var stagedTransactionTagGeneration: UInt64? {
+        transactionStageLock.withLock {
+            transactionTagGeneration == 0
+                ? nil
+                : transactionTagGeneration
+        }
+    }
+
     public func revoke() {
         native.revoke()
+        retireStagedTransactionIfPending()
+    }
+
+    fileprivate func installStagedTransaction(
+        stager: WebRTCIOSAudioTransactionStager,
+        tagGeneration: UInt64
+    ) -> Bool {
+        guard tagGeneration != 0 else { return false }
+        return transactionStageLock.withLock {
+            guard transactionStager == nil,
+                  transactionTagGeneration == 0 else {
+                return false
+            }
+            transactionStager = stager
+            transactionTagGeneration = tagGeneration
+            return true
+        }
+    }
+
+    fileprivate func isStaged(
+        by stager: WebRTCIOSAudioTransactionStager
+    ) -> Bool {
+        transactionStageLock.withLock {
+            transactionStager === stager
+                && transactionTagGeneration != 0
+        }
+    }
+
+    private func retireStagedTransactionIfPending() {
+        let staged = transactionStageLock.withLock {
+            (
+                stager: transactionStager,
+                tagGeneration: transactionTagGeneration
+            )
+        }
+        guard let stager = staged.stager,
+              staged.tagGeneration != 0 else { return }
+        _ = stager.retireIfPending(
+            tagGeneration: staged.tagGeneration
+        )
     }
 
     #if DEBUG
@@ -1210,6 +1711,152 @@ public final class WebRTCIOSPlayoutRecoveryAuthorization: @unchecked Sendable {
         native.debugRejectIfValidForTesting()
     }
     #endif
+}
+
+/// Thread-safe device-local bridge used by the MainActor lifecycle to stage exact application
+/// correlation before it opens WebRTC's manual audio gate. The native shim owns transaction
+/// serialization; this object only prevents a staged authorization from being submitted through a
+/// different audio device.
+public final class WebRTCIOSAudioTransactionStager: @unchecked Sendable {
+    private let device: ASIOSStereoPlayoutAudioDevice
+
+    fileprivate init(device: ASIOSStereoPlayoutAudioDevice) {
+        self.device = device
+    }
+
+    @discardableResult
+    fileprivate func stage(
+        authorization: WebRTCIOSPlayoutRecoveryAuthorization,
+        inputRequired: Bool
+    ) -> Bool {
+        guard authorization.isValid,
+              let transaction = authorization.transaction else {
+            return false
+        }
+        let tagGeneration = device.stageAppAudioPolicyOperation(
+            identifier: transaction.operationID,
+            authorityEpoch: transaction.authorityEpoch,
+            operationRevision: transaction.operationRevision,
+            recoveryAuthorization: authorization.native,
+            nativeTransactionIdentifier: 0,
+            inputRequired: inputRequired
+        )
+        guard tagGeneration != 0 else { return false }
+        guard authorization.native.bindRequestedInputRequired(
+            inputRequired
+        ) else {
+            _ = device.retireStagedAppAudioPolicyOperation(
+                tagGeneration: tagGeneration
+            )
+            authorization.revoke()
+            return false
+        }
+        guard authorization.installStagedTransaction(
+            stager: self,
+            tagGeneration: tagGeneration
+        ) else {
+            _ = device.retireStagedAppAudioPolicyOperation(
+                tagGeneration: tagGeneration
+            )
+            authorization.revoke()
+            return false
+        }
+        return true
+    }
+
+    fileprivate func stage(
+        authorization: WebRTCIOSMicrophoneAuthorization,
+        inputRequired: Bool
+    ) -> UInt64 {
+        guard authorization.isValid,
+              let transaction = authorization.transaction else {
+            return 0
+        }
+        let tagGeneration = device.stageAppAudioPolicyOperation(
+            identifier: transaction.operationID,
+            authorityEpoch: transaction.authorityEpoch,
+            operationRevision: transaction.operationRevision,
+            microphoneAuthorization: authorization.native,
+            nativeTransactionIdentifier: 0,
+            inputRequired: inputRequired
+        )
+        guard tagGeneration != 0,
+              authorization.installStagedTransaction(
+                stager: self,
+                tagGeneration: tagGeneration
+              ) else {
+            if tagGeneration != 0 {
+                _ = retireIfPending(tagGeneration: tagGeneration)
+            }
+            return 0
+        }
+        return tagGeneration
+    }
+
+    fileprivate func stage(
+        token: WebRTCIOSOutputOnlyMicrophoneToken,
+        inputRequired: Bool
+    ) -> UInt64 {
+        guard let transaction = token.transaction else { return 0 }
+        let tagGeneration = device.stageAppAudioPolicyOperation(
+            identifier: transaction.operationID,
+            authorityEpoch: transaction.authorityEpoch,
+            operationRevision: transaction.operationRevision,
+            outputOnlyAuthorization: token.nativePolicyAuthorization,
+            nativeTransactionIdentifier: 0,
+            inputRequired: inputRequired
+        )
+        guard tagGeneration != 0,
+              token.installStagedTransaction(
+                stager: self,
+                tagGeneration: tagGeneration
+              ) else {
+            if tagGeneration != 0 {
+                _ = retireIfPending(tagGeneration: tagGeneration)
+            }
+            return 0
+        }
+        return tagGeneration
+    }
+
+    @discardableResult
+    fileprivate func retireIfPending(
+        tagGeneration: UInt64
+    ) -> Bool {
+        device.retireStagedAppAudioPolicyOperation(
+            tagGeneration: tagGeneration
+        )
+    }
+
+    fileprivate func requestDrain(
+        transaction: WebRTCIOSAudioTransactionContext,
+        tagGeneration: UInt64
+    ) -> Bool {
+        guard tagGeneration != 0 else { return false }
+        return device.requestAudioCategoryDrain(
+            appOperationIdentifier: transaction.operationID,
+            authorityEpoch: transaction.authorityEpoch,
+            operationRevision: transaction.operationRevision,
+            tagGeneration: tagGeneration
+        )
+    }
+
+    fileprivate func requestRecovery(
+        authorization: WebRTCIOSPlayoutRecoveryAuthorization
+    ) -> Bool {
+        guard authorization.isValid,
+              authorization.isStaged(by: self),
+              let tagGeneration =
+                authorization.stagedTransactionTagGeneration else {
+            authorization.revoke()
+            return false
+        }
+        device.requestPlayoutRecovery(
+            authorization: authorization.native,
+            appOperationTagGeneration: tagGeneration
+        )
+        return true
+    }
 }
 
 /// Exact source of one hosted-call output-only policy.
@@ -1294,8 +1941,59 @@ public final class WebRTCIOSHostedCallPlayoutAuthorization: @unchecked Sendable 
 /// Revocable ownership for the current user-authorized iPhone microphone path.
 public final class WebRTCIOSMicrophoneAuthorization: @unchecked Sendable {
     fileprivate let native = ASIOSMicrophoneAuthorization()
+    private let transactionLock = NSLock()
+    private var transactionStorage: WebRTCIOSAudioTransactionContext?
+    private weak var transactionStager:
+        WebRTCIOSAudioTransactionStager?
+    private var transactionTagGeneration: UInt64 = 0
 
     public init() {}
+
+    public init(transaction: WebRTCIOSAudioTransactionContext) {
+        transactionStorage = transaction
+    }
+
+    public var transaction: WebRTCIOSAudioTransactionContext? {
+        transactionLock.withLock { transactionStorage }
+    }
+
+    public var stagedTransactionTagGeneration: UInt64? {
+        transactionLock.withLock {
+            transactionTagGeneration == 0
+                ? nil
+                : transactionTagGeneration
+        }
+    }
+
+    @discardableResult
+    public func bindTransaction(
+        _ transaction: WebRTCIOSAudioTransactionContext
+    ) -> Bool {
+        transactionLock.withLock {
+            guard transactionStorage == nil,
+                  transactionTagGeneration == 0 else {
+                return transactionStorage == transaction
+            }
+            transactionStorage = transaction
+            return true
+        }
+    }
+
+    fileprivate func installStagedTransaction(
+        stager: WebRTCIOSAudioTransactionStager,
+        tagGeneration: UInt64
+    ) -> Bool {
+        transactionLock.withLock {
+            guard tagGeneration != 0,
+                  transactionStager == nil,
+                  transactionTagGeneration == 0 else {
+                return false
+            }
+            transactionStager = stager
+            transactionTagGeneration = tagGeneration
+            return true
+        }
+    }
 
     public var isValid: Bool { native.isValid }
 
@@ -1305,6 +2003,14 @@ public final class WebRTCIOSMicrophoneAuthorization: @unchecked Sendable {
 
     public func revoke() {
         native.revoke()
+        let staged = transactionLock.withLock {
+            (transactionStager, transactionTagGeneration)
+        }
+        if let stager = staged.0, staged.1 != 0 {
+            _ = stager.retireIfPending(
+                tagGeneration: staged.1
+            )
+        }
     }
 
     #if DEBUG
@@ -1364,36 +2070,98 @@ public final class WebRTCIOSOutputOnlyMicrophoneToken: @unchecked Sendable {
     public let ownerEpoch: UUID
     public let lifecycleGeneration: UInt64
     public let target: WebRTCIOSOutputOnlyMicrophoneTarget
+    fileprivate let nativePolicyAuthorization =
+        ASIOSOutputOnlyAudioPolicyAuthorization()
 
     private let lock = NSLock()
     private var stateStorage: WebRTCIOSOutputOnlyMicrophoneTokenState = .armed
+    private var transactionStorage: WebRTCIOSAudioTransactionContext?
+    private weak var transactionStager:
+        WebRTCIOSAudioTransactionStager?
+    private var transactionTagGeneration: UInt64 = 0
 
     public init(
         tokenID: UUID = UUID(),
         operationID: UUID = UUID(),
         ownerEpoch: UUID,
         lifecycleGeneration: UInt64,
-        target: WebRTCIOSOutputOnlyMicrophoneTarget
+        target: WebRTCIOSOutputOnlyMicrophoneTarget,
+        transaction: WebRTCIOSAudioTransactionContext? = nil
     ) {
         self.tokenID = tokenID
         self.operationID = operationID
         self.ownerEpoch = ownerEpoch
         self.lifecycleGeneration = lifecycleGeneration
         self.target = target
+        transactionStorage = transaction
     }
 
     public var state: WebRTCIOSOutputOnlyMicrophoneTokenState {
         lock.withLock { stateStorage }
     }
 
+    public var transaction: WebRTCIOSAudioTransactionContext? {
+        lock.withLock { transactionStorage }
+    }
+
+    public var stagedTransactionTagGeneration: UInt64? {
+        lock.withLock {
+            transactionTagGeneration == 0
+                ? nil
+                : transactionTagGeneration
+        }
+    }
+
+    @discardableResult
+    public func bindTransaction(
+        _ transaction: WebRTCIOSAudioTransactionContext
+    ) -> Bool {
+        lock.withLock {
+            guard transactionStorage == nil,
+                  transactionTagGeneration == 0 else {
+                return transactionStorage == transaction
+            }
+            transactionStorage = transaction
+            return true
+        }
+    }
+
+    fileprivate func installStagedTransaction(
+        stager: WebRTCIOSAudioTransactionStager,
+        tagGeneration: UInt64
+    ) -> Bool {
+        lock.withLock {
+            guard tagGeneration != 0,
+                  transactionStager == nil,
+                  transactionTagGeneration == 0 else {
+                return false
+            }
+            transactionStager = stager
+            transactionTagGeneration = tagGeneration
+            return true
+        }
+    }
+
     /// Revokes only an operation that has not entered its native claim.
     @discardableResult
     public func revoke() -> Bool {
-        lock.withLock {
+        let revoked = lock.withLock {
             guard stateStorage == .armed else { return false }
             stateStorage = .revoked
             return true
         }
+        if revoked {
+            nativePolicyAuthorization.revoke()
+            let staged = lock.withLock {
+                (transactionStager, transactionTagGeneration)
+            }
+            if let stager = staged.0, staged.1 != 0 {
+                _ = stager.retireIfPending(
+                    tagGeneration: staged.1
+                )
+            }
+        }
+        return revoked
     }
 
     /// Performs the sole native write authorized by this token.
@@ -1410,6 +2178,7 @@ public final class WebRTCIOSOutputOnlyMicrophoneToken: @unchecked Sendable {
         lock.unlock()
 
         let nativeResult = operation()
+        nativePolicyAuthorization.revoke()
         lock.withLock {
             precondition(stateStorage == .executing)
             stateStorage = nativeResult ? .succeeded : .failed
@@ -2134,6 +2903,58 @@ public final class WebRTCIOSPlayoutRecoveryTestHarness: @unchecked Sendable {
         )
     }
 
+    public func debugAppAudioPolicyCarrierOrderingForTesting() -> Bool {
+        native.debugAppAudioPolicyCarrierOrderingForTesting()
+    }
+
+    public func debugAcceptedRecoveryRetiresUnconsumedStagedTagForTesting()
+        -> Bool
+    {
+        native.debugAcceptedRecoveryRetiresUnconsumedStagedTagForTesting()
+    }
+
+    public func debugAudioCategoryDrainOrderingForTesting() -> Bool {
+        native.debugAudioCategoryDrainOrderingForTesting()
+    }
+
+    public func debugAudioCategoryDrainLateIngressIsUntaggedForTesting()
+        -> Bool
+    {
+        native.debugAudioCategoryDrainLateIngressIsUntaggedForTesting()
+    }
+
+    public func debugAudioCategoryDrainRejectsDuplicateAndMismatchForTesting()
+        -> Bool
+    {
+        native.debugAudioCategoryDrainRejectsDuplicateAndMismatchForTesting()
+    }
+
+    public func debugAudioCategoryDeviceTeardownOrderingAndIdempotenceForTesting()
+        -> Bool
+    {
+        native
+            .debugAudioCategoryDeviceTeardownOrderingAndIdempotenceForTesting()
+    }
+
+    public func debugAudioCategoryDeviceTeardownNilHandlerForTesting()
+        -> Bool
+    {
+        native.debugAudioCategoryDeviceTeardownNilHandlerForTesting()
+    }
+
+    public func debugExactAudioPolicyEffectsRejectMissingTagForTesting()
+        -> Bool
+    {
+        native.debugExactAudioPolicyEffectsRejectMissingTagForTesting()
+    }
+
+    public func debugInitializedMicrophoneCloseFailsClosedWithoutDelegateForTesting()
+        -> Bool
+    {
+        native
+            .debugInitializedMicrophoneCloseFailsClosedWithoutDelegateForTesting()
+    }
+
     public func debugRemoteIOStartSettlementAcceptsDelayedObservationForTesting()
         -> Bool
     {
@@ -2691,7 +3512,18 @@ public actor WebRTCPeer {
     private let macStereoAudioDevice: ASMacStereoAudioDevice?
     #endif
     #if os(iOS)
+    public nonisolated let iOSAudioTransactionEvents:
+        AsyncStream<WebRTCIOSAudioTransactionEvent>
+    private nonisolated let iOSAudioTransactionEventContinuation:
+        AsyncStream<WebRTCIOSAudioTransactionEvent>.Continuation
+    public nonisolated let iOSAudioTransactionDeviceBinding:
+        WebRTCIOSAudioTransactionDeviceBinding?
     private let iOSStereoPlayoutAudioDevice: ASIOSStereoPlayoutAudioDevice?
+    private nonisolated let iOSAudioTransactionStager:
+        WebRTCIOSAudioTransactionStager?
+    private nonisolated(unsafe) let
+        iOSAudioCategoryObservationRegistration:
+        ASIOSAudioCategoryObservationRegistration?
     private nonisolated let iOSAudioDeviceRetirementHandle:
         WebRTCIOSAudioDeviceRetirementHandle?
     private let iPhoneMicrophoneTerminalCleanupOwnerEpoch = UUID()
@@ -2714,6 +3546,7 @@ public actor WebRTCPeer {
     #if DEBUG
     private var debugIPhoneMicrophonePolicyApplier:
         (@Sendable (Bool) -> Bool)?
+    private var debugAllowsUnboundIPhoneMicrophonePolicyForRaceTesting = false
     private var debugIPhoneMicrophoneStageFailureDiagnostics:
         WebRTCIOSPlayoutDiagnostics?
     private var debugIPhoneMicrophoneStageFailureReason:
@@ -2890,6 +3723,15 @@ public actor WebRTCPeer {
         )
         events = eventPair.stream
         eventContinuation = eventPair.continuation
+        #if os(iOS)
+        let audioTransactionEventPair =
+            AsyncStream<WebRTCIOSAudioTransactionEvent>.makeStream(
+                bufferingPolicy: .unbounded
+            )
+        iOSAudioTransactionEvents = audioTransactionEventPair.stream
+        iOSAudioTransactionEventContinuation =
+            audioTransactionEventPair.continuation
+        #endif
         let screenClientDiagnosticsEventPair =
             AsyncStream<WebRTCScreenClientDiagnosticsEvent>.makeStream(
                 bufferingPolicy: .bufferingNewest(8)
@@ -3023,6 +3865,88 @@ public actor WebRTCPeer {
             )
         }
         iOSStereoPlayoutAudioDevice = stereoPlayoutDevice
+        iOSAudioTransactionStager = stereoPlayoutDevice.map {
+            WebRTCIOSAudioTransactionStager(device: $0)
+        }
+        let receiptEventContinuation =
+            audioTransactionEventPair.continuation
+        let audioCategoryObservationRegistration =
+            stereoPlayoutDevice?.observeAudioCategoryChanges({
+                nativeReceipt in
+                guard let receipt =
+                        WebRTCIOSAudioCategoryObservationReceipt(
+                            native: nativeReceipt
+                        ) else {
+                    // Unknown native authority fields indicate an ABI mismatch. Ending the
+                    // critical stream is fail-closed; never forge a valid-looking receipt.
+                    receiptEventContinuation.finish()
+                    return
+                }
+                switch receiptEventContinuation.yield(
+                    .observation(receipt)
+                ) {
+                case .enqueued:
+                    break
+                case .dropped, .terminated:
+                    // Ending the critical event stream makes the MainActor owner fail closed.
+                    receiptEventContinuation.finish()
+                @unknown default:
+                    receiptEventContinuation.finish()
+                }
+            }, drainHandler: { nativeReceipt in
+                guard let receipt = WebRTCIOSAudioCategoryDrainReceipt(
+                    native: nativeReceipt
+                ) else {
+                    receiptEventContinuation.finish()
+                    return
+                }
+                switch receiptEventContinuation.yield(
+                    .drain(receipt)
+                ) {
+                case .enqueued:
+                    break
+                case .dropped, .terminated:
+                    receiptEventContinuation.finish()
+                @unknown default:
+                    receiptEventContinuation.finish()
+                }
+            }, deviceTeardownHandler: { nativeReceipt in
+                guard let receipt =
+                        WebRTCIOSAudioCategoryDeviceTeardownReceipt(
+                            native: nativeReceipt
+                        ) else {
+                    receiptEventContinuation.finish()
+                    return
+                }
+                switch receiptEventContinuation.yield(
+                    .deviceTeardown(receipt)
+                ) {
+                case .enqueued:
+                    break
+                case .dropped, .terminated:
+                    break
+                @unknown default:
+                    break
+                }
+                // Native has already invalidated this registration and will not return from
+                // retirement until this terminal handler returns.
+                receiptEventContinuation.finish()
+            })
+        iOSAudioCategoryObservationRegistration =
+            audioCategoryObservationRegistration
+        if let stereoPlayoutDevice,
+           let audioCategoryObservationRegistration {
+            iOSAudioTransactionDeviceBinding =
+                WebRTCIOSAudioTransactionDeviceBinding(
+                    deviceInstanceGeneration:
+                        stereoPlayoutDevice
+                            .audioCategoryDeviceInstanceGeneration,
+                    observationRegistrationGeneration:
+                        audioCategoryObservationRegistration.generation
+                )
+        } else {
+            iOSAudioTransactionDeviceBinding = nil
+        }
         iOSAudioDeviceRetirementHandle =
             audioDeviceRetirementHandle
         #else
@@ -3307,6 +4231,8 @@ public actor WebRTCPeer {
         peerConnection.close()
         #if os(iOS)
         _ = iOSAudioDeviceRetirementHandle?.retire()
+        iOSAudioTransactionEventContinuation.finish()
+        iOSAudioCategoryObservationRegistration?.invalidate()
         #endif
         eventContinuation.finish()
     }
@@ -5439,7 +6365,8 @@ public actor WebRTCPeer {
     private func enableIPhoneMicrophone(
         authorization: WebRTCIOSMicrophoneAuthorization,
         requiresHealthyTransport: Bool,
-        requiresRawNegotiatedSenderProof: Bool
+        requiresRawNegotiatedSenderProof: Bool,
+        allowsUnboundAudioTransactionForTesting: Bool = false
     ) async throws {
         try ensureOpen()
         guard role == .viewer,
@@ -5447,6 +6374,18 @@ public actor WebRTCPeer {
               let device = iOSStereoPlayoutAudioDevice,
               authorization.isValid else {
             throw WebRTCTransportError.audioAuthorizationRevoked
+        }
+        #if DEBUG
+        let hasAuthorizedAudioTransaction = authorization.transaction != nil
+            || allowsUnboundAudioTransactionForTesting
+        #else
+        let hasAuthorizedAudioTransaction = authorization.transaction != nil
+        #endif
+        guard hasAuthorizedAudioTransaction else {
+            authorization.revoke()
+            throw WebRTCTransportError.nativeFailure(
+                "Microphone enable requires an exact audio-policy transaction."
+            )
         }
         guard !requiresHealthyTransport || isTransportHealthyForMedia() else {
             throw WebRTCTransportError.transportNotHealthy
@@ -5456,7 +6395,9 @@ public actor WebRTCPeer {
             #if DEBUG
             try enableIPhoneMicrophoneWithoutRawNegotiatedSenderProofForTesting(
                 authorization: authorization,
-                requiresHealthyTransport: requiresHealthyTransport
+                requiresHealthyTransport: requiresHealthyTransport,
+                allowsUnboundAudioTransactionForTesting:
+                    allowsUnboundAudioTransactionForTesting
             )
             return
             #else
@@ -5485,7 +6426,9 @@ public actor WebRTCPeer {
                     authorization,
                     origin: .publicRequest,
                     retiredAuthorizationIdentity:
-                        previousAuthorizationIdentity
+                        previousAuthorizationIdentity,
+                    allowsUnboundAudioTransactionForTesting:
+                        allowsUnboundAudioTransactionForTesting
                 )
             if previousAuthorization !== authorization {
                 previousAuthorization?.revoke()
@@ -5657,7 +6600,8 @@ public actor WebRTCPeer {
     #if DEBUG
     private func enableIPhoneMicrophoneWithoutRawNegotiatedSenderProofForTesting(
         authorization: WebRTCIOSMicrophoneAuthorization,
-        requiresHealthyTransport: Bool
+        requiresHealthyTransport: Bool,
+        allowsUnboundAudioTransactionForTesting: Bool
     ) throws {
         guard let track = localIPhoneMicrophoneTrack else {
             throw WebRTCTransportError.invalidRole
@@ -5684,7 +6628,9 @@ public actor WebRTCPeer {
             retirementID: nil,
             retiredAuthorizationIdentity:
                 previousAuthorizationIdentity,
-            tokenID: nil
+            tokenID: nil,
+            allowsUnboundAudioTransactionForTesting:
+                allowsUnboundAudioTransactionForTesting
         )
         if previousAuthorization !== authorization {
             previousAuthorization?.revoke()
@@ -5885,6 +6831,18 @@ public actor WebRTCPeer {
         origin: WebRTCIOSMicrophonePolicyAttemptOrigin,
         retirementContext: WebRTCIOSMicrophoneRetirementContext?
     ) -> Bool {
+        #if DEBUG
+        let allowsUnboundTransactionForRaceTesting =
+            debugAllowsUnboundIPhoneMicrophonePolicyForRaceTesting
+        #else
+        let allowsUnboundTransactionForRaceTesting = false
+        #endif
+        if origin != .terminalCleanup,
+           token.transaction == nil,
+           !allowsUnboundTransactionForRaceTesting {
+            _ = token.revoke()
+            return false
+        }
         if let retirementContext {
             let selectedToken = retirementContext.selectToken(token)
             guard selectedToken === token else { return false }
@@ -5901,6 +6859,20 @@ public actor WebRTCPeer {
                 activeIPhoneMicrophoneAuthorization {
                 guard let retiringAuthorization,
                       currentAuthorization === retiringAuthorization else {
+                    return false
+                }
+            }
+
+            if origin != .terminalCleanup,
+               token.transaction != nil {
+                guard let stager = iOSAudioTransactionStager else {
+                    return false
+                }
+                let tagGeneration = stager.stage(
+                    token: token,
+                    inputRequired: false
+                )
+                guard tagGeneration != 0 else {
                     return false
                 }
             }
@@ -5922,7 +6894,8 @@ public actor WebRTCPeer {
                 retirementID: retirementContext?.retirementID,
                 retiredAuthorizationIdentity:
                     retiringAuthorizationIdentity,
-                tokenID: token.tokenID
+                tokenID: token.tokenID,
+                outputOnlyToken: token
             )
             iPhoneMicrophoneNativeTeardownPending = !applied
             iPhoneMicrophoneNativeTeardownAuthorizationIdentity =
@@ -5935,11 +6908,16 @@ public actor WebRTCPeer {
     private func performIPhoneMicrophoneStageAttempt(
         _ authorization: WebRTCIOSMicrophoneAuthorization,
         origin: WebRTCIOSMicrophonePolicyAttemptOrigin,
-        retiredAuthorizationIdentity: ObjectIdentifier?
+        retiredAuthorizationIdentity: ObjectIdentifier?,
+        allowsUnboundAudioTransactionForTesting: Bool = false
     ) -> WebRTCIOSMicrophoneNativeStageResult {
         let sequence = advanceIPhoneMicrophonePolicySequence()
         let result =
-            stageNativeIPhoneMicrophonePolicy(authorization)
+            stageNativeIPhoneMicrophonePolicy(
+                authorization,
+                allowsUnboundAudioTransactionForTesting:
+                    allowsUnboundAudioTransactionForTesting
+            )
         latestIPhoneMicrophonePolicyCompletionStamp =
             WebRTCIOSMicrophonePolicyCompletionStamp(
                 sequence: sequence,
@@ -5960,10 +6938,18 @@ public actor WebRTCPeer {
         origin: WebRTCIOSMicrophonePolicyAttemptOrigin,
         retirementID: UUID?,
         retiredAuthorizationIdentity: ObjectIdentifier?,
-        tokenID: UUID?
+        tokenID: UUID?,
+        outputOnlyToken: WebRTCIOSOutputOnlyMicrophoneToken? = nil,
+        allowsUnboundAudioTransactionForTesting: Bool = false
     ) -> Bool {
         let sequence = advanceIPhoneMicrophonePolicySequence()
-        let nativeResult = applyNativeIPhoneMicrophonePolicy(authorization)
+        let nativeResult = applyNativeIPhoneMicrophonePolicy(
+            authorization,
+            outputOnlyToken: outputOnlyToken,
+            terminalCleanup: origin == .terminalCleanup,
+            allowsUnboundAudioTransactionForTesting:
+                allowsUnboundAudioTransactionForTesting
+        )
         latestIPhoneMicrophonePolicyCompletionStamp =
             WebRTCIOSMicrophonePolicyCompletionStamp(
                 sequence: sequence,
@@ -5979,7 +6965,8 @@ public actor WebRTCPeer {
     }
 
     private func stageNativeIPhoneMicrophonePolicy(
-        _ authorization: WebRTCIOSMicrophoneAuthorization
+        _ authorization: WebRTCIOSMicrophoneAuthorization,
+        allowsUnboundAudioTransactionForTesting: Bool = false
     ) -> WebRTCIOSMicrophoneNativeStageResult {
         #if DEBUG
         if debugIPhoneMicrophoneStageFailureDiagnostics != nil {
@@ -5998,8 +6985,57 @@ public actor WebRTCPeer {
                 failureReason: .deviceUnavailable
             )
         }
-        let recordingGeneration =
-            device.stageMicrophoneAuthorization(authorization.native)
+        guard authorization.transaction != nil else {
+            #if DEBUG
+            guard allowsUnboundAudioTransactionForTesting else {
+                authorization.revoke()
+                return WebRTCIOSMicrophoneNativeStageResult(
+                    recordingGeneration: 0,
+                    failureReason: .authorizationInvalid
+                )
+            }
+            let recordingGeneration =
+                device.stageMicrophoneAuthorization(authorization.native)
+            return WebRTCIOSMicrophoneNativeStageResult(
+                recordingGeneration: recordingGeneration,
+                failureReason: recordingGeneration == 0
+                    ? WebRTCIOSMicrophoneStageFailureReason(
+                        native:
+                            authorization.native
+                                .microphoneStageFailureReason
+                    )
+                    : nil
+            )
+            #else
+            authorization.revoke()
+            return WebRTCIOSMicrophoneNativeStageResult(
+                recordingGeneration: 0,
+                failureReason: .authorizationInvalid
+            )
+            #endif
+        }
+        guard let stager = iOSAudioTransactionStager else {
+            authorization.revoke()
+            return WebRTCIOSMicrophoneNativeStageResult(
+                recordingGeneration: 0,
+                failureReason: .deviceUnavailable
+            )
+        }
+        let tagGeneration = stager.stage(
+            authorization: authorization,
+            inputRequired: true
+        )
+        guard tagGeneration != 0 else {
+            authorization.revoke()
+            return WebRTCIOSMicrophoneNativeStageResult(
+                recordingGeneration: 0,
+                failureReason: .deviceUnavailable
+            )
+        }
+        let recordingGeneration = device.stageMicrophoneAuthorization(
+            authorization.native,
+            appOperationTagGeneration: tagGeneration
+        )
         return WebRTCIOSMicrophoneNativeStageResult(
             recordingGeneration: recordingGeneration,
             failureReason: recordingGeneration == 0
@@ -6026,7 +7062,10 @@ public actor WebRTCPeer {
     }
 
     private func applyNativeIPhoneMicrophonePolicy(
-        _ authorization: WebRTCIOSMicrophoneAuthorization?
+        _ authorization: WebRTCIOSMicrophoneAuthorization?,
+        outputOnlyToken: WebRTCIOSOutputOnlyMicrophoneToken? = nil,
+        terminalCleanup: Bool = false,
+        allowsUnboundAudioTransactionForTesting: Bool = false
     ) -> Bool {
         #if DEBUG
         if let debugIPhoneMicrophonePolicyApplier {
@@ -6037,7 +7076,34 @@ public actor WebRTCPeer {
             authorization?.revoke()
             return false
         }
-        return device.setMicrophoneAuthorization(authorization?.native)
+        if terminalCleanup {
+            guard authorization == nil else {
+                authorization?.revoke()
+                return false
+            }
+            return device.closeMicrophoneForPeerRetirement()
+        }
+        if authorization == nil,
+           let outputOnlyToken,
+           outputOnlyToken.transaction != nil {
+            guard let tagGeneration =
+                    outputOnlyToken.stagedTransactionTagGeneration else {
+                return false
+            }
+            return device.setMicrophoneAuthorization(
+                nil,
+                outputOnlyAuthorization:
+                    outputOnlyToken.nativePolicyAuthorization,
+                appOperationTagGeneration: tagGeneration
+            )
+        }
+        #if DEBUG
+        if allowsUnboundAudioTransactionForTesting {
+            return device.setMicrophoneAuthorization(authorization?.native)
+        }
+        #endif
+        authorization?.revoke()
+        return false
     }
     #endif
 
@@ -6145,11 +7211,44 @@ public actor WebRTCPeer {
 
     public func requestIOSPlayoutRecovery(
         authorization: WebRTCIOSPlayoutRecoveryAuthorization
-    ) {
-        guard !isClosed, authorization.isValid else { return }
-        iOSStereoPlayoutAudioDevice?.requestPlayoutRecovery(
-            authorization: authorization.native
+    ) -> Bool {
+        guard !isClosed,
+              let iOSAudioTransactionStager else {
+            authorization.revoke()
+            return false
+        }
+        return iOSAudioTransactionStager.requestRecovery(
+            authorization: authorization
         )
+    }
+
+    /// Stages the exact current application operation before the caller opens WebRTC's manual
+    /// audio gate. This method is deliberately nonisolated: the native device owns its own
+    /// transaction lock, while the immutable per-peer stager prevents cross-device submission.
+    @discardableResult
+    public nonisolated func stageIOSPlayoutRecoveryTransaction(
+        authorization: WebRTCIOSPlayoutRecoveryAuthorization,
+        inputRequired: Bool
+    ) -> Bool {
+        guard let iOSAudioTransactionStager else {
+            authorization.revoke()
+            return false
+        }
+        return iOSAudioTransactionStager.stage(
+            authorization: authorization,
+            inputRequired: inputRequired
+        )
+    }
+
+    @discardableResult
+    public nonisolated func requestIOSAudioCategoryDrain(
+        transaction: WebRTCIOSAudioTransactionContext,
+        tagGeneration: UInt64
+    ) -> Bool {
+        iOSAudioTransactionStager?.requestDrain(
+            transaction: transaction,
+            tagGeneration: tagGeneration
+        ) ?? false
     }
 
     public func requestIOSHostedCallPlayoutRecovery(
@@ -10178,7 +11277,7 @@ public actor WebRTCPeer {
 
     /// Permanent close and event-delivery loss cannot depend on an application
     /// event handler. Revoke any remaining sender ownership and synchronously
-    /// restore the native output-only policy.
+    /// close the native microphone gates before full peer/device retirement.
     private func forceIPhoneMicrophoneNativeTeardown() {
         #if os(iOS)
         // A dropped close event can re-enter terminal cleanup before `isClosed` flips. Fence the
@@ -10331,7 +11430,12 @@ public actor WebRTCPeer {
     /// turn a failed teardown into a successful replacement barrier.
     private func retireOwnedAudioDeviceForPeerClosure() -> Bool {
         #if os(iOS)
-        return iOSAudioDeviceRetirementHandle?.retire() ?? true
+        let result = iOSAudioDeviceRetirementHandle?.retire() ?? true
+        // Successful native retirement synchronously delivered the teardown receipt first.
+        // Hosts/no-device peers and failed retirement still terminate the dedicated stream.
+        iOSAudioTransactionEventContinuation.finish()
+        iOSAudioCategoryObservationRegistration?.invalidate()
+        return result
         #else
         return true
         #endif
@@ -10407,10 +11511,12 @@ public actor WebRTCPeer {
     func debugEnableIPhoneMicrophoneThroughNativeStageForTesting(
         _ authorization: WebRTCIOSMicrophoneAuthorization
     ) async throws {
+        debugAllowsUnboundIPhoneMicrophonePolicyForRaceTesting = true
         try await enableIPhoneMicrophone(
             authorization: authorization,
             requiresHealthyTransport: false,
-            requiresRawNegotiatedSenderProof: true
+            requiresRawNegotiatedSenderProof: true,
+            allowsUnboundAudioTransactionForTesting: true
         )
     }
 
@@ -10434,16 +11540,19 @@ public actor WebRTCPeer {
     func debugEnableIPhoneMicrophoneIgnoringTransportForTests(
         _ authorization: WebRTCIOSMicrophoneAuthorization
     ) async throws {
+        debugAllowsUnboundIPhoneMicrophonePolicyForRaceTesting = true
         try await enableIPhoneMicrophone(
             authorization: authorization,
             requiresHealthyTransport: false,
-            requiresRawNegotiatedSenderProof: false
+            requiresRawNegotiatedSenderProof: false,
+            allowsUnboundAudioTransactionForTesting: true
         )
     }
 
     func debugInstallIPhoneMicrophoneAuthorizationForTransportUncertainty(
         _ authorization: WebRTCIOSMicrophoneAuthorization
     ) {
+        debugAllowsUnboundIPhoneMicrophonePolicyForRaceTesting = true
         _ = advanceIPhoneMicrophonePolicyGeneration()
         activeIPhoneMicrophoneAuthorization?.revoke()
         activeIPhoneMicrophoneAuthorization = authorization

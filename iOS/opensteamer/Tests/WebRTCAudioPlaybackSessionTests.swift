@@ -66,6 +66,26 @@ final class WebRTCAudioPlaybackSessionTests: XCTestCase {
         XCTAssertEqual(counter.value, 0)
     }
 
+    func testExactNativeAudioPolicyEffectsRejectMissingTransactionTag() {
+        let harness = WebRTCIOSPlayoutRecoveryTestHarness()
+        defer { _ = harness.debugTerminateForTesting() }
+
+        XCTAssertTrue(
+            harness
+                .debugExactAudioPolicyEffectsRejectMissingTagForTesting()
+        )
+    }
+
+    func testInitializedMicrophoneCloseFailsClosedWithoutDelegate() {
+        let harness = WebRTCIOSPlayoutRecoveryTestHarness()
+        defer { _ = harness.debugTerminateForTesting() }
+
+        XCTAssertTrue(
+            harness
+                .debugInitializedMicrophoneCloseFailsClosedWithoutDelegateForTesting()
+        )
+    }
+
     func testMicrophoneRealtimeGateRevocationDrainsExactAdmission() {
         let authorization = WebRTCIOSMicrophoneAuthorization()
         let revokeFinished = DispatchSemaphore(value: 0)
@@ -2659,6 +2679,54 @@ final class WebRTCAudioPlaybackSessionTests: XCTestCase {
         await viewer.close()
     }
 
+    func testPublicMicrophonePolicyRejectsUnboundCapabilitiesBeforeNativeEffect()
+        async throws
+    {
+        let viewer = try WebRTCPeer(
+            configuration: WebRTCTransportConfiguration(
+                role: .viewer,
+                iceServers: []
+            )
+        )
+        let nativePolicyCallCount = LockedInteger()
+        await viewer.debugInstallIPhoneMicrophonePolicyApplier { _ in
+            nativePolicyCallCount.increment()
+            return true
+        }
+
+        let microphoneAuthorization = WebRTCIOSMicrophoneAuthorization()
+        do {
+            try await viewer.enableIPhoneMicrophone(
+                authorization: microphoneAuthorization
+            )
+            XCTFail("An unbound public microphone authorization must fail closed.")
+        } catch {
+            XCTAssertFalse(microphoneAuthorization.isValid)
+            XCTAssertNil(
+                microphoneAuthorization.stagedTransactionTagGeneration
+            )
+        }
+
+        let outputOnlyToken = WebRTCIOSOutputOnlyMicrophoneToken(
+            ownerEpoch: UUID(),
+            lifecycleGeneration: 1,
+            target: WebRTCIOSOutputOnlyMicrophoneTarget(
+                category: AVAudioSession.Category.playback.rawValue,
+                mode: AVAudioSession.Mode.default.rawValue
+            )
+        )
+        let outputOnlyApplied = await viewer.disableIPhoneMicrophone(
+            outputOnlyToken: outputOnlyToken
+        )
+
+        XCTAssertFalse(outputOnlyApplied)
+        XCTAssertEqual(outputOnlyToken.state, .revoked)
+        XCTAssertNil(outputOnlyToken.stagedTransactionTagGeneration)
+        XCTAssertEqual(nativePolicyCallCount.value, 0)
+        let closeResult = await viewer.close()
+        XCTAssertTrue(closeResult)
+    }
+
     /// Runtime—not a direct protocol invocation—proof that a real peer connection initializes
     /// and clocks the injected output-only RemoteIO device on physical iOS hardware.
     func testPeerUsesStereoRemoteIOAndReceivesNativePlayoutCallbacks() async throws {
@@ -2758,11 +2826,47 @@ final class WebRTCAudioPlaybackSessionTests: XCTestCase {
 
         // A normal app-lifecycle recovery signal must be idempotent while this exact device owns
         // healthy playout. In particular, it must not tear down RemoteIO and produce an audible gap.
-        let healthyRecoveryAuthorization = WebRTCIOSPlayoutRecoveryAuthorization()
-        await viewer.requestIOSPlayoutRecovery(
-            authorization: healthyRecoveryAuthorization
+        let healthyRecoveryTransaction = WebRTCIOSAudioTransactionContext(
+            operationID: try XCTUnwrap(
+                UUID(uuidString: "00112233-4455-6677-8899-AABBCCDDEEFF")
+            ),
+            authorityEpoch: 1,
+            operationRevision: 1
         )
+        let healthyRecoveryAuthorization =
+            WebRTCIOSPlayoutRecoveryAuthorization(
+                transaction: healthyRecoveryTransaction
+            )
+        XCTAssertTrue(
+            viewer.stageIOSPlayoutRecoveryTransaction(
+                authorization: healthyRecoveryAuthorization,
+                inputRequired: false
+            )
+        )
+        XCTAssertNotNil(
+            healthyRecoveryAuthorization.stagedTransactionTagGeneration
+        )
+        let healthyRecoveryWasRequested =
+            await viewer.requestIOSPlayoutRecovery(
+                authorization: healthyRecoveryAuthorization
+            )
+        XCTAssertTrue(healthyRecoveryWasRequested)
         try await Task.sleep(for: .milliseconds(50))
+        let healthyRecoveryReceipt = try XCTUnwrap(
+            healthyRecoveryAuthorization.terminalReceipt
+        )
+        XCTAssertEqual(
+            healthyRecoveryReceipt.transaction,
+            healthyRecoveryTransaction
+        )
+        XCTAssertEqual(healthyRecoveryReceipt.outcome, .accepted)
+        XCTAssertTrue(
+            healthyRecoveryReceipt.policyMatchesRequestedTarget
+        )
+        XCTAssertEqual(
+            healthyRecoveryReceipt.authorizationGeneration,
+            healthyRecoveryReceipt.terminalGeneration
+        )
         let healthyRecoveryDiagnostics = await viewer.iOSPlayoutDiagnostics()
         let afterHealthyRecoveryRequest = try XCTUnwrap(healthyRecoveryDiagnostics)
         XCTAssertTrue(afterHealthyRecoveryRequest.playing)
@@ -2801,10 +2905,31 @@ final class WebRTCAudioPlaybackSessionTests: XCTestCase {
         XCTAssertEqual(failedClosed.failureCode, 19)
         XCTAssertNotNil(failedClosed.failureMessage)
 
-        let routeRecoveryAuthorization = WebRTCIOSPlayoutRecoveryAuthorization()
-        await viewer.requestIOSPlayoutRecovery(
-            authorization: routeRecoveryAuthorization
+        let routeRecoveryTransaction = WebRTCIOSAudioTransactionContext(
+            operationID: try XCTUnwrap(
+                UUID(uuidString: "10213243-5465-7687-98A9-BACBDCEDFE0F")
+            ),
+            authorityEpoch: 1,
+            operationRevision: 2
         )
+        let routeRecoveryAuthorization =
+            WebRTCIOSPlayoutRecoveryAuthorization(
+                transaction: routeRecoveryTransaction
+            )
+        XCTAssertTrue(
+            viewer.stageIOSPlayoutRecoveryTransaction(
+                authorization: routeRecoveryAuthorization,
+                inputRequired: false
+            )
+        )
+        XCTAssertNotNil(
+            routeRecoveryAuthorization.stagedTransactionTagGeneration
+        )
+        let routeRecoveryWasRequested =
+            await viewer.requestIOSPlayoutRecovery(
+                authorization: routeRecoveryAuthorization
+            )
+        XCTAssertTrue(routeRecoveryWasRequested)
         var recovered = await viewer.iOSPlayoutDiagnostics()
         for _ in 0..<500 where recovered?.playing != true {
             try await Task.sleep(for: .milliseconds(10))
@@ -2818,6 +2943,19 @@ final class WebRTCAudioPlaybackSessionTests: XCTestCase {
         XCTAssertFalse(recoveredValue.explicitResumeRequired)
         XCTAssertEqual(recoveredValue.failureCode, 0)
         XCTAssertNil(recoveredValue.failureMessage)
+        let routeRecoveryReceipt = try XCTUnwrap(
+            routeRecoveryAuthorization.terminalReceipt
+        )
+        XCTAssertEqual(
+            routeRecoveryReceipt.transaction,
+            routeRecoveryTransaction
+        )
+        XCTAssertEqual(routeRecoveryReceipt.outcome, .accepted)
+        XCTAssertTrue(routeRecoveryReceipt.policyMatchesRequestedTarget)
+        XCTAssertEqual(
+            routeRecoveryReceipt.authorizationGeneration,
+            routeRecoveryReceipt.terminalGeneration
+        )
 
         await host.close()
         await viewer.close()

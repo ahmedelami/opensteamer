@@ -433,8 +433,12 @@ private final class IOSPlayoutProofAttempt {
     let postCallRecoveryMilestone:
         WorldwidePostCallMicrophoneRecoveryMilestone?
     let categoryProofClaim: WorldwideAudioCategoryProofClaim?
+    /// Exact reducer operation and pre-staged native capability for transaction-owned recovery.
+    /// Nil preserves the legacy/test-only proof path for initial non-recovery observation.
+    let recoveryTransaction: WorldwideAudioRecoveryTransaction?
     var stage: IOSPlayoutProofStage
     var recoveryAuthorization: WebRTCIOSPlayoutRecoveryAuthorization?
+    var nativeRecoveryReceiptWasConsumed = false
     /// Exact pre-request lifetime-cumulative snapshot; never post-request live observation.
     private(set) var recoveryBaseline: IOSPlayoutRecoveryBaseline?
     var callbackFloor: UInt64?
@@ -456,6 +460,7 @@ private final class IOSPlayoutProofAttempt {
         postCallRecoveryMilestone:
             WorldwidePostCallMicrophoneRecoveryMilestone? = nil,
         categoryProofClaim: WorldwideAudioCategoryProofClaim? = nil,
+        recoveryTransaction: WorldwideAudioRecoveryTransaction? = nil,
         stage: IOSPlayoutProofStage
     ) {
         self.proofAttemptID = proofAttemptID
@@ -466,6 +471,7 @@ private final class IOSPlayoutProofAttempt {
         self.postCallRecoveryMilestone =
             postCallRecoveryMilestone
         self.categoryProofClaim = categoryProofClaim
+        self.recoveryTransaction = recoveryTransaction
         self.stage = stage
     }
 
@@ -840,6 +846,9 @@ final class WorldwideSessionViewModel: ObservableObject {
     private var sessionRetirementTask: Task<Bool, Never>?
     private var sessionRetirementGeneration = UUID()
     private var peerEventTask: Task<Void, Never>?
+    /// Lossless reducer receipts remain alive through native peer retirement so the terminal
+    /// device barrier is consumed before a replacement peer may bind its sequence namespace.
+    private var audioTransactionEventTask: Task<Bool, Never>?
     private var audioPlayoutProofTask: Task<Void, Never>?
     private var macHostedCallEvidenceLeaseTask: Task<Void, Never>?
     private var macHostedCallChallengeSendTask: Task<Void, Never>?
@@ -1117,8 +1126,15 @@ final class WorldwideSessionViewModel: ObservableObject {
             audioDiagnostic = snapshot.diagnosticText
             reconcileIPhoneMicrophone(for: snapshot)
         }
+        #if DEBUG
+        // Production recovery is dispatched only through the transaction callback installed after
+        // the exact native device namespace binds. This legacy callback remains a test seam for
+        // controller fixtures that intentionally do not install a native transaction stream.
         audioLifecycle.onPlaybackRecoveryRequested = { [weak self] in
-            guard let self else { return }
+            guard let self,
+                  self.debugIOSPlayoutRecoveryRequester != nil else {
+                return
+            }
             self.beginIOSPlayoutProof(
                 requestRecovery: true,
                 postCallRecoveryMilestone:
@@ -1126,6 +1142,7 @@ final class WorldwideSessionViewModel: ObservableObject {
                         .postCallMicrophoneRecoveryMilestone
             )
         }
+        #endif
         audioLifecycle.onHostedCallPlayoutRecoveryRequested = { [weak self] authorization in
             self?.beginIOSHostedCallPlayoutProof(authorization: authorization)
         }
@@ -1178,6 +1195,7 @@ final class WorldwideSessionViewModel: ObservableObject {
     }
 
     deinit {
+        audioTransactionEventTask?.cancel()
         NotificationCenter.default.removeObserver(self)
     }
 
@@ -1551,7 +1569,11 @@ final class WorldwideSessionViewModel: ObservableObject {
         applicationIsActive = true
         refreshScreenLivenessDiagnostic()
         recoverPassiveAudioLifecyclePreservingEstablishedMicrophone {
-            audioLifecycle.appBecameActive()
+            establishedMicrophoneAuthorization in
+            audioLifecycle.appBecameActive(
+                preservingEstablishedMicrophoneAuthorization:
+                    establishedMicrophoneAuthorization
+            )
         }
         establishAutomaticIPhoneMicrophoneIntentIfEligible()
         continueIPhoneMicrophoneEnablementIfPossible()
@@ -1581,7 +1603,11 @@ final class WorldwideSessionViewModel: ObservableObject {
         suspendRemoteInputForApplicationLifecycle()
         pausePendingIPhoneMicrophoneForInactiveApp()
         recoverPassiveAudioLifecyclePreservingEstablishedMicrophone {
-            audioLifecycle.appEnteredBackground()
+            establishedMicrophoneAuthorization in
+            audioLifecycle.appEnteredBackground(
+                preservingEstablishedMicrophoneAuthorization:
+                    establishedMicrophoneAuthorization
+            )
         }
         hideScreenForPassiveLifecycleIfNeeded()
     }
@@ -1595,15 +1621,33 @@ final class WorldwideSessionViewModel: ObservableObject {
     }
 
     private func recoverPassiveAudioLifecyclePreservingEstablishedMicrophone(
-        _ recovery: () -> Void
+        _ recovery: (WebRTCIOSMicrophoneAuthorization?) -> Bool
     ) {
         let authorization = microphoneAuthorization
-        preservesEstablishedMicrophoneAcrossNextPassiveProofInvalidation =
+        let establishedMicrophoneAuthorization =
             isMicrophoneSending && authorization?.isValid == true
+                ? authorization
+                : nil
+        preservesEstablishedMicrophoneAcrossNextPassiveProofInvalidation =
+            establishedMicrophoneAuthorization != nil
         defer {
             preservesEstablishedMicrophoneAcrossNextPassiveProofInvalidation = false
         }
-        recovery()
+        let recoveryWasDispatched = recovery(
+            establishedMicrophoneAuthorization
+        )
+        if establishedMicrophoneAuthorization != nil,
+           !recoveryWasDispatched {
+            // The preservation privilege covers only the atomic A-to-B handoff. If A could not
+            // retire/drain or B could not stage, immediately restore ordinary fail-closed mic
+            // teardown rather than leaving a live carrier outside reducer ownership.
+            preservesEstablishedMicrophoneAcrossNextPassiveProofInvalidation = false
+            suspendIPhoneMicrophone(
+                stateText: "Paused — audio recovery required",
+                preserveIntent: true,
+                reprovePlayout: false
+            )
+        }
     }
 
     private func pausePendingIPhoneMicrophoneForInactiveApp() {
@@ -1880,6 +1924,10 @@ final class WorldwideSessionViewModel: ObservableObject {
             microphoneStateText = "Paused — waiting for healthy connection"
             return
         }
+        guard audioLifecycle.hasBoundIOSAudioTransactionDevice else {
+            microphoneStateText = "Paused — waiting for audio policy"
+            return
+        }
 
         let operationGeneration = UUID()
         let expectedSessionGeneration = sessionGeneration
@@ -1900,10 +1948,23 @@ final class WorldwideSessionViewModel: ObservableObject {
         microphoneAuthorization = authorization
         isMicrophoneSending = false
         microphoneStateText = "Starting"
-        guard audioLifecycle.beginMicrophoneTopologyTransition(
-            isEnabled: true
-        ) != 0 else {
+        let topologyGeneration =
+            audioLifecycle.beginMicrophoneTopologyTransition(
+                isEnabled: true
+            )
+        let topologyTransactionWasBound = topologyGeneration != 0
+            && audioLifecycle.bindCurrentMicrophoneTopologyTransaction(
+                to: authorization,
+                generation: topologyGeneration
+            )
+        guard topologyTransactionWasBound else {
             authorization.revoke()
+            if topologyGeneration != 0 {
+                _ = audioLifecycle
+                    .abortCurrentMicrophoneTopologyTransition(
+                        generation: topologyGeneration
+                    )
+            }
             microphoneAuthorization = nil
             microphoneTask?.cancel()
             microphoneTask = nil
@@ -2028,7 +2089,12 @@ final class WorldwideSessionViewModel: ObservableObject {
                     )
                     return
                 }
-                beginIOSPlayoutProof(requestRecovery: true)
+                if stageFailureIsLifecycleControlled {
+                    _ = audioLifecycle
+                        .requestTransactionalRuntimePlayoutRecovery(
+                            requiresRemoteAudio: false
+                        )
+                }
                 if shouldDeferUntilTransportProof,
                    microphoneAdmissionDeferredUntilTransportProof == nil {
                     reconcileIPhoneMicrophone()
@@ -2090,6 +2156,12 @@ final class WorldwideSessionViewModel: ObservableObject {
         on peer: WebRTCPeer,
         authorization: WebRTCIOSMicrophoneAuthorization
     ) async throws {
+        defer {
+            recordNativeAudioTransactionTag(
+                authorization.stagedTransactionTagGeneration,
+                context: authorization.transaction
+            )
+        }
         #if DEBUG
         if let handler = debugIPhoneMicrophoneNativeEnableHandler {
             try await handler(authorization)
@@ -2183,17 +2255,40 @@ final class WorldwideSessionViewModel: ObservableObject {
         authorization: WebRTCIOSMicrophoneAuthorization?,
         outputOnlyToken: WebRTCIOSOutputOnlyMicrophoneToken? = nil
     ) async -> Bool {
+        let result: Bool
         #if DEBUG
         if let handler = debugIPhoneMicrophoneNativeDisableHandler {
-            return await handler(
+            result = await handler(
                 authorization,
                 outputOnlyToken
             )
+        } else {
+            result = await peer.disableIPhoneMicrophone(
+                authorization: authorization,
+                outputOnlyToken: outputOnlyToken
+            )
         }
-        #endif
-        return await peer.disableIPhoneMicrophone(
+        #else
+        result = await peer.disableIPhoneMicrophone(
             authorization: authorization,
             outputOnlyToken: outputOnlyToken
+        )
+        #endif
+        recordNativeAudioTransactionTag(
+            outputOnlyToken?.stagedTransactionTagGeneration,
+            context: outputOnlyToken?.transaction
+        )
+        return result
+    }
+
+    private func recordNativeAudioTransactionTag(
+        _ tagGeneration: UInt64?,
+        context: WebRTCIOSAudioTransactionContext?
+    ) {
+        guard let tagGeneration, let context else { return }
+        audioLifecycle.recordNativeAudioTransactionTag(
+            tagGeneration,
+            for: context
         )
     }
 
@@ -4993,6 +5088,16 @@ final class WorldwideSessionViewModel: ObservableObject {
                     icePolicy: .directPreferred
                 )
             )
+            guard let audioTransactionDeviceBinding =
+                    newPeer.iOSAudioTransactionDeviceBinding,
+                  audioLifecycle.bindIOSAudioTransactionDevice(
+                    audioTransactionDeviceBinding
+                  ) else {
+                _ = await newPeer.close(reason: .protocolError)
+                throw WebRTCTransportError.nativeFailure(
+                    "The native iPhone audio transaction authority could not bind the current peer."
+                )
+            }
             let coordinator = ICERecoveryCoordinator(
                 restart: { [weak self] in
                     guard let self else { throw CancellationError() }
@@ -5006,6 +5111,10 @@ final class WorldwideSessionViewModel: ObservableObject {
                 }
             )
             peer = newPeer
+            startAudioTransactionEventLoop(
+                peer: newPeer,
+                generation: generation
+            )
             let newPeerIdentity = ObjectIdentifier(newPeer)
             await newPeer.installIPhoneMicrophoneTransportSuspensionHandler {
                 [weak self] retirementContext in
@@ -5094,6 +5203,120 @@ final class WorldwideSessionViewModel: ObservableObject {
             }
             guard !Task.isCancelled else { return }
             self?.peerEventStreamEnded(peer: peer, generation: generation)
+        }
+    }
+
+    private func startAudioTransactionEventLoop(
+        peer sourcePeer: WebRTCPeer,
+        generation: UUID
+    ) {
+        precondition(audioTransactionEventTask == nil)
+        installAudioTransactionCallbacks(
+            peer: sourcePeer,
+            generation: generation
+        )
+        let events = sourcePeer.iOSAudioTransactionEvents
+        audioTransactionEventTask = Task { [weak self] in
+            var teardownResult: Bool?
+            for await event in events {
+                guard !Task.isCancelled else { return false }
+                if let result = self?.handleAudioTransactionEvent(
+                    event,
+                    peer: sourcePeer,
+                    generation: generation
+                ) {
+                    teardownResult = result
+                }
+            }
+            if let teardownResult { return teardownResult }
+            guard !Task.isCancelled,
+                  let self,
+                  generation == sessionGeneration,
+                  peer === sourcePeer,
+                  hasActiveSession else {
+                return false
+            }
+            failSession(
+                "The native iPhone audio transaction stream closed.",
+                generation: generation
+            )
+            return false
+        }
+    }
+
+    private func installAudioTransactionCallbacks(
+        peer sourcePeer: WebRTCPeer,
+        generation: UUID
+    ) {
+        audioLifecycle.onPlayoutRecoveryTransactionStagingRequested = {
+            [weak self, weak sourcePeer] context, inputRequired in
+            guard let self, let sourcePeer,
+                  generation == self.sessionGeneration,
+                  self.peer === sourcePeer else {
+                return nil
+            }
+            let authorization = WebRTCIOSPlayoutRecoveryAuthorization(
+                transaction: context
+            )
+            guard sourcePeer.stageIOSPlayoutRecoveryTransaction(
+                authorization: authorization,
+                inputRequired: inputRequired
+            ) else {
+                authorization.revoke()
+                return nil
+            }
+            return authorization
+        }
+        audioLifecycle.onTransactionalPlaybackRecoveryRequested = {
+            [weak self, weak sourcePeer] transaction in
+            guard let self, let sourcePeer,
+                  generation == self.sessionGeneration,
+                  self.peer === sourcePeer else {
+                transaction.authorization.revoke()
+                return
+            }
+            self.beginIOSPlayoutProof(
+                transaction: transaction,
+                postCallRecoveryMilestone:
+                    self.audioLifecycle
+                        .postCallMicrophoneRecoveryMilestone
+            )
+        }
+        audioLifecycle.onAudioTransactionDrainRequested = {
+            [weak self, weak sourcePeer] request in
+            guard let self, let sourcePeer,
+                  generation == self.sessionGeneration,
+                  self.peer === sourcePeer else {
+                return false
+            }
+            return sourcePeer.requestIOSAudioCategoryDrain(
+                transaction: request.operation.nativeContext,
+                tagGeneration: request.tagGeneration
+            )
+        }
+    }
+
+    private func handleAudioTransactionEvent(
+        _ event: WebRTCIOSAudioTransactionEvent,
+        peer sourcePeer: WebRTCPeer,
+        generation: UUID
+    ) -> Bool? {
+        switch event {
+        case .observation(let receipt):
+            guard generation == sessionGeneration,
+                  peer === sourcePeer else { return nil }
+            audioLifecycle.consumeIOSAudioCategoryObservation(receipt)
+            return nil
+        case .drain(let receipt):
+            guard generation == sessionGeneration,
+                  peer === sourcePeer else { return nil }
+            audioLifecycle.consumeIOSAudioCategoryDrain(receipt)
+            return nil
+        case .deviceTeardown(let receipt):
+            // Teardown is intentionally accepted after sessionGeneration rotates and `peer`
+            // clears. The replacement session awaits this task before binding its own device.
+            return audioLifecycle
+                .consumeIOSAudioTransactionDeviceTeardown(receipt)
         }
     }
 
@@ -5733,6 +5956,8 @@ final class WorldwideSessionViewModel: ObservableObject {
 
         let oldSignaling = signaling
         let oldPeer = peer
+        let oldAudioTransactionEventTask =
+            audioTransactionEventTask
         let precedingRetirement = sessionRetirementTask
         sessionRetirementGeneration = UUID()
         #if DEBUG
@@ -5740,6 +5965,7 @@ final class WorldwideSessionViewModel: ObservableObject {
         #endif
         sessionTask = nil
         peerEventTask = nil
+        audioTransactionEventTask = nil
         audioPlayoutProofTask = nil
         signaling = nil
         peer = nil
@@ -5756,12 +5982,19 @@ final class WorldwideSessionViewModel: ObservableObject {
             if let oldPeer {
                 peerRetirementSucceeded = await oldPeer.close(reason: reason)
             } else {
+                oldAudioTransactionEventTask?.cancel()
                 peerRetirementSucceeded = true
             }
+            // Native close synchronously yields teardown and then finishes the stream. Waiting for
+            // this consumer proves the old reducer namespace was reset before admission returns.
+            let audioTransactionRetirementSucceeded =
+                await oldAudioTransactionEventTask?.value
+                    ?? (oldPeer == nil)
             await oldRecoveryCoordinator?.cancel()
             await oldSignaling?.close()
             return precedingRetirementSucceeded
                 && peerRetirementSucceeded
+                && audioTransactionRetirementSucceeded
         }
         sessionRetirementTask = retirementTask
     }
@@ -6192,19 +6425,47 @@ final class WorldwideSessionViewModel: ObservableObject {
     /// snapshot establishes the new cumulative-counter floor.
     @discardableResult
     private func beginIOSPlayoutProof(
+        transaction: WorldwideAudioRecoveryTransaction,
+        postCallRecoveryMilestone:
+            WorldwidePostCallMicrophoneRecoveryMilestone? = nil
+    ) -> Task<Void, Never>? {
+        let task = beginIOSPlayoutProof(
+            requestRecovery: true,
+            postCallRecoveryMilestone: postCallRecoveryMilestone,
+            recoveryTransaction: transaction
+        )
+        if task == nil {
+            audioLifecycle.updateTransactionalRuntimePlayout(
+                transaction: transaction,
+                isReady: false,
+                failureMessage:
+                    "The iPhone 48 kHz stereo render path did not start.",
+                diagnostic:
+                    "The exact recovery proof could not start on the current peer."
+            )
+        }
+        return task
+    }
+
+    @discardableResult
+    private func beginIOSPlayoutProof(
         requestRecovery: Bool,
         postCallRecoveryMilestone:
             WorldwidePostCallMicrophoneRecoveryMilestone? = nil,
         categoryProofClaim:
-            WorldwideAudioCategoryProofClaim? = nil
+            WorldwideAudioCategoryProofClaim? = nil,
+        recoveryTransaction:
+            WorldwideAudioRecoveryTransaction? = nil
     ) -> Task<Void, Never>? {
         guard !ordinaryIOSPlayoutProofIsSuppressedByHostedCall else {
+            recoveryTransaction?.authorization.revoke()
             return nil
         }
         let pendingMicrophoneRecoveryIsCurrent =
             microphoneAdmissionRecoveryPendingBinding
                 == currentMicrophoneAutomaticRecoveryBinding()
-        if pendingMicrophoneRecoveryIsCurrent,
+        if recoveryTransaction == nil,
+           pendingMicrophoneRecoveryIsCurrent,
            categoryProofClaim == nil,
            let currentAttempt = iosPlayoutProofAttempt,
            microphoneAdmissionRecoveryProofAttemptID
@@ -6218,6 +6479,7 @@ final class WorldwideSessionViewModel: ObservableObject {
         audioPlayoutProofTask?.cancel()
         audioPlayoutProofTask = nil
         guard let proofPeer = peer else {
+            recoveryTransaction?.authorization.revoke()
             if let categoryProofClaim {
                 // The claimed refresh is the only completion path for a category notification
                 // blocked by a same-target tombstone. A peer disappearing before the bounded
@@ -6236,8 +6498,23 @@ final class WorldwideSessionViewModel: ObservableObject {
         }
 
         let requiresRecovery = requestRecovery
+            || recoveryTransaction != nil
             || audioPolicyRequiresFreshRecovery
             || pendingMicrophoneRecoveryIsCurrent
+        #if DEBUG
+        let permitsLegacyUntransactionalRecovery =
+            debugIOSPlayoutRecoveryRequester != nil
+        #else
+        let permitsLegacyUntransactionalRecovery = false
+        #endif
+        if requiresRecovery,
+           recoveryTransaction == nil,
+           !permitsLegacyUntransactionalRecovery {
+            _ = audioLifecycle.requestTransactionalRuntimePlayoutRecovery(
+                requiresRemoteAudio: !pendingMicrophoneRecoveryIsCurrent
+            )
+            return nil
+        }
         let proofAudioPolicyGeneration = audioPolicyGeneration
         verifiedAudioPolicyGeneration = nil
         audioPlayoutOracle = nil
@@ -6254,6 +6531,7 @@ final class WorldwideSessionViewModel: ObservableObject {
                     ? postCallRecoveryMilestone
                     : nil,
             categoryProofClaim: categoryProofClaim,
+            recoveryTransaction: recoveryTransaction,
             stage: requiresRecovery ? .awaitingRecoveryBaseline : .awaitingInitialFloor
         )
         iosPlayoutProofAttempt = attempt
@@ -6304,7 +6582,31 @@ final class WorldwideSessionViewModel: ObservableObject {
                     return
                 }
 
-                let authorization = WebRTCIOSPlayoutRecoveryAuthorization()
+                let authorization: WebRTCIOSPlayoutRecoveryAuthorization
+                if let recoveryTransaction {
+                    authorization = recoveryTransaction.authorization
+                } else {
+                    #if DEBUG
+                    guard debugIOSPlayoutRecoveryRequester != nil else {
+                        failIOSPlayoutProofTimeout(attempt)
+                        return
+                    }
+                    authorization = WebRTCIOSPlayoutRecoveryAuthorization()
+                    #else
+                    failIOSPlayoutProofTimeout(attempt)
+                    return
+                    #endif
+                }
+                if let recoveryTransaction {
+                    guard recoveryTransaction.authorization === authorization,
+                          authorization.transaction
+                            == recoveryTransaction.operation.nativeContext,
+                          authorization.stagedTransactionTagGeneration != nil else {
+                        authorization.revoke()
+                        failIOSPlayoutProofTimeout(attempt)
+                        return
+                    }
+                }
                 attempt.recoveryAuthorization = authorization
                 attempt.stage = .awaitingRecoveryAuthorization
                 audioPlayoutRecoveryAuthorization = authorization
@@ -6315,10 +6617,13 @@ final class WorldwideSessionViewModel: ObservableObject {
                     authorization.revoke()
                     return
                 }
-                await requestIOSPlayoutRecovery(
+                guard await requestIOSPlayoutRecovery(
                     on: proofPeer,
                     authorization: authorization
-                )
+                ) else {
+                    failIOSPlayoutProofTimeout(attempt)
+                    return
+                }
                 guard iosPlayoutProofAttemptIsOwned(attempt),
                       attempt.recoveryAuthorization === authorization,
                       audioPlayoutRecoveryAuthorization === authorization else {
@@ -6555,14 +6860,16 @@ final class WorldwideSessionViewModel: ObservableObject {
     private func requestIOSPlayoutRecovery(
         on proofPeer: WebRTCPeer,
         authorization: WebRTCIOSPlayoutRecoveryAuthorization
-    ) async {
+    ) async -> Bool {
         #if DEBUG
         if let debugIOSPlayoutRecoveryRequester {
             await debugIOSPlayoutRecoveryRequester(proofPeer, authorization)
-            return
+            return true
         }
         #endif
-        await proofPeer.requestIOSPlayoutRecovery(authorization: authorization)
+        return await proofPeer.requestIOSPlayoutRecovery(
+            authorization: authorization
+        )
     }
 
     private static let iosHostedCallPlayoutSetupTimeout: Duration = .seconds(2)
@@ -7945,13 +8252,27 @@ final class WorldwideSessionViewModel: ObservableObject {
             message:
                 "The iPhone microphone audio path did not recover in time. Tap Retry iPhone Microphone."
         )
-        retireIOSPlayoutRecoveryAttempt(attempt)
-        audioLifecycle.updateRuntimePlayout(
-            isReady: false,
-            failureMessage: "The iPhone 48 kHz stereo render path did not start.",
-            diagnostic: "RemoteIO produced no verified playout callback within two seconds.",
-            categoryProofClaim: attempt.categoryProofClaim
-        )
+        let failureMessage =
+            "The iPhone 48 kHz stereo render path did not start."
+        let diagnostic =
+            "RemoteIO produced no verified playout callback within two seconds."
+        if let recoveryTransaction = attempt.recoveryTransaction {
+            audioLifecycle.updateTransactionalRuntimePlayout(
+                transaction: recoveryTransaction,
+                isReady: false,
+                failureMessage: failureMessage,
+                diagnostic: diagnostic
+            )
+            retireIOSPlayoutRecoveryAttempt(attempt)
+        } else {
+            retireIOSPlayoutRecoveryAttempt(attempt)
+            audioLifecycle.updateRuntimePlayout(
+                isReady: false,
+                failureMessage: failureMessage,
+                diagnostic: diagnostic,
+                categoryProofClaim: attempt.categoryProofClaim
+            )
+        }
     }
 
     /// Returns true when this exact proof window reaches a terminal healthy or failed state.
@@ -7964,12 +8285,33 @@ final class WorldwideSessionViewModel: ObservableObject {
 
         if let authorization = attempt.recoveryAuthorization {
             guard audioPlayoutRecoveryAuthorization === authorization else { return false }
-            guard authorization.terminalGeneration
-                    == authorization.generation,
-                  authorization.terminalOutcome == .accepted else {
-                // Pending, rejected, and revoked claims cannot move a recovery attempt onto a
-                // healthy post-recovery floor. The bounded proof timeout owns eventual cleanup.
-                return false
+            if attempt.recoveryTransaction != nil {
+                guard let terminalReceipt = authorization.terminalReceipt else {
+                    return false
+                }
+                if !attempt.nativeRecoveryReceiptWasConsumed {
+                    audioLifecycle.consumeIOSPlayoutRecoveryReceipt(
+                        terminalReceipt
+                    )
+                    attempt.nativeRecoveryReceiptWasConsumed = true
+                }
+                guard terminalReceipt.outcome == .accepted,
+                      terminalReceipt.policyMatchesRequestedTarget else {
+                    return failIOSPlayoutProof(
+                        attempt,
+                        diagnostics: diagnostics,
+                        diagnosticOverride:
+                            "Native recovery rejected or installed a policy that did not match its exact transaction target."
+                    )
+                }
+            } else {
+                guard authorization.terminalGeneration
+                        == authorization.generation,
+                      authorization.terminalOutcome == .accepted else {
+                    // Legacy proof-only test attempts carry no reducer identity. They may observe
+                    // terminal capability state, but can never synthesize a native receipt.
+                    return false
+                }
             }
             if attempt.stage == .awaitingRecoveryAuthorization {
                 attempt.stage = .awaitingPostRecoveryFloor
@@ -8097,11 +8439,19 @@ final class WorldwideSessionViewModel: ObservableObject {
                 inboundAudio: statistics?.inboundAudio
             )
         }
-        retireIOSPlayoutRecoveryAttempt(attempt)
-        audioLifecycle.updateRuntimePlayout(
-            isReady: true,
-            categoryProofClaim: attempt.categoryProofClaim
-        )
+        if let recoveryTransaction = attempt.recoveryTransaction {
+            audioLifecycle.updateTransactionalRuntimePlayout(
+                transaction: recoveryTransaction,
+                isReady: true
+            )
+            retireIOSPlayoutRecoveryAttempt(attempt)
+        } else {
+            retireIOSPlayoutRecoveryAttempt(attempt)
+            audioLifecycle.updateRuntimePlayout(
+                isReady: true,
+                categoryProofClaim: attempt.categoryProofClaim
+            )
+        }
         if completedMicrophoneAdmissionRecovery {
             // Runtime-proof publication normally reconciles synchronously. Redrive explicitly as
             // well so a lifecycle observer that coalesces an unchanged snapshot cannot strand the
@@ -8173,13 +8523,23 @@ final class WorldwideSessionViewModel: ObservableObject {
             message:
                 "The iPhone microphone audio path could not recover automatically. Tap Retry iPhone Microphone."
         )
-        retireIOSPlayoutRecoveryAttempt(attempt)
-        audioLifecycle.updateRuntimePlayout(
-            isReady: false,
-            failureMessage: message,
-            diagnostic: diagnostic,
-            categoryProofClaim: attempt.categoryProofClaim
-        )
+        if let recoveryTransaction = attempt.recoveryTransaction {
+            audioLifecycle.updateTransactionalRuntimePlayout(
+                transaction: recoveryTransaction,
+                isReady: false,
+                failureMessage: message,
+                diagnostic: diagnostic
+            )
+            retireIOSPlayoutRecoveryAttempt(attempt)
+        } else {
+            retireIOSPlayoutRecoveryAttempt(attempt)
+            audioLifecycle.updateRuntimePlayout(
+                isReady: false,
+                failureMessage: message,
+                diagnostic: diagnostic,
+                categoryProofClaim: attempt.categoryProofClaim
+            )
+        }
         return true
     }
 
@@ -9642,17 +10002,28 @@ final class WorldwideSessionViewModel: ObservableObject {
         )
     }
 
+    @discardableResult
     func debugInstallScreenSessionForTests(
         peer newPeer: WebRTCPeer,
         generation: UUID = UUID(),
         visible: Bool = false,
-        provenance: MediaSessionProvenance = .unauthenticated
-    ) {
+        provenance: MediaSessionProvenance = .unauthenticated,
+        bindAudioTransactionDevice: Bool = false
+    ) -> Bool {
         debugFocusedWindowResizeTrackOwner = nil
         resetScreenPresentationState(
             rotateQueueGeneration: true,
             clearRequestHistory: true
         )
+        if bindAudioTransactionDevice {
+            guard let binding =
+                    newPeer.iOSAudioTransactionDeviceBinding,
+                  audioLifecycle.bindIOSAudioTransactionDevice(
+                    binding
+                  ) else {
+                return false
+            }
+        }
         peer = newPeer
         sessionGeneration = generation
         automaticMicrophoneEligibleSessionGeneration =
@@ -9670,6 +10041,13 @@ final class WorldwideSessionViewModel: ObservableObject {
         isScreenVisible = visible
         acceptsActiveScreenAcknowledgement = visible
         remoteHideRequired = visible
+        if bindAudioTransactionDevice {
+            startAudioTransactionEventLoop(
+                peer: newPeer,
+                generation: generation
+            )
+        }
+        return true
     }
 
     func debugMarkViewerTransportHealthyForAutomaticMicrophoneTests() async {
