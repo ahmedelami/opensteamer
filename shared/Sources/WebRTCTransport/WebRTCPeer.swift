@@ -3543,6 +3543,14 @@ public actor WebRTCPeer {
         (@Sendable @MainActor (
             WebRTCIOSMicrophoneRetirementContext
         ) async -> WebRTCIOSOutputOnlyMicrophoneToken?)?
+    private typealias IPhoneMicrophoneTransportSuspensionCompletionHandler =
+        @Sendable @MainActor (
+            WebRTCIOSMicrophoneRetirementContext,
+            WebRTCIOSOutputOnlyMicrophoneToken,
+            Bool
+        ) async -> Void
+    private var iPhoneMicrophoneTransportSuspensionCompletionHandler:
+        IPhoneMicrophoneTransportSuspensionCompletionHandler?
     #if DEBUG
     private var debugIPhoneMicrophonePolicyApplier:
         (@Sendable (Bool) -> Bool)?
@@ -6348,6 +6356,25 @@ public actor WebRTCPeer {
     ) {
         guard role == .viewer else { return }
         iPhoneMicrophoneTransportSuspensionHandler = handler
+        iPhoneMicrophoneTransportSuspensionCompletionHandler = nil
+    }
+
+    /// Installs the ordered preparation and terminal acknowledgement pair used by the app-owned
+    /// microphone lifecycle. The peer reports the exact retirement context and token only after
+    /// the native output-only attempt reaches its terminal ownership check.
+    public func installIPhoneMicrophoneTransportSuspensionHandlers(
+        preparation: @escaping @Sendable @MainActor (
+            WebRTCIOSMicrophoneRetirementContext
+        ) async -> WebRTCIOSOutputOnlyMicrophoneToken?,
+        completion: @escaping @Sendable @MainActor (
+            WebRTCIOSMicrophoneRetirementContext,
+            WebRTCIOSOutputOnlyMicrophoneToken,
+            Bool
+        ) async -> Void
+    ) {
+        guard role == .viewer else { return }
+        iPhoneMicrophoneTransportSuspensionHandler = preparation
+        iPhoneMicrophoneTransportSuspensionCompletionHandler = completion
     }
 
     /// Opens the current viewer microphone only while the exact authorization and
@@ -8819,6 +8846,7 @@ public actor WebRTCPeer {
         forceIPhoneMicrophoneNativeTeardown()
         #if os(iOS)
         iPhoneMicrophoneTransportSuspensionHandler = nil
+        iPhoneMicrophoneTransportSuspensionCompletionHandler = nil
         #endif
         disableRemoteAudioPlayback()
         isClosed = true
@@ -11167,6 +11195,8 @@ public actor WebRTCPeer {
             )
             return false
         }
+        let transportSuspensionCompletionHandler =
+            iPhoneMicrophoneTransportSuspensionCompletionHandler
 
         #if DEBUG
         if let hook = debugIPhoneMicrophonePreSuspensionHandlerHook {
@@ -11187,6 +11217,12 @@ public actor WebRTCPeer {
 
         let selectedToken = retirementContext.selectToken(outputOnlyToken)
         guard selectedToken === outputOnlyToken else {
+            await reportIPhoneMicrophoneTransportSuspensionCompletion(
+                retirementContext: retirementContext,
+                token: outputOnlyToken,
+                succeeded: false,
+                using: transportSuspensionCompletionHandler
+            )
             failClosedForEventDeliveryLoss(
                 "The application returned a conflicting output-only microphone token."
             )
@@ -11200,20 +11236,42 @@ public actor WebRTCPeer {
         }
         #endif
 
-        guard !isClosed else { return false }
+        guard !isClosed else {
+            await reportIPhoneMicrophoneTransportSuspensionCompletion(
+                retirementContext: retirementContext,
+                token: outputOnlyToken,
+                succeeded: false,
+                using: transportSuspensionCompletionHandler
+            )
+            return false
+        }
 
         if activeIPhoneMicrophoneAuthorization != nil {
             outputOnlyToken.revoke()
+            await reportIPhoneMicrophoneTransportSuspensionCompletion(
+                retirementContext: retirementContext,
+                token: outputOnlyToken,
+                succeeded: false,
+                using: transportSuspensionCompletionHandler
+            )
             return false
         }
 
         if policyGeneration != iPhoneMicrophonePolicyGeneration
             || retirementContext.startSequence
                 != iPhoneMicrophonePolicySequence {
-            guard iPhoneMicrophoneRetirementWasCompleted(
+            let retirementWasCompleted =
+                iPhoneMicrophoneRetirementWasCompleted(
                 retirementContext,
                 token: outputOnlyToken
-            ) else {
+            )
+            await reportIPhoneMicrophoneTransportSuspensionCompletion(
+                retirementContext: retirementContext,
+                token: outputOnlyToken,
+                succeeded: retirementWasCompleted,
+                using: transportSuspensionCompletionHandler
+            )
+            guard retirementWasCompleted else {
                 failClosedForEventDeliveryLoss(
                     "Microphone policy ownership changed during transport suspension."
                 )
@@ -11229,11 +11287,18 @@ public actor WebRTCPeer {
             origin: .transportSuspension,
             retirementContext: retirementContext
         )
-        guard applied,
-              iPhoneMicrophoneRetirementWasCompleted(
+        let retirementWasCompleted = applied
+            && iPhoneMicrophoneRetirementWasCompleted(
                 retirementContext,
                 token: outputOnlyToken
-              ) else {
+            )
+        await reportIPhoneMicrophoneTransportSuspensionCompletion(
+            retirementContext: retirementContext,
+            token: outputOnlyToken,
+            succeeded: retirementWasCompleted,
+            using: transportSuspensionCompletionHandler
+        )
+        guard retirementWasCompleted else {
             failClosedForEventDeliveryLoss(
                 "The native output-only microphone policy could not be restored."
             )
@@ -11244,6 +11309,23 @@ public actor WebRTCPeer {
         return true
         #endif
     }
+
+    #if os(iOS)
+    private func reportIPhoneMicrophoneTransportSuspensionCompletion(
+        retirementContext: WebRTCIOSMicrophoneRetirementContext,
+        token: WebRTCIOSOutputOnlyMicrophoneToken,
+        succeeded: Bool,
+        using completionHandler:
+            IPhoneMicrophoneTransportSuspensionCompletionHandler?
+    ) async {
+        guard let completionHandler else { return }
+        await completionHandler(
+            retirementContext,
+            token,
+            succeeded
+        )
+    }
+    #endif
 
     #if os(iOS)
     private func iPhoneMicrophoneRetirementWasCompleted(
@@ -11384,6 +11466,7 @@ public actor WebRTCPeer {
         forceIPhoneMicrophoneNativeTeardown()
         #if os(iOS)
         iPhoneMicrophoneTransportSuspensionHandler = nil
+        iPhoneMicrophoneTransportSuspensionCompletionHandler = nil
         #endif
         disableRemoteAudioPlayback()
         clearScreenMediaSuspensionState(

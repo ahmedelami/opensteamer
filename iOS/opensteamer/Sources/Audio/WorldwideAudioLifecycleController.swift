@@ -151,6 +151,63 @@ struct WorldwideAudioTransactionDrainRequest: Equatable, Sendable {
     let tagGeneration: UInt64
 }
 
+/// One exact, one-shot handoff from a completed native output-only microphone teardown back to
+/// the lifecycle recovery path. The VM may consume it only after its async task still owns the
+/// current peer/session teardown.
+@MainActor
+final class WorldwideDeferredAudioRecoveryResumeReceipt {
+    fileprivate let outputOnlyTokenID: UUID
+    fileprivate let outputOnlyOperationID: UUID
+    fileprivate let ownerEpoch: UUID
+    fileprivate let lifecycleGeneration: UInt64
+    fileprivate let microphoneTopologyGeneration: UInt64
+    fileprivate let audioOperationEpoch: UInt64
+    fileprivate let successorBoundary: AudioTransactionBoundaryReceipt?
+    fileprivate let postCallRecoveryMilestone:
+        WorldwidePostCallMicrophoneRecoveryMilestone?
+    fileprivate let requiresRemoteAudio: Bool
+    fileprivate let context: String
+    private var wasConsumed = false
+
+    fileprivate init(
+        token: WebRTCIOSOutputOnlyMicrophoneToken,
+        microphoneTopologyGeneration: UInt64,
+        audioOperationEpoch: UInt64,
+        successorBoundary: AudioTransactionBoundaryReceipt?,
+        postCallRecoveryMilestone:
+            WorldwidePostCallMicrophoneRecoveryMilestone?,
+        requiresRemoteAudio: Bool,
+        context: String
+    ) {
+        outputOnlyTokenID = token.tokenID
+        outputOnlyOperationID = token.operationID
+        ownerEpoch = token.ownerEpoch
+        lifecycleGeneration = token.lifecycleGeneration
+        self.microphoneTopologyGeneration =
+            microphoneTopologyGeneration
+        self.audioOperationEpoch = audioOperationEpoch
+        self.successorBoundary = successorBoundary
+        self.postCallRecoveryMilestone =
+            postCallRecoveryMilestone
+        self.requiresRemoteAudio = requiresRemoteAudio
+        self.context = context
+    }
+
+    fileprivate func claim() -> Bool {
+        guard !wasConsumed else { return false }
+        wasConsumed = true
+        return true
+    }
+}
+
+enum WorldwideIPhoneMicrophoneOutputOnlyCompletion {
+    case noDeferredRecovery
+    case recoveryReady(
+        WorldwideDeferredAudioRecoveryResumeReceipt
+    )
+    case recoveryFailed
+}
+
 /// Owns only the iPhone playback side of a worldwide session. Screen privacy remains
 /// independent: backgrounding can hide the Mac display while this controller keeps genuine
 /// WebRTC audio playout active under iOS's Background Audio mode.
@@ -264,6 +321,52 @@ final class WorldwideAudioLifecycleController {
     private var pendingPostCallMicrophoneRecoveryMilestone:
         WorldwidePostCallMicrophoneRecoveryMilestone?
     private var requiresExplicitResume = false
+    /// Exact user-owned input recovery while the private-route playback latch stays armed. The
+    /// recovery operation ID prevents a superseded native B proof from admitting microphone A.
+    private enum MicrophonePlaybackPauseResumeState: Equatable {
+        case notRequired
+        case required(boundaryID: UUID)
+        case recovering(boundaryID: UUID, operationID: UUID?)
+        case allowed(boundaryID: UUID)
+    }
+    private var microphonePlaybackPauseResumeState:
+        MicrophonePlaybackPauseResumeState = .notRequired
+    private struct PendingDeferredRecovery {
+        let operationID: UUID
+        let requiresRemoteAudio: Bool
+        let context: String
+    }
+    private struct DeferredRecoveryAdmissionFence {
+        let fenceID: UUID
+        let requiresRemoteAudio: Bool
+        let context: String
+    }
+    private enum DeferredOutputOnlyRecoveryDisposition: Equatable {
+        case awaitingVMValidation(operationID: UUID)
+        case retryableAfterValidatedNativeSuccess(operationID: UUID)
+        case requiresSessionReconnect(operationID: UUID)
+
+        var operationID: UUID {
+            switch self {
+            case .awaitingVMValidation(let operationID),
+                 .retryableAfterValidatedNativeSuccess(let operationID),
+                 .requiresSessionReconnect(let operationID):
+                return operationID
+            }
+        }
+    }
+    /// Exact C-to-B recovery chain. While present, no reentrant snapshot reconciliation may
+    /// readmit microphone A between native output-only teardown and exact recovery proof.
+    private var pendingDeferredRecovery: PendingDeferredRecovery?
+    /// Installed before proof invalidation calls back into the VM. The callback may synchronously
+    /// arm C, so admission must already be closed before that operation is visible to observers.
+    private var deferredRecoveryAdmissionFence:
+        DeferredRecoveryAdmissionFence?
+    /// C's terminal token is not proof that the asynchronous VM teardown still owns the current
+    /// peer/session or that the enclosing native disable succeeded. Only the VM may advance this
+    /// disposition after checking those facts.
+    private var deferredOutputOnlyRecoveryDisposition:
+        DeferredOutputOnlyRecoveryDisposition?
     private var mediaServicesAreLost = false
     private var playbackErrorText: String?
     private var playbackDiagnosticText: String?
@@ -271,6 +374,16 @@ final class WorldwideAudioLifecycleController {
     private var remoteAudioControl: (any WorldwideRemoteAudioControlling)?
     private var microphoneTopologyGeneration: UInt64 = 0
     private var microphoneTopologyIsEnabled = false
+    private struct EstablishedMicrophoneTopologyIdentity {
+        let authorization: WebRTCIOSMicrophoneAuthorization
+        let generation: UInt64
+        let operationID: UUID
+    }
+    /// Runtime proof retires topology A from the reducer while its native microphone carrier
+    /// deliberately remains live. Retain that exact identity until the next topology boundary so
+    /// passive A-to-B recovery can preserve the established input without manufacturing C.
+    private var establishedMicrophoneTopologyIdentity:
+        EstablishedMicrophoneTopologyIdentity?
     private var expectedAudioCategoryTransition:
         ExpectedAudioCategoryTransition?
     private var completedAudioCategoryTransition:
@@ -429,6 +542,36 @@ final class WorldwideAudioLifecycleController {
         )
     }
 
+    var microphoneRequiresExplicitResume: Bool {
+        guard requiresExplicitResume else { return false }
+        if case .allowed = microphonePlaybackPauseResumeState {
+            return !playbackIsReady
+        }
+        return !isMicrophoneResumeRecoveryInProgress
+    }
+
+    var isMicrophoneResumeRecoveryInProgress: Bool {
+        guard requiresExplicitResume else { return false }
+        if case .recovering = microphonePlaybackPauseResumeState {
+            return true
+        }
+        return false
+    }
+
+    var microphoneWaitsForDeferredAudioRecovery: Bool {
+        pendingDeferredRecovery != nil
+            || deferredRecoveryAdmissionFence != nil
+    }
+
+    var audioRecoveryRequiresSessionReconnect: Bool {
+        if deferredRecoveryAdmissionFence != nil { return true }
+        if case .requiresSessionReconnect =
+            deferredOutputOnlyRecoveryDisposition {
+            return true
+        }
+        return false
+    }
+
     var postCallMicrophoneRecoveryMilestone:
         WorldwidePostCallMicrophoneRecoveryMilestone? {
         pendingPostCallMicrophoneRecoveryMilestone
@@ -516,11 +659,17 @@ final class WorldwideAudioLifecycleController {
         waitsForConnectedCallToEndBeforeRecovery = false
         pendingPostCallMicrophoneRecoveryMilestone = nil
         requiresExplicitResume = false
+        microphonePlaybackPauseResumeState = .notRequired
+        pendingDeferredRecovery = nil
+        deferredRecoveryAdmissionFence = nil
+        deferredOutputOnlyRecoveryDisposition = nil
         mediaServicesAreLost = false
         playbackErrorText = nil
         playbackDiagnosticText = nil
         microphoneTopologyGeneration = 0
         microphoneTopologyIsEnabled = false
+        establishedMicrophoneTopologyIdentity?.authorization.revoke()
+        establishedMicrophoneTopologyIdentity = nil
         completedAudioCategoryTransition = nil
         expectedAudioCategoryTransition = nil
 
@@ -738,6 +887,15 @@ final class WorldwideAudioLifecycleController {
             publishSnapshot()
             return
         }
+        if case .recovering(_, nil) =
+            microphonePlaybackPauseResumeState {
+            // The user may have requested input-only recovery while an asynchronous route-loss
+            // teardown still owned C. Transport suspension can take over and finish that same C;
+            // fresh transport health must resume the exact pending boundary instead of leaving it
+            // parked behind the playback privacy latch.
+            _ = dispatchPendingMicrophonePlaybackPauseRecoveryIfPossible()
+            return
+        }
         recoverPlayback(context: "Audio transport recovery failed")
     }
 
@@ -762,9 +920,9 @@ final class WorldwideAudioLifecycleController {
 
         if failedStartupPolicy {
             fenceFailedStartupConnectedCallPolicyUntilCallEnd(true)
-            closePlaybackGatesAndInvalidateProof()
             retireExpectedAudioCategoryTransitionForBoundary()
             _ = advanceMicrophoneTopologyGeneration()
+            closePlaybackGatesAndInvalidateProof()
             publishSnapshot()
             return
         }
@@ -864,11 +1022,17 @@ final class WorldwideAudioLifecycleController {
         waitsForConnectedCallToEndBeforeRecovery = false
         pendingPostCallMicrophoneRecoveryMilestone = nil
         requiresExplicitResume = false
+        microphonePlaybackPauseResumeState = .notRequired
+        pendingDeferredRecovery = nil
+        deferredRecoveryAdmissionFence = nil
+        deferredOutputOnlyRecoveryDisposition = nil
         mediaServicesAreLost = false
         playbackErrorText = nil
         playbackDiagnosticText = nil
         microphoneTopologyGeneration = 0
         microphoneTopologyIsEnabled = false
+        establishedMicrophoneTopologyIdentity?.authorization.revoke()
+        establishedMicrophoneTopologyIdentity = nil
         if hadActiveCall {
             onCallActivityChanged?(false)
         }
@@ -878,20 +1042,165 @@ final class WorldwideAudioLifecycleController {
 
     /// Explicit user recovery for interruptions or route removals where iOS declined automatic
     /// resume. Merely receiving more network packets must never clear this gate.
-    func resumePlayback() {
+    @discardableResult
+    func resumePlayback(
+        preservingEstablishedMicrophoneAuthorization:
+            WebRTCIOSMicrophoneAuthorization? = nil
+    ) -> Bool {
         guard isPrepared,
               !mediaServicesAreLost,
               !hostedCallPolicyIsClosedForCurrentInterruption
         else {
-            return
+            return false
         }
         synchronizeLiveCallStateIfNeeded()
         guard !waitsForConnectedCallToEndBeforeRecovery else {
             publishSnapshot()
-            return
+            return false
         }
         requiresExplicitResume = false
-        recoverPlayback(context: "Audio resume failed")
+        microphonePlaybackPauseResumeState = .notRequired
+        if playbackIsReady, runtimePlayoutIsReady {
+            publishSnapshot()
+            return true
+        }
+        return recoverPlayback(
+            context: "Audio resume failed",
+            preservingEstablishedMicrophoneAuthorization:
+                preservingEstablishedMicrophoneAuthorization,
+            coalesceCurrentLiveRecovery: true
+        )
+    }
+
+    /// Explicitly rebuilds the process-wide RemoteIO path for microphone input without clearing
+    /// the private-route playback latch. `shouldEnableRemoteAudio` therefore remains false until
+    /// the separate Resume Audio action succeeds.
+    @discardableResult
+    func resumeMicrophoneInput(
+        deferRecoveryUntilNativeTeardownCompletes: Bool = false
+    ) -> Bool {
+        guard isPrepared else { return false }
+        synchronizeLiveCallStateIfNeeded()
+        guard requiresExplicitResume else {
+            return microphoneActivationIsAllowed()
+        }
+        guard transportIsHealthy,
+              hostedCallPolicy == nil,
+              microphoneCallDisposition != .blocked,
+              !microphoneInterruptionIsActive,
+              !isInterrupted,
+              !waitsForConnectedCallToEndBeforeRecovery,
+              !mediaServicesAreLost else {
+            publishSnapshot()
+            return false
+        }
+
+        switch microphonePlaybackPauseResumeState {
+        case .required(let boundaryID):
+            microphonePlaybackPauseResumeState = .recovering(
+                boundaryID: boundaryID,
+                operationID: nil
+            )
+        case .recovering:
+            return true
+        case .allowed(let boundaryID):
+            if playbackIsReady {
+                return microphoneActivationIsAllowed()
+            }
+            // A later fail-closed boundary may invalidate playback after the input-only recovery
+            // was admitted. Keep the advertised Resume Microphone action executable even if an
+            // older caller failed to revoke the allowance at the same boundary.
+            microphonePlaybackPauseResumeState = .recovering(
+                boundaryID: boundaryID,
+                operationID: nil
+            )
+        case .notRequired:
+            let boundaryID = UUID()
+            microphonePlaybackPauseResumeState = .recovering(
+                boundaryID: boundaryID,
+                operationID: nil
+            )
+        }
+        publishSnapshot()
+        if deferRecoveryUntilNativeTeardownCompletes {
+            return true
+        }
+        return dispatchPendingMicrophonePlaybackPauseRecoveryIfPossible()
+    }
+
+    func cancelPendingMicrophoneInputResume() {
+        guard case let .recovering(boundaryID, operationID) =
+                microphonePlaybackPauseResumeState else {
+            return
+        }
+        microphonePlaybackPauseResumeState = .required(
+            boundaryID: boundaryID
+        )
+        if let operationID,
+           expectedAudioCategoryTransition?.operationID == operationID,
+           expectedAudioCategoryTransition?.purpose == .recovery {
+            closePlaybackGatesAndInvalidateProof()
+            _ = cancelExpectedAudioCategoryTransition(
+                operationID: operationID,
+                purpose: .recovery,
+                terminalCleanup: true
+            )
+        }
+        publishSnapshot()
+    }
+
+    /// Redrives a one-tap microphone recovery after the route-loss teardown finishes. The pending
+    /// boundary remains exact, so a late completion from a retired teardown cannot admit input.
+    @discardableResult
+    func resumePendingMicrophoneInputIfPossible() -> Bool {
+        guard isPrepared else { return false }
+        return dispatchPendingMicrophonePlaybackPauseRecoveryIfPossible()
+    }
+
+    @discardableResult
+    private func dispatchPendingMicrophonePlaybackPauseRecoveryIfPossible()
+        -> Bool {
+        guard case let .recovering(boundaryID, operationID) =
+                microphonePlaybackPauseResumeState,
+              operationID == nil else {
+            return isMicrophoneResumeRecoveryInProgress
+        }
+        guard transportIsHealthy,
+              hostedCallPolicy == nil,
+              microphoneCallDisposition != .blocked,
+              !microphoneInterruptionIsActive,
+              !isInterrupted,
+              !waitsForConnectedCallToEndBeforeRecovery,
+              !mediaServicesAreLost else {
+            microphonePlaybackPauseResumeState = .required(
+                boundaryID: boundaryID
+            )
+            publishSnapshot()
+            return false
+        }
+        if playbackIsReady,
+           !playback.requiresRuntimePlayoutProof || runtimePlayoutIsReady {
+            microphonePlaybackPauseResumeState = .allowed(
+                boundaryID: boundaryID
+            )
+            publishSnapshot()
+            return true
+        }
+
+        let recoveryWasDispatched = recoverPlayback(
+            context: "Explicit iPhone microphone recovery failed",
+            explicitMicrophoneResumeBoundaryID: boundaryID
+        )
+        if !recoveryWasDispatched,
+           case .recovering(let currentBoundaryID, nil) =
+                microphonePlaybackPauseResumeState,
+           currentBoundaryID == boundaryID {
+            microphonePlaybackPauseResumeState = .required(
+                boundaryID: boundaryID
+            )
+            publishSnapshot()
+        }
+        return recoveryWasDispatched
     }
 
     /// One guarded automatic rebuild for an already-proven native path whose realtime counters
@@ -963,6 +1272,68 @@ final class WorldwideAudioLifecycleController {
         requiresMicrophoneTopology: Bool = true,
         context: String
     ) -> Bool {
+        guard deferredRecoveryAdmissionFence == nil else {
+            publishSnapshot()
+            return false
+        }
+        var shouldRedriveRetiredRecoveryDrain = false
+        if let pendingDeferredRecovery {
+            let transition = expectedAudioCategoryTransition
+                ?? completedAudioCategoryTransition
+            if transition?.purpose == .recovery,
+               transition?.operationID
+                    == pendingDeferredRecovery.operationID,
+               let transition {
+                let transactionIsRetired =
+                    transition.transactionOperation.map {
+                        retiredAudioTransactionOperations.contains($0)
+                    } == true
+                if nativeOperationIsCurrent(transition),
+                   transactionIsRetired {
+                    // A failed native B may have crossed the reducer boundary while its ordered
+                    // drain was refused. It is no longer live work to coalesce; the retry below
+                    // must redrive that exact drain before staging a fresh B.
+                    shouldRedriveRetiredRecoveryDrain = true
+                } else if nativeOperationIsCurrent(transition),
+                          transition.transactionOperation == nil
+                            || (transition.recoveryAuthorization?.isValid
+                                    == true
+                                || (transition.recoveryAuthorization?
+                                        .hasAcceptedTerminalOutcome == true
+                                    && transition.recoveryAuthorization?
+                                        .terminalReceipt?
+                                        .policyMatchesRequestedTarget
+                                        == true)) {
+                    publishSnapshot()
+                    return true
+                }
+            }
+            if !shouldRedriveRetiredRecoveryDrain,
+               transition?.purpose == .outputOnlyMicrophone,
+               transition?.operationID
+                    == pendingDeferredRecovery
+                        .operationID,
+               let token = transition?.outputOnlyToken,
+               token.operationID == transition?.operationID,
+               token.state == .armed
+                    || token.state == .executing
+                    || token.state == .succeeded {
+                // Mic and playout liveness observers may report the same RemoteIO freeze. The
+                // first exact C owns the shared rebuild; later requests coalesce instead of
+                // revoking C or staging B before its native teardown completes.
+                publishSnapshot()
+                return true
+            }
+            if !shouldRedriveRetiredRecoveryDrain {
+                playbackIsReady = false
+                runtimePlayoutIsReady = false
+                remoteAudioControl?.setEnabled(false)
+                playbackDiagnosticText =
+                    "The pending audio recovery lost its exact microphone teardown."
+                publishSnapshot()
+                return false
+            }
+        }
         let hasEligibleRealtimePath = requiresRemoteAudio
             ? hasRemoteAudio
             : (!requiresMicrophoneTopology
@@ -979,11 +1350,18 @@ final class WorldwideAudioLifecycleController {
             return false
         }
 
-        closePlaybackGatesAndInvalidateProof()
+        let expectsAsynchronousMicrophoneTeardown =
+            microphoneTopologyIsEnabled
+                && onAudioProofInvalidated != nil
         let retiringTransaction = (expectedAudioCategoryTransition
             ?? completedAudioCategoryTransition)?
             .transactionOperation
         guard retireExpectedAudioCategoryTransitionForBoundary() else {
+            pendingDeferredRecovery = nil
+            deferredOutputOnlyRecoveryDisposition = nil
+            closePlaybackGatesAndInvalidateProof()
+            playbackDiagnosticText =
+                "The automatic audio recovery could not retire its exact native transaction."
             publishSnapshot()
             return false
         }
@@ -995,6 +1373,41 @@ final class WorldwideAudioLifecycleController {
             recoveryBoundary = nil
         }
         _ = advanceMicrophoneTopologyGeneration()
+        closePlaybackGatesAndInvalidateProof(
+            deferredRecoveryContext:
+                expectsAsynchronousMicrophoneTeardown
+                    ? context
+                    : nil,
+            deferredRecoveryRequiresRemoteAudio:
+                requiresRemoteAudio
+        )
+        if let transition = expectedAudioCategoryTransition,
+           transition.purpose == .outputOnlyMicrophone,
+           let token = transition.outputOnlyToken,
+           token.operationID == transition.operationID,
+           token.state == .armed || token.state == .executing {
+            pendingDeferredRecovery =
+                PendingDeferredRecovery(
+                    operationID: transition.operationID,
+                    requiresRemoteAudio: requiresRemoteAudio,
+                    context: context
+                )
+            if deferredOutputOnlyRecoveryDisposition?.operationID
+                != transition.operationID {
+                deferredOutputOnlyRecoveryDisposition =
+                    .awaitingVMValidation(
+                        operationID: transition.operationID
+                    )
+            }
+            publishSnapshot()
+            return true
+        }
+        guard !expectsAsynchronousMicrophoneTeardown else {
+            playbackDiagnosticText =
+                "The automatic audio recovery could not arm its exact microphone teardown."
+            publishSnapshot()
+            return false
+        }
         publishSnapshot()
         return recoverPlayback(
             context: context,
@@ -1029,6 +1442,12 @@ final class WorldwideAudioLifecycleController {
         ) != nil else {
             microphoneTopologyIsEnabled = false
             return 0
+        }
+        if isEnabled, requiresExplicitResume {
+            // B proved the output-only path. Enabling A changes the native policy to
+            // play-and-record, so Resume Audio must obtain fresh proof for that exact topology
+            // before decoded Mac audio can leave the speaker privacy gate.
+            runtimePlayoutIsReady = false
         }
         return generation
     }
@@ -1138,6 +1557,19 @@ final class WorldwideAudioLifecycleController {
             token.revoke()
             return nil
         }
+        if let fence = deferredRecoveryAdmissionFence {
+            // Bind the provisional admission fence at the same MainActor boundary that makes C
+            // visible. No snapshot callback can therefore observe C without also being blocked
+            // from re-arming microphone A.
+            pendingDeferredRecovery = PendingDeferredRecovery(
+                operationID: token.operationID,
+                requiresRemoteAudio: fence.requiresRemoteAudio,
+                context: fence.context
+            )
+            deferredOutputOnlyRecoveryDisposition =
+                .awaitingVMValidation(operationID: token.operationID)
+            deferredRecoveryAdmissionFence = nil
+        }
         return token
     }
 
@@ -1199,6 +1631,114 @@ final class WorldwideAudioLifecycleController {
         }
     }
 
+    /// Consumes transport-owned C only after the peer and VM have both validated the exact
+    /// retirement. This closes C without starting B while transport is still uncertain. If the
+    /// ordered drain is temporarily refused, the validated terminal C remains retryable and the
+    /// later healthy-transport recovery redrives that same drain before staging B.
+    @discardableResult
+    func completeValidatedTransportOutputOnlyTransition(
+        _ token: WebRTCIOSOutputOnlyMicrophoneToken
+    ) -> Bool {
+        guard isPrepared,
+              !transportIsHealthy,
+              token.state == .succeeded,
+              let transition =
+                iPhoneMicrophoneOutputOnlyTransition(token),
+              outputOnlyTransitionEpochIsCurrent(transition),
+              transition.generation == token.lifecycleGeneration,
+              transition.category == token.target.category,
+              transition.mode == token.target.mode,
+              transition.categoryOptionsRawValue
+                == Self.normalCategoryOptionsRawValue else {
+            return false
+        }
+
+        let deferredRecovery = PendingDeferredRecovery(
+            operationID: token.operationID,
+            requiresRemoteAudio: false,
+            context: "Audio transport recovery failed"
+        )
+        pendingDeferredRecovery = deferredRecovery
+        deferredOutputOnlyRecoveryDisposition =
+            .retryableAfterValidatedNativeSuccess(
+                operationID: token.operationID
+            )
+        let transactionOperation = transition.transactionOperation
+        playbackIsReady = false
+        runtimePlayoutIsReady = false
+        remoteAudioControl?.setEnabled(false)
+
+        let retired = cancelExpectedAudioCategoryTransition(
+            operationID: token.operationID,
+            purpose: .outputOnlyMicrophone,
+            terminalCleanup: true,
+            preservingDeferredRecoveryHandoff: true
+        )
+        pendingDeferredRecovery = deferredRecovery
+        guard !retired else {
+            publishSnapshot()
+            return true
+        }
+
+        guard transactionOperation.map({
+            retiredAudioTransactionOperations.contains($0)
+        }) == true else {
+            deferredOutputOnlyRecoveryDisposition =
+                .requiresSessionReconnect(
+                    operationID: token.operationID
+                )
+            deferredAudioRecoveryRequiresReconnect(after: token)
+            return false
+        }
+        deferredOutputOnlyRecoveryDisposition =
+            .retryableAfterValidatedNativeSuccess(
+                operationID: token.operationID
+            )
+        publishSnapshot()
+        return true
+    }
+
+    /// Abandons only an exact current C whose owning VM task reached an unproven or failed native
+    /// result. A failed carrier can be retired, but it can never be converted into B/A without a
+    /// new peer/device namespace.
+    @discardableResult
+    func abandonCurrentOutputOnlyTransitionRequiringReconnect(
+        _ token: WebRTCIOSOutputOnlyMicrophoneToken
+    ) -> Bool {
+        guard isPrepared,
+              token.state != .executing,
+              let transition =
+                iPhoneMicrophoneOutputOnlyTransition(token),
+              transition.generation == token.lifecycleGeneration,
+              transition.category == token.target.category,
+              transition.mode == token.target.mode,
+              transition.categoryOptionsRawValue
+                == Self.normalCategoryOptionsRawValue else {
+            return false
+        }
+
+        let deferredRecovery = PendingDeferredRecovery(
+            operationID: token.operationID,
+            requiresRemoteAudio: false,
+            context:
+                "A failed iPhone microphone teardown requires a new session"
+        )
+        pendingDeferredRecovery = deferredRecovery
+        deferredOutputOnlyRecoveryDisposition =
+            .requiresSessionReconnect(
+                operationID: token.operationID
+            )
+        _ = cancelExpectedAudioCategoryTransition(
+            operationID: token.operationID,
+            purpose: .outputOnlyMicrophone,
+            terminalCleanup: true,
+            preservingDeferredRecoveryHandoff: true
+        )
+        pendingDeferredRecovery = deferredRecovery
+        deferredAudioRecoveryRequiresReconnect(after: token)
+        return true
+    }
+
     /// Revocation is effective only before the token enters its native claim.
     func revokeIPhoneMicrophoneOutputOnlyTransition(
         _ token: WebRTCIOSOutputOnlyMicrophoneToken
@@ -1212,64 +1752,418 @@ final class WorldwideAudioLifecycleController {
         )
     }
 
-    /// Retries a call-end recovery that was deferred while this exact output-only native write
-    /// was still executing. Completion during an active call remains observational; call end will
-    /// retire a terminal token itself before arming the fresh UUID-bound recovery operation.
+    /// Retires one terminal native output-only write. Deferred recovery is returned as a
+    /// one-shot receipt instead of being started here: the VM must first prove that the async
+    /// native task still owns the current peer, session, and teardown generation.
+    @discardableResult
     func iPhoneMicrophoneOutputOnlyTransitionDidComplete(
         _ token: WebRTCIOSOutputOnlyMicrophoneToken
-    ) {
-        guard isPrepared,
-              token.state == .succeeded || token.state == .failed else {
-            return
+    ) -> WorldwideIPhoneMicrophoneOutputOnlyCompletion {
+        // A terminal callback may arrive after a newer route/call boundary has replaced this C.
+        // Prove exact reducer ownership before deriving or mutating any deferred recovery state;
+        // a stale token must never graft itself onto a newer post-call milestone.
+        guard let completingTransition =
+                iPhoneMicrophoneOutputOnlyTransition(token) else {
+            return .noDeferredRecovery
+        }
+        guard outputOnlyTransitionEpochIsCurrent(
+                completingTransition
+              ) else {
+            return rejectStaleIPhoneMicrophoneOutputOnlyCompletion(
+                token
+            )
+        }
+        var deferredRecovery = pendingDeferredRecovery.flatMap {
+            $0.operationID == token.operationID ? $0 : nil
+        }
+        if deferredRecovery == nil,
+           pendingPostCallMicrophoneRecoveryMilestone != nil {
+            deferredRecovery = PendingDeferredRecovery(
+                operationID: token.operationID,
+                requiresRemoteAudio: false,
+                context:
+                    "Audio recovery after microphone teardown and call end failed"
+            )
+        }
+        if let deferredRecovery {
+            // Keep microphone admission fenced across every synchronous snapshot callback until
+            // the receipt is consumed and B has become the current exact recovery operation.
+            pendingDeferredRecovery = deferredRecovery
+            if deferredOutputOnlyRecoveryDisposition?.operationID
+                != token.operationID {
+                deferredOutputOnlyRecoveryDisposition =
+                    .awaitingVMValidation(
+                        operationID: token.operationID
+                    )
+            }
+        }
+        guard isPrepared else {
+            return deferredRecovery == nil
+                ? .noDeferredRecovery
+                : .recoveryFailed
+        }
+        guard token.state == .succeeded || token.state == .failed else {
+            if deferredRecovery != nil
+                || pendingPostCallMicrophoneRecoveryMilestone != nil {
+                token.revoke()
+                _ = cancelExpectedAudioCategoryTransition(
+                    operationID: token.operationID,
+                    purpose: .outputOnlyMicrophone,
+                    terminalCleanup: true,
+                    preservingDeferredRecoveryHandoff: true
+                )
+                if let deferredRecovery {
+                    pendingDeferredRecovery = deferredRecovery
+                }
+                playbackIsReady = false
+                runtimePlayoutIsReady = false
+                remoteAudioControl?.setEnabled(false)
+                if pendingPostCallMicrophoneRecoveryMilestone != nil {
+                    playbackErrorText =
+                        "Screen and control are still available. Tap Retry Audio to restore iPhone audio after the call."
+                    playbackDiagnosticText =
+                        "The post-call microphone teardown did not reach a terminal native result."
+                }
+                publishSnapshot()
+                return .recoveryFailed
+            }
+            return .noDeferredRecovery
         }
         synchronizeLiveCallStateIfNeeded()
-        guard ownsIPhoneMicrophoneOutputOnlyTransition(token) else {
-            return
+        if deferredRecovery == nil,
+           pendingPostCallMicrophoneRecoveryMilestone != nil {
+            deferredRecovery = PendingDeferredRecovery(
+                operationID: token.operationID,
+                requiresRemoteAudio: false,
+                context:
+                    "Audio recovery after microphone teardown and call end failed"
+            )
+            pendingDeferredRecovery = deferredRecovery
+        }
+        guard let synchronizedTransition =
+                iPhoneMicrophoneOutputOnlyTransition(token) else {
+            if deferredRecovery != nil {
+                return .recoveryFailed
+            }
+            return .noDeferredRecovery
+        }
+        guard outputOnlyTransitionEpochIsCurrent(
+                synchronizedTransition
+              ) else {
+            return rejectStaleIPhoneMicrophoneOutputOnlyCompletion(
+                token
+            )
         }
         if microphoneCallDisposition == .blocked {
-            guard cancelExpectedAudioCategoryTransition(
+            let retired = cancelExpectedAudioCategoryTransition(
                 operationID: token.operationID,
                 purpose: .outputOnlyMicrophone,
-                terminalCleanup: true
-            ) else { return }
-            if isInterrupted {
-                authorizeHostedCallPolicyIfEligible(
-                    admissiblePredecessorOperationID:
-                        token.operationID
-                )
-            } else {
-                _ = installExpectedAudioCategoryTransition(
-                    operationID: UUID(),
-                    category:
-                        AVAudioSession.Category.playback.rawValue,
-                    mode: AVAudioSession.Mode.default.rawValue,
-                    categoryOptionsRawValue:
-                        Self.normalCategoryOptionsRawValue,
-                    purpose: .callPrivacyRollback,
-                    outputOnlyToken: nil,
-                    admissiblePredecessorOperationID:
-                        token.operationID
-                )
+                terminalCleanup: true,
+                preservingDeferredRecoveryHandoff: true
+            )
+            if let deferredRecovery {
+                pendingDeferredRecovery = deferredRecovery
+            }
+            if retired {
+                if isInterrupted {
+                    authorizeHostedCallPolicyIfEligible(
+                        admissiblePredecessorOperationID:
+                            token.operationID
+                    )
+                } else {
+                    _ = installExpectedAudioCategoryTransition(
+                        operationID: UUID(),
+                        category:
+                            AVAudioSession.Category.playback.rawValue,
+                        mode: AVAudioSession.Mode.default.rawValue,
+                        categoryOptionsRawValue:
+                            Self.normalCategoryOptionsRawValue,
+                        purpose: .callPrivacyRollback,
+                        outputOnlyToken: nil,
+                        admissiblePredecessorOperationID:
+                            token.operationID
+                    )
+                }
             }
             publishSnapshot()
-            return
+            return deferredRecovery == nil
+                ? .noDeferredRecovery
+                : .recoveryFailed
         }
         guard pendingPostCallMicrophoneRecoveryMilestone != nil else {
-            _ = cancelExpectedAudioCategoryTransition(
+            let retiringTransaction = expectedAudioCategoryTransition?
+                .transactionOperation
+            let retired = cancelExpectedAudioCategoryTransition(
                 operationID: token.operationID,
                 purpose: .outputOnlyMicrophone,
-                terminalCleanup: true
+                terminalCleanup: true,
+                preservingDeferredRecoveryHandoff: true
             )
+            if let deferredRecovery {
+                pendingDeferredRecovery = deferredRecovery
+            }
+            guard retired else {
+                let explicitMicrophoneResumeCanOwnRetryableC: Bool
+                switch microphonePlaybackPauseResumeState {
+                case .required, .recovering(_, nil):
+                    explicitMicrophoneResumeCanOwnRetryableC =
+                        requiresExplicitResume
+                case .notRequired, .recovering(_, _), .allowed:
+                    explicitMicrophoneResumeCanOwnRetryableC = false
+                }
+                if deferredRecovery == nil,
+                   explicitMicrophoneResumeCanOwnRetryableC {
+                    // Private-route C may finish either before or after Resume Microphone is
+                    // tapped. If its first ordered drain is refused, bind that exact terminal C
+                    // now so the still-owning VM task can validate native success and authorize
+                    // a later explicit retry; no future async owner will arrive for this C.
+                    let pending = PendingDeferredRecovery(
+                        operationID: token.operationID,
+                        requiresRemoteAudio: false,
+                        context:
+                            "Explicit iPhone microphone recovery failed"
+                    )
+                    pendingDeferredRecovery = pending
+                    deferredOutputOnlyRecoveryDisposition =
+                        .awaitingVMValidation(
+                            operationID: token.operationID
+                        )
+                    playbackDiagnosticText =
+                        "The microphone teardown is waiting for its exact ordered drain before recovery can retry."
+                    publishSnapshot()
+                    return .recoveryFailed
+                }
+                if deferredRecovery != nil {
+                    playbackDiagnosticText =
+                        "The automatic audio recovery could not retire its exact microphone teardown."
+                }
+                publishSnapshot()
+                return deferredRecovery == nil
+                    ? .noDeferredRecovery
+                    : .recoveryFailed
+            }
+            if let deferredRecovery {
+                guard token.state == .succeeded,
+                      transportIsHealthy,
+                      hostedCallPolicy == nil,
+                      !isInterrupted,
+                      !requiresExplicitResume,
+                      !waitsForConnectedCallToEndBeforeRecovery,
+                      !mediaServicesAreLost else {
+                    publishSnapshot()
+                    return .recoveryFailed
+                }
+                let recoveryBoundary: AudioTransactionBoundaryReceipt?
+                if let boundary = pendingAudioTransactionBoundary,
+                   boundary.blocker == retiringTransaction {
+                    recoveryBoundary = boundary
+                } else {
+                    recoveryBoundary = nil
+                }
+                let receipt =
+                    WorldwideDeferredAudioRecoveryResumeReceipt(
+                        token: token,
+                        microphoneTopologyGeneration:
+                            microphoneTopologyGeneration,
+                        audioOperationEpoch: audioOperationEpoch,
+                        successorBoundary: recoveryBoundary,
+                        postCallRecoveryMilestone: nil,
+                        requiresRemoteAudio:
+                            deferredRecovery
+                                .requiresRemoteAudio,
+                        context: deferredRecovery.context
+                    )
+                publishSnapshot()
+                return .recoveryReady(receipt)
+            }
             authorizeHostedCallPolicyIfEligible(
                 admissiblePredecessorOperationID:
-                    token.operationID
+                token.operationID
             )
             publishSnapshot()
+            return .noDeferredRecovery
+        }
+        let postCallRecoveryMilestone =
+            pendingPostCallMicrophoneRecoveryMilestone
+        let retiringTransaction = (expectedAudioCategoryTransition
+            ?? completedAudioCategoryTransition)?
+            .transactionOperation
+        let retired = cancelExpectedAudioCategoryTransition(
+            operationID: token.operationID,
+            purpose: .outputOnlyMicrophone,
+            terminalCleanup: true,
+            preservingDeferredRecoveryHandoff: true
+        )
+        if let deferredRecovery {
+            pendingDeferredRecovery = deferredRecovery
+        }
+        guard retired,
+              token.state == .succeeded,
+              let postCallRecoveryMilestone else {
+            playbackIsReady = false
+            runtimePlayoutIsReady = false
+            remoteAudioControl?.setEnabled(false)
+            playbackErrorText =
+                "Screen and control are still available. Tap Retry Audio to restore iPhone audio after the call."
+            playbackDiagnosticText = retired
+                ? "The post-call microphone teardown did not complete successfully."
+                : "The post-call recovery could not retire its exact microphone teardown."
+            publishSnapshot()
+            return .recoveryFailed
+        }
+        let recoveryBoundary: AudioTransactionBoundaryReceipt?
+        if let boundary = pendingAudioTransactionBoundary,
+           boundary.blocker == retiringTransaction {
+            recoveryBoundary = boundary
+        } else {
+            recoveryBoundary = nil
+        }
+        let receipt = WorldwideDeferredAudioRecoveryResumeReceipt(
+            token: token,
+            microphoneTopologyGeneration:
+                microphoneTopologyGeneration,
+            audioOperationEpoch: audioOperationEpoch,
+            successorBoundary: recoveryBoundary,
+            postCallRecoveryMilestone:
+                postCallRecoveryMilestone,
+            requiresRemoteAudio: false,
+            context: deferredRecovery?.context
+                ?? "Audio recovery after microphone teardown and call end failed"
+        )
+        publishSnapshot()
+        return .recoveryReady(receipt)
+    }
+
+    /// The async VM task calls this only after proving current teardown/session/peer ownership and
+    /// a successful enclosing native disable. A refused drain can then be retried by the user, but
+    /// token success alone never grants that authority.
+    @discardableResult
+    func authorizeDeferredAudioRecoveryRetryAfterNativeSuccess(
+        _ token: WebRTCIOSOutputOnlyMicrophoneToken
+    ) -> Bool {
+        let transition = expectedAudioCategoryTransition
+            ?? completedAudioCategoryTransition
+        guard isPrepared,
+              token.state == .succeeded,
+              pendingDeferredRecovery?.operationID
+                == token.operationID,
+              deferredOutputOnlyRecoveryDisposition
+                == .awaitingVMValidation(
+                    operationID: token.operationID
+                ),
+              transition?.purpose == .outputOnlyMicrophone,
+              transition?.operationID == token.operationID,
+              transition?.outputOnlyToken.map({ $0 === token }) == true,
+              let transactionOperation =
+                transition?.transactionOperation,
+              retiredAudioTransactionOperations
+                .contains(transactionOperation) else {
+            deferredAudioRecoveryRequiresReconnect(after: token)
+            return false
+        }
+        deferredOutputOnlyRecoveryDisposition =
+            .retryableAfterValidatedNativeSuccess(
+                operationID: token.operationID
+            )
+        if requiresExplicitResume,
+           case let .recovering(boundaryID, nil) =
+            microphonePlaybackPauseResumeState {
+            microphonePlaybackPauseResumeState = .required(
+                boundaryID: boundaryID
+            )
+        }
+        publishSnapshot()
+        return true
+    }
+
+    /// A failed enclosing native disable, failed C, or lost handoff cannot be converted into B by
+    /// an ordinary retry. Keep the exact chain closed until the session/device namespace reconnects.
+    func deferredAudioRecoveryRequiresReconnect(
+        after token: WebRTCIOSOutputOnlyMicrophoneToken
+    ) {
+        guard pendingDeferredRecovery?.operationID
+                == token.operationID else {
             return
         }
-        recoverPlayback(
-            context:
-                "Audio recovery after microphone teardown and call end failed"
+        deferredOutputOnlyRecoveryDisposition =
+            .requiresSessionReconnect(
+                operationID: token.operationID
+            )
+        playbackIsReady = false
+        runtimePlayoutIsReady = false
+        remoteAudioControl?.setEnabled(false)
+        playbackErrorText =
+            "Screen and control are still available. Reconnect this session to restore iPhone audio."
+        playbackDiagnosticText =
+            "The native microphone teardown did not produce a retryable exact recovery handoff."
+        publishSnapshot()
+    }
+
+    /// Consumes the exact C-completion receipt only after the VM has proven ownership of the
+    /// asynchronous native teardown. A replay or any intervening lifecycle boundary is rejected.
+    @discardableResult
+    func resumeDeferredAudioRecovery(
+        _ receipt: WorldwideDeferredAudioRecoveryResumeReceipt,
+        after token: WebRTCIOSOutputOnlyMicrophoneToken
+    ) -> Bool {
+        guard receipt.outputOnlyTokenID == token.tokenID,
+              receipt.outputOnlyOperationID == token.operationID,
+              receipt.ownerEpoch == token.ownerEpoch,
+              receipt.lifecycleGeneration
+                == token.lifecycleGeneration,
+              token.state == .succeeded,
+              receipt.claim() else {
+            return false
+        }
+        let hasEligibleRealtimePath = receipt.requiresRemoteAudio
+            ? hasRemoteAudio
+            : true
+        guard isPrepared,
+              pendingDeferredRecovery?.operationID
+                == receipt.outputOnlyOperationID,
+              pendingDeferredRecovery?.requiresRemoteAudio
+                == receipt.requiresRemoteAudio,
+              pendingDeferredRecovery?.context == receipt.context,
+              deferredOutputOnlyRecoveryDisposition
+                == .awaitingVMValidation(
+                    operationID: receipt.outputOnlyOperationID
+                ),
+              hasEligibleRealtimePath,
+              transportIsHealthy,
+              hostedCallPolicy == nil,
+              !isInterrupted,
+              !requiresExplicitResume,
+              !waitsForConnectedCallToEndBeforeRecovery,
+              !mediaServicesAreLost,
+              !microphoneTopologyIsEnabled,
+              microphoneTopologyGeneration
+                == receipt.microphoneTopologyGeneration,
+              audioOperationEpoch == receipt.audioOperationEpoch,
+              expectedAudioCategoryTransition == nil,
+              completedAudioCategoryTransition == nil,
+              pendingAudioTransactionBoundary
+                == receipt.successorBoundary,
+              pendingPostCallMicrophoneRecoveryMilestone
+                == receipt.postCallRecoveryMilestone else {
+            if receipt.postCallRecoveryMilestone != nil {
+                playbackIsReady = false
+                runtimePlayoutIsReady = false
+                remoteAudioControl?.setEnabled(false)
+                playbackErrorText =
+                    "Screen and control are still available. Tap Retry Audio to restore iPhone audio after the call."
+                playbackDiagnosticText =
+                    "The exact post-call recovery handoff was superseded before it could start."
+            }
+            publishSnapshot()
+            return false
+        }
+        deferredOutputOnlyRecoveryDisposition = nil
+        _ = advanceMicrophoneTopologyGeneration()
+        publishSnapshot()
+        return recoverPlayback(
+            context: receipt.context,
+            proofAlreadyInvalidated: true,
+            successorBoundary: receipt.successorBoundary
         )
     }
 
@@ -1459,8 +2353,10 @@ final class WorldwideAudioLifecycleController {
         operationID: UUID? = nil,
         purpose: ExpectedAudioCategoryTransitionPurpose? = nil,
         terminalCleanup: Bool = false,
+        preservingDeferredRecoveryHandoff: Bool = false,
         preservingEstablishedMicrophoneAuthorization:
-            WebRTCIOSMicrophoneAuthorization? = nil
+            WebRTCIOSMicrophoneAuthorization? = nil,
+        preservingMicrophonePlaybackPauseRecovery: Bool = false
     ) -> Bool {
         if let expectedAudioCategoryTransition {
             guard audioCategoryTransition(
@@ -1469,6 +2365,12 @@ final class WorldwideAudioLifecycleController {
                 purpose: purpose
             ) else {
                 return false
+            }
+            if !preservingMicrophonePlaybackPauseRecovery {
+                failMicrophonePlaybackPauseRecovery(
+                    operationID:
+                        expectedAudioCategoryTransition.operationID
+                )
             }
 
             guard retireOutputOnlyTokenIfAdmissible(
@@ -1492,6 +2394,20 @@ final class WorldwideAudioLifecycleController {
                 preserveEstablishedMicrophoneAuthorization:
                     preservesMicrophoneAuthorization
             ) else { return false }
+            let orphanedDeferredRecoveryToken =
+                !preservingDeferredRecoveryHandoff
+                    && expectedAudioCategoryTransition.purpose
+                        == .outputOnlyMicrophone
+                    && pendingDeferredRecovery?.operationID
+                        == expectedAudioCategoryTransition.operationID
+                    && deferredOutputOnlyRecoveryDisposition
+                        == .awaitingVMValidation(
+                            operationID:
+                                expectedAudioCategoryTransition
+                                    .operationID
+                        )
+                    ? expectedAudioCategoryTransition.outputOnlyToken
+                    : nil
 
             events.cancelCategoryChangeOperation(
                 expectedAudioCategoryTransition.operationID
@@ -1506,9 +2422,21 @@ final class WorldwideAudioLifecycleController {
             }
             expectedAudioCategoryTransition
                 .recoveryAuthorization?.revoke()
+            clearValidatedDeferredRecoveryDispositionAfterRetiring(
+                expectedAudioCategoryTransition
+            )
+            updateEstablishedMicrophoneTopologyIdentityAfterRetiring(
+                expectedAudioCategoryTransition,
+                preservesAuthorization: preservesMicrophoneAuthorization
+            )
             self.expectedAudioCategoryTransition = nil
             completedAudioCategoryTransition = nil
             _ = advanceAudioOperationEpoch()
+            if let orphanedDeferredRecoveryToken {
+                deferredAudioRecoveryRequiresReconnect(
+                    after: orphanedDeferredRecoveryToken
+                )
+            }
             return true
         }
 
@@ -1521,6 +2449,12 @@ final class WorldwideAudioLifecycleController {
             purpose: purpose
         ) else {
             return false
+        }
+        if !preservingMicrophonePlaybackPauseRecovery {
+            failMicrophonePlaybackPauseRecovery(
+                operationID:
+                    completedAudioCategoryTransition.operationID
+            )
         }
         guard retireOutputOnlyTokenIfAdmissible(
             completedAudioCategoryTransition.outputOnlyToken,
@@ -1543,6 +2477,19 @@ final class WorldwideAudioLifecycleController {
             preserveEstablishedMicrophoneAuthorization:
                 preservesMicrophoneAuthorization
         ) else { return false }
+        let orphanedDeferredRecoveryToken =
+            !preservingDeferredRecoveryHandoff
+                && completedAudioCategoryTransition.purpose
+                    == .outputOnlyMicrophone
+                && pendingDeferredRecovery?.operationID
+                    == completedAudioCategoryTransition.operationID
+                && deferredOutputOnlyRecoveryDisposition
+                    == .awaitingVMValidation(
+                        operationID:
+                            completedAudioCategoryTransition.operationID
+                    )
+                ? completedAudioCategoryTransition.outputOnlyToken
+                : nil
         if pendingAmbiguousCategoryProof?.transition.operationID
             == completedAudioCategoryTransition.operationID {
             pendingAmbiguousCategoryProof = nil
@@ -1553,8 +2500,20 @@ final class WorldwideAudioLifecycleController {
         }
         completedAudioCategoryTransition
             .recoveryAuthorization?.revoke()
+        clearValidatedDeferredRecoveryDispositionAfterRetiring(
+            completedAudioCategoryTransition
+        )
+        updateEstablishedMicrophoneTopologyIdentityAfterRetiring(
+            completedAudioCategoryTransition,
+            preservesAuthorization: preservesMicrophoneAuthorization
+        )
         self.completedAudioCategoryTransition = nil
         _ = advanceAudioOperationEpoch()
+        if let orphanedDeferredRecoveryToken {
+            deferredAudioRecoveryRequiresReconnect(
+                after: orphanedDeferredRecoveryToken
+            )
+        }
         return true
     }
 
@@ -1721,14 +2680,133 @@ final class WorldwideAudioLifecycleController {
         return true
     }
 
+    private func iPhoneMicrophoneOutputOnlyTransition(
+        _ token: WebRTCIOSOutputOnlyMicrophoneToken
+    ) -> ExpectedAudioCategoryTransition? {
+        let transition = expectedAudioCategoryTransition
+            ?? completedAudioCategoryTransition
+        guard transition?.purpose == .outputOnlyMicrophone,
+              transition?.operationID == token.operationID,
+              transition?.outputOnlyToken === token else {
+            return nil
+        }
+        return transition
+    }
+
     private func ownsIPhoneMicrophoneOutputOnlyTransition(
         _ token: WebRTCIOSOutputOnlyMicrophoneToken
     ) -> Bool {
-        let transition = expectedAudioCategoryTransition
-            ?? completedAudioCategoryTransition
-        return transition?.purpose == .outputOnlyMicrophone
-            && transition?.operationID == token.operationID
-            && transition?.outputOnlyToken === token
+        iPhoneMicrophoneOutputOnlyTransition(token) != nil
+    }
+
+    private func outputOnlyTransitionEpochIsCurrent(
+        _ transition: ExpectedAudioCategoryTransition
+    ) -> Bool {
+        transition.operationEpoch == audioOperationEpoch
+            && transition.generation == microphoneTopologyGeneration
+    }
+
+    private func rejectStaleIPhoneMicrophoneOutputOnlyCompletion(
+        _ token: WebRTCIOSOutputOnlyMicrophoneToken
+    ) -> WorldwideIPhoneMicrophoneOutputOnlyCompletion {
+        let hadDeferredRecovery =
+            pendingDeferredRecovery?.operationID == token.operationID
+        let retired = cancelExpectedAudioCategoryTransition(
+            operationID: token.operationID,
+            purpose: .outputOnlyMicrophone,
+            terminalCleanup: true,
+            preservingDeferredRecoveryHandoff: true
+        )
+        if hadDeferredRecovery || !retired {
+            // Even when the stale carrier's ordered drain is temporarily refused, the newer
+            // lifecycle epoch permanently forbids converting its terminal result into B. Bind an
+            // otherwise unowned retained C before marking it reconnect-only, so the UI cannot offer
+            // an explicit retry that this stale carrier can never authorize.
+            if !hadDeferredRecovery {
+                pendingDeferredRecovery = PendingDeferredRecovery(
+                    operationID: token.operationID,
+                    requiresRemoteAudio: false,
+                    context:
+                        "A stale iPhone microphone teardown requires a new session"
+                )
+            }
+            deferredAudioRecoveryRequiresReconnect(after: token)
+            return .recoveryFailed
+        }
+        // A default interruption intentionally advances the lifecycle epoch while an executing C
+        // is retained. Once that exact C drains, only the current interruption state may decide
+        // whether it is still eligible to install its hosted-call successor.
+        authorizeHostedCallPolicyIfEligible(
+            admissiblePredecessorOperationID: token.operationID
+        )
+        publishSnapshot()
+        return .noDeferredRecovery
+    }
+
+    private func ownsExactEstablishedMicrophoneTopology(
+        _ authorization: WebRTCIOSMicrophoneAuthorization?
+    ) -> Bool {
+        guard let authorization else {
+            return false
+        }
+        if let transition = expectedAudioCategoryTransition
+                ?? completedAudioCategoryTransition,
+           transition.purpose == .topology,
+           transition.category
+                == AVAudioSession.Category.playAndRecord.rawValue,
+           transition.generation == microphoneTopologyGeneration,
+           microphoneTopologyIsEnabled,
+           transition.microphoneAuthorization === authorization,
+           authorization.isValid,
+           nativeOperationIsCurrent(transition) {
+            return true
+        }
+        guard let establishedMicrophoneTopologyIdentity else {
+            return false
+        }
+        return establishedMicrophoneTopologyIdentity.authorization
+                === authorization
+            && establishedMicrophoneTopologyIdentity.generation
+                == microphoneTopologyGeneration
+            && microphoneTopologyIsEnabled
+            && authorization.isValid
+    }
+
+    private func updateEstablishedMicrophoneTopologyIdentityAfterRetiring(
+        _ transition: ExpectedAudioCategoryTransition,
+        preservesAuthorization: Bool
+    ) {
+        if preservesAuthorization,
+           let authorization = transition.microphoneAuthorization {
+            establishedMicrophoneTopologyIdentity =
+                EstablishedMicrophoneTopologyIdentity(
+                    authorization: authorization,
+                    generation: transition.generation,
+                    operationID: transition.operationID
+                )
+            return
+        }
+        if establishedMicrophoneTopologyIdentity?.authorization
+            === transition.microphoneAuthorization {
+            establishedMicrophoneTopologyIdentity = nil
+        }
+    }
+
+    private func clearValidatedDeferredRecoveryDispositionAfterRetiring(
+        _ transition: ExpectedAudioCategoryTransition
+    ) {
+        guard transition.purpose == .outputOnlyMicrophone,
+              pendingDeferredRecovery?.operationID
+                == transition.operationID,
+              deferredOutputOnlyRecoveryDisposition
+                == .retryableAfterValidatedNativeSuccess(
+                    operationID: transition.operationID
+                ) else {
+            return
+        }
+        // C has now crossed its ordered drain boundary. Preserve the recovery intent and boundary,
+        // but release the terminal-C retry gate so the next eligible recovery can stage B.
+        deferredOutputOnlyRecoveryDisposition = nil
     }
 
     private var currentAudioCategoryTransitionOperationID: UUID? {
@@ -1738,9 +2816,29 @@ final class WorldwideAudioLifecycleController {
 
     @discardableResult
     private func retireExpectedAudioCategoryTransitionForBoundary() -> Bool {
-        cancelExpectedAudioCategoryTransition(
+        let transition = expectedAudioCategoryTransition
+            ?? completedAudioCategoryTransition
+        let retired = cancelExpectedAudioCategoryTransition(
             terminalCleanup: true
         )
+        guard !retired,
+              let transition,
+              (expectedAudioCategoryTransition.map {
+                audioCategoryTransition($0, exactlyMatches: transition)
+              } == true
+                || completedAudioCategoryTransition.map {
+                    audioCategoryTransition($0, exactlyMatches: transition)
+                } == true) else {
+            return retired
+        }
+        // A hard lifecycle boundary may arrive before the reducer's ordered drain is accepted.
+        // Retain the exact marker/tag so a later retry can redrive that drain, but revoke every
+        // native capability now so stale A/B proof cannot reopen gates across the boundary.
+        transition.microphoneAuthorization?.revoke()
+        transition.recoveryAuthorization?.revoke()
+        transition.outputOnlyToken?.revoke()
+        _ = advanceAudioOperationEpoch()
+        return false
     }
 
     private func retireMicrophoneTopologyForCallPrivacyBoundary() {
@@ -1783,7 +2881,9 @@ final class WorldwideAudioLifecycleController {
     ) -> Bool {
         guard isPrepared,
               !isInterrupted,
-              !requiresExplicitResume,
+              audioPolicyOperationCanProceedDuringPlaybackPause(
+                operation
+              ),
               !waitsForConnectedCallToEndBeforeRecovery,
               !mediaServicesAreLost,
               operation.operationEpoch == audioOperationEpoch,
@@ -1869,6 +2969,8 @@ final class WorldwideAudioLifecycleController {
 
     @discardableResult
     private func advanceMicrophoneTopologyGeneration() -> UInt64 {
+        establishedMicrophoneTopologyIdentity?.authorization.revoke()
+        establishedMicrophoneTopologyIdentity = nil
         microphoneTopologyGeneration &+= 1
         if microphoneTopologyGeneration == 0 {
             microphoneTopologyGeneration = 1
@@ -1899,7 +3001,7 @@ final class WorldwideAudioLifecycleController {
         guard isPrepared,
               !isInterrupted,
               hostedCallPolicy == nil,
-              !requiresExplicitResume,
+              currentAudioPolicyOperationCanProceedDuringPlaybackPause,
               !mediaServicesAreLost,
               playback.requiresRuntimePlayoutProof else { return }
 
@@ -1934,6 +3036,27 @@ final class WorldwideAudioLifecycleController {
         let ownsAmbiguousCategoryProof =
             pendingAmbiguousCategoryProof != nil
                 && categoryProofClaim != nil
+        let deferredRecoveryOperationID: UUID?
+        if let transition = expectedAudioCategoryTransition
+                ?? completedAudioCategoryTransition,
+           transition.purpose == .recovery,
+           pendingDeferredRecovery?.operationID
+                == transition.operationID {
+            deferredRecoveryOperationID = transition.operationID
+        } else {
+            deferredRecoveryOperationID = nil
+        }
+        let playbackPauseRecoveryOperationID: UUID?
+        if let transition = expectedAudioCategoryTransition
+                ?? completedAudioCategoryTransition,
+           transition.purpose == .recovery,
+           case let .recovering(_, operationID) =
+                microphonePlaybackPauseResumeState,
+           operationID == transition.operationID {
+            playbackPauseRecoveryOperationID = transition.operationID
+        } else {
+            playbackPauseRecoveryOperationID = nil
+        }
         runtimePlayoutIsReady = isReady
         if let failureMessage {
             playbackIsReady = false
@@ -1962,15 +3085,42 @@ final class WorldwideAudioLifecycleController {
                 cancelExpectedAudioCategoryTransition(
                 terminalCleanup: true,
                 preservingEstablishedMicrophoneAuthorization:
-                    establishedMicrophoneAuthorization
+                    establishedMicrophoneAuthorization,
+                preservingMicrophonePlaybackPauseRecovery:
+                    playbackPauseRecoveryOperationID != nil
+                        && isReady
+                        && failureMessage == nil
             )
             guard retiredProofTransition else {
+                if let playbackPauseRecoveryOperationID {
+                    failMicrophonePlaybackPauseRecovery(
+                        operationID: playbackPauseRecoveryOperationID
+                    )
+                }
                 establishedMicrophoneAuthorization?.revoke()
                 closePlaybackGatesAndInvalidateProof()
                 playbackDiagnosticText =
                     "The proven audio policy could not retire its exact transaction."
                 publishSnapshot()
                 return
+            }
+            if let playbackPauseRecoveryOperationID {
+                if isReady, failureMessage == nil {
+                    allowMicrophonePlaybackPauseRecovery(
+                        operationID: playbackPauseRecoveryOperationID
+                    )
+                } else {
+                    failMicrophonePlaybackPauseRecovery(
+                        operationID: playbackPauseRecoveryOperationID
+                    )
+                }
+            }
+            if isReady,
+               failureMessage == nil,
+               pendingDeferredRecovery?.operationID
+                    == deferredRecoveryOperationID {
+                pendingDeferredRecovery = nil
+                deferredOutputOnlyRecoveryDisposition = nil
             }
         }
         publishSnapshot()
@@ -2033,6 +3183,7 @@ final class WorldwideAudioLifecycleController {
             playbackIsReady = false
             runtimePlayoutIsReady = false
             remoteAudioControl?.setEnabled(false)
+            revokeMicrophonePlaybackPauseResume()
             publishSnapshot()
             return false
         }
@@ -2044,6 +3195,9 @@ final class WorldwideAudioLifecycleController {
             $0.transactionOperation != nil
         }
         for transition in transactionTransitions {
+            failMicrophonePlaybackPauseRecovery(
+                operationID: transition.operationID
+            )
             transition.microphoneAuthorization?.revoke()
             transition.recoveryAuthorization?.revoke()
             transition.outputOnlyToken?.revoke()
@@ -2062,12 +3216,23 @@ final class WorldwideAudioLifecycleController {
             }
             pendingAmbiguousCategoryProof = nil
             _ = advanceAudioOperationEpoch()
-            playbackIsReady = false
-            runtimePlayoutIsReady = false
-            remoteAudioControl?.setEnabled(false)
         }
+        // Retiring the bound native device invalidates readiness even when its final transaction
+        // had already completed. In particular, a prior input-only allowance cannot survive into
+        // an unbound device namespace.
+        playbackIsReady = false
+        runtimePlayoutIsReady = false
+        remoteAudioControl?.setEnabled(false)
+        revokeMicrophonePlaybackPauseResume()
+        establishedMicrophoneTopologyIdentity?.authorization.revoke()
+        establishedMicrophoneTopologyIdentity = nil
+        microphoneTopologyIsEnabled = false
+        _ = advanceMicrophoneTopologyGeneration()
         audioTransactionDeviceBinding = nil
         pendingAudioTransactionBoundary = nil
+        pendingDeferredRecovery = nil
+        deferredRecoveryAdmissionFence = nil
+        deferredOutputOnlyRecoveryDisposition = nil
         retiredAudioTransactionOperations.removeAll(
             keepingCapacity: false
         )
@@ -2157,8 +3322,30 @@ final class WorldwideAudioLifecycleController {
     ) {
         guard let transition = expectedAudioCategoryTransition,
               transition.purpose == .recovery,
-              transition.transactionOperation == operation,
-              retireAudioTransactionIfCurrent(transition) else {
+              transition.transactionOperation == operation else {
+            return
+        }
+        let operationCanStillProceed =
+            nativeOperationIsCurrent(transition)
+        guard operationCanStillProceed else {
+            playbackIsReady = false
+            runtimePlayoutIsReady = false
+            remoteAudioControl?.setEnabled(false)
+            revokeMicrophonePlaybackPauseResume()
+            publishSnapshot()
+            return
+        }
+        guard retireAudioTransactionIfCurrent(transition) else {
+            failMicrophonePlaybackPauseRecovery(
+                operationID: transition.operationID
+            )
+            playbackIsReady = false
+            runtimePlayoutIsReady = false
+            remoteAudioControl?.setEnabled(false)
+            playbackDiagnosticText = requiresExplicitResume
+                ? "The completed audio recovery could not retire its exact native transaction. Tap Resume iPhone Microphone to retry."
+                : "The completed audio recovery could not retire its exact native transaction. Tap Retry Audio."
+            publishSnapshot()
             return
         }
         transition.recoveryAuthorization?.revoke()
@@ -2167,10 +3354,18 @@ final class WorldwideAudioLifecycleController {
         completedAudioCategoryTransition = nil
         pendingAmbiguousCategoryProof = nil
         _ = advanceAudioOperationEpoch()
+        allowMicrophonePlaybackPauseRecovery(
+            operationID: transition.operationID
+        )
         playbackIsReady = true
         runtimePlayoutIsReady = true
         playbackErrorText = nil
         playbackDiagnosticText = nil
+        if pendingDeferredRecovery?.operationID
+            == transition.operationID {
+            pendingDeferredRecovery = nil
+            deferredOutputOnlyRecoveryDisposition = nil
+        }
         publishSnapshot()
         if isPlaying {
             backgroundPlayback.endTransitionTask()
@@ -2190,6 +3385,7 @@ final class WorldwideAudioLifecycleController {
             playbackIsReady = false
             runtimePlayoutIsReady = false
             remoteAudioControl?.setEnabled(false)
+            revokeMicrophonePlaybackPauseResume()
             playbackErrorText =
                 "The iPhone audio policy failed while native microphone teardown was still executing."
             playbackDiagnosticText =
@@ -2198,12 +3394,32 @@ final class WorldwideAudioLifecycleController {
             return
         }
         guard retireAudioTransactionIfCurrent(transition) else {
+            transition.microphoneAuthorization?.revoke()
+            transition.recoveryAuthorization?.revoke()
+            transition.outputOnlyToken?.revoke()
+            _ = advanceAudioOperationEpoch()
             playbackIsReady = false
             runtimePlayoutIsReady = false
             remoteAudioControl?.setEnabled(false)
+            revokeMicrophonePlaybackPauseResume()
+            if transition.purpose == .outputOnlyMicrophone,
+               pendingDeferredRecovery?.operationID
+                == transition.operationID,
+               let outputOnlyToken = transition.outputOnlyToken {
+                deferredAudioRecoveryRequiresReconnect(
+                    after: outputOnlyToken
+                )
+                return
+            }
             publishSnapshot()
             return
         }
+        let failedPendingOutputOnlyToken =
+            transition.purpose == .outputOnlyMicrophone
+                && pendingDeferredRecovery?.operationID
+                    == transition.operationID
+                    ? transition.outputOnlyToken
+                    : nil
         transition.recoveryAuthorization?.revoke()
         transition.outputOnlyToken?.revoke()
         if transition.purpose == .hostedCall {
@@ -2215,11 +3431,21 @@ final class WorldwideAudioLifecycleController {
         completedAudioCategoryTransition = nil
         pendingAmbiguousCategoryProof = nil
         _ = advanceAudioOperationEpoch()
+        failMicrophonePlaybackPauseRecovery(
+            operationID: transition.operationID
+        )
+        revokeMicrophonePlaybackPauseResume()
         microphoneTopologyIsEnabled = false
         _ = advanceMicrophoneTopologyGeneration()
         playbackIsReady = false
         runtimePlayoutIsReady = false
         remoteAudioControl?.setEnabled(false)
+        if let failedPendingOutputOnlyToken {
+            deferredAudioRecoveryRequiresReconnect(
+                after: failedPendingOutputOnlyToken
+            )
+            return
+        }
         playbackErrorText =
             "The iPhone audio recovery could not be verified. Tap Retry Audio."
         if playbackDiagnosticText == nil {
@@ -2488,6 +3714,9 @@ final class WorldwideAudioLifecycleController {
                         != previousSnapshot.nonEndedCallCount
             )
         callActivitySnapshot = snapshot
+        if snapshot.hasNonEndedCall {
+            revokeMicrophonePlaybackPauseResume()
+        }
         let activeCallEpochWasInvalidated = snapshot.hasNonEndedCall
             && (
                 !callWasActive
@@ -2601,17 +3830,22 @@ final class WorldwideAudioLifecycleController {
             hostedCallPolicyWasIssuedForCurrentInterruption = false
             hostedCallPolicyIsClosedForCurrentInterruption = false
             waitsForConnectedCallToEndBeforeRecovery = false
-            closePlaybackGatesAndInvalidateProof()
             retireExpectedAudioCategoryTransitionForBoundary()
             _ = advanceMicrophoneTopologyGeneration()
-            guard !requiresExplicitResume,
-                  !mediaServicesAreLost else {
+            let canRecoverAutomatically =
+                !requiresExplicitResume && !mediaServicesAreLost
+            let recoveryContext =
+                "Audio recovery after connected call ended failed"
+            closePlaybackGatesAndInvalidateProof(
+                deferredRecoveryContext:
+                    canRecoverAutomatically ? recoveryContext : nil
+            )
+            guard canRecoverAutomatically else {
                 publishSnapshot()
                 return
             }
             recoverPlayback(
-                context:
-                    "Audio recovery after connected call ended failed",
+                context: recoveryContext,
                 proofAlreadyInvalidated: true
             )
             return
@@ -2619,16 +3853,22 @@ final class WorldwideAudioLifecycleController {
 
         if startupPolicyLost, !isInterrupted {
             waitsForConnectedCallToEndBeforeRecovery = false
-            closePlaybackGatesAndInvalidateProof()
             retireExpectedAudioCategoryTransitionForBoundary()
             _ = advanceMicrophoneTopologyGeneration()
-            guard !requiresExplicitResume,
-                  !mediaServicesAreLost else {
+            let canRecoverAutomatically =
+                !requiresExplicitResume && !mediaServicesAreLost
+            let recoveryContext =
+                "Audio recovery after connected-call startup ended failed"
+            closePlaybackGatesAndInvalidateProof(
+                deferredRecoveryContext:
+                    canRecoverAutomatically ? recoveryContext : nil
+            )
+            guard canRecoverAutomatically else {
                 publishSnapshot()
                 return
             }
             recoverPlayback(
-                context: "Audio recovery after connected-call startup ended failed",
+                context: recoveryContext,
                 proofAlreadyInvalidated: true
             )
             return
@@ -2666,6 +3906,7 @@ final class WorldwideAudioLifecycleController {
         reason: AudioSessionInterruptionBeganReason
     ) {
         guard isPrepared else { return }
+        revokeMicrophonePlaybackPauseResume()
         let predecessorOperationID =
             currentAudioCategoryTransitionOperationID
         revokeHostedCallPolicy()
@@ -2688,15 +3929,14 @@ final class WorldwideAudioLifecycleController {
         }
         publishMicrophoneCallDispositionIfChanged()
         onMacHostedCallChallengeChanged?(nil)
-        // Close decoded-track and runtime-proof gates before terminally clearing any executing or
-        // completed output-only marker. Only an exact default interruption preserves the same
-        // initialized manual WebRTC device so the native interruption fence can later consume an
-        // exact hosted authorization. Every other reason closes the process-wide gate.
+        // Retire the predecessor before proof invalidation calls into the VM. That callback may
+        // synchronously arm C; the interruption boundary must preserve that new teardown so its
+        // terminal completion can authorize the exact hosted policy.
+        retireExpectedAudioCategoryTransitionForBoundary()
+        _ = advanceMicrophoneTopologyGeneration()
         closePlaybackGatesAndInvalidateProof(
             preservingInitializedWebRTCAudioDevice: reason == .default
         )
-        retireExpectedAudioCategoryTransitionForBoundary()
-        _ = advanceMicrophoneTopologyGeneration()
         publishSnapshot()
         synchronizeLiveCallStateIfNeeded()
         authorizeHostedCallPolicyIfEligible(
@@ -2758,6 +3998,7 @@ final class WorldwideAudioLifecycleController {
             waitsForConnectedCallToEndBeforeRecovery = true
             if !shouldResume {
                 requiresExplicitResume = true
+                revokeMicrophonePlaybackPauseResume()
             }
             publishSnapshot()
             return
@@ -2766,6 +4007,7 @@ final class WorldwideAudioLifecycleController {
         waitsForConnectedCallToEndBeforeRecovery = false
         guard shouldResume else {
             requiresExplicitResume = true
+            revokeMicrophonePlaybackPauseResume()
             publishSnapshot()
             return
         }
@@ -2801,15 +4043,28 @@ final class WorldwideAudioLifecycleController {
             // explicitly resume after choosing the intended route.
             requiresExplicitResume = true
         }
-        closePlaybackGatesAndInvalidateProof()
+        if requiresExplicitResume {
+            revokeMicrophonePlaybackPauseResume()
+        }
+        // Retire the pre-route operation before publishing proof invalidation. That callback may
+        // synchronously arm the output-only microphone teardown; the route boundary must not then
+        // revoke that newly created token or advance beyond its topology generation.
         retireExpectedAudioCategoryTransitionForBoundary()
         _ = advanceMicrophoneTopologyGeneration()
+        let canRecoverAutomatically =
+            !isInterrupted
+                && !requiresExplicitResume
+                && !waitsForConnectedCallToEndBeforeRecovery
+                && !mediaServicesAreLost
+        closePlaybackGatesAndInvalidateProof(
+            deferredRecoveryContext:
+                canRecoverAutomatically
+                    ? "Audio route recovery failed"
+                    : nil
+        )
         publishSnapshot()
 
-        guard !isInterrupted,
-              !requiresExplicitResume,
-              !waitsForConnectedCallToEndBeforeRecovery,
-              !mediaServicesAreLost else {
+        guard canRecoverAutomatically else {
             return
         }
         recoverPlayback(
@@ -2834,18 +4089,45 @@ final class WorldwideAudioLifecycleController {
         if isInterrupted {
             hostedCallPolicyIsClosedForCurrentInterruption = true
         }
-        if isInterrupted || failedStartupPolicy {
-            closePlaybackGatesAndInvalidateProof()
+        if requiresExplicitResume {
+            revokeMicrophonePlaybackPauseResume()
             retireExpectedAudioCategoryTransitionForBoundary()
             _ = advanceMicrophoneTopologyGeneration()
+            closePlaybackGatesAndInvalidateProof()
             publishSnapshot()
             return
         }
-        recoverPlayback(context: context)
+        if isInterrupted || failedStartupPolicy {
+            retireExpectedAudioCategoryTransitionForBoundary()
+            _ = advanceMicrophoneTopologyGeneration()
+            closePlaybackGatesAndInvalidateProof()
+            publishSnapshot()
+            return
+        }
+        // Engine reconfiguration is a native topology boundary even when the reducer-owned
+        // microphone A has already retired into the established identity. Revoke that authority
+        // before proof invalidation can synchronously arm its output-only successor C.
+        retireExpectedAudioCategoryTransitionForBoundary()
+        _ = advanceMicrophoneTopologyGeneration()
+        let canRecoverAutomatically =
+            !waitsForConnectedCallToEndBeforeRecovery
+                && !mediaServicesAreLost
+        closePlaybackGatesAndInvalidateProof(
+            deferredRecoveryContext:
+                canRecoverAutomatically ? context : nil
+        )
+        publishSnapshot()
+
+        guard canRecoverAutomatically else { return }
+        recoverPlayback(
+            context: context,
+            proofAlreadyInvalidated: true
+        )
     }
 
     private func mediaServicesWereLost() {
         guard isPrepared else { return }
+        revokeMicrophonePlaybackPauseResume()
         mediaServicesAreLost = true
         let challenge = replaceMacHostedCallChallengeForCurrentState()
         publishMicrophoneCallDispositionIfChanged()
@@ -2858,9 +4140,9 @@ final class WorldwideAudioLifecycleController {
         if isInterrupted {
             hostedCallPolicyIsClosedForCurrentInterruption = true
         }
-        closePlaybackGatesAndInvalidateProof()
         retireExpectedAudioCategoryTransitionForBoundary()
         _ = advanceMicrophoneTopologyGeneration()
+        closePlaybackGatesAndInvalidateProof()
         publishSnapshot()
     }
 
@@ -2879,16 +4161,23 @@ final class WorldwideAudioLifecycleController {
         if isInterrupted {
             hostedCallPolicyIsClosedForCurrentInterruption = true
         }
-        // Reset is a fresh native boundary. Close first, retire any operation that was executing
-        // when reset reentered, then begin only a newly stamped recovery operation.
-        closePlaybackGatesAndInvalidateProof()
+        // Reset is a fresh native boundary. Retire its predecessor before proof invalidation can
+        // synchronously arm a new output-only microphone teardown for the reset namespace.
         retireExpectedAudioCategoryTransitionForBoundary()
         _ = advanceMicrophoneTopologyGeneration()
+        let canRecoverAutomatically =
+            !isInterrupted
+                && !requiresExplicitResume
+                && !waitsForConnectedCallToEndBeforeRecovery
+        closePlaybackGatesAndInvalidateProof(
+            deferredRecoveryContext:
+                canRecoverAutomatically
+                    ? "Audio services recovery failed"
+                    : nil
+        )
         publishSnapshot()
 
-        guard !isInterrupted,
-              !requiresExplicitResume,
-              !waitsForConnectedCallToEndBeforeRecovery else {
+        guard canRecoverAutomatically else {
             return
         }
         recoverPlayback(
@@ -3267,9 +4556,9 @@ final class WorldwideAudioLifecycleController {
             "The iPhone audio route changed outside opensteamer’s authorized microphone policy."
         playbackDiagnosticText =
             "Unexpected AVAudioSession category=\(change.category), mode=\(change.mode), options=\(change.categoryOptionsRawValue)."
-        closePlaybackGatesAndInvalidateProof()
         retireExpectedAudioCategoryTransitionForBoundary()
         _ = advanceMicrophoneTopologyGeneration()
+        closePlaybackGatesAndInvalidateProof()
         publishSnapshot()
     }
 
@@ -3279,13 +4568,29 @@ final class WorldwideAudioLifecycleController {
         proofAlreadyInvalidated: Bool = false,
         successorBoundary: AudioTransactionBoundaryReceipt? = nil,
         preservingEstablishedMicrophoneAuthorization:
-            WebRTCIOSMicrophoneAuthorization? = nil
+            WebRTCIOSMicrophoneAuthorization? = nil,
+        explicitMicrophoneResumeBoundaryID: UUID? = nil,
+        coalesceCurrentLiveRecovery: Bool = false
     ) -> Bool {
         guard isPrepared else { return false }
         synchronizeLiveCallStateIfNeeded()
+        let microphoneResumeBoundaryIsCurrent: Bool
+        if let explicitMicrophoneResumeBoundaryID {
+            if requiresExplicitResume,
+               case let .recovering(boundaryID, operationID) =
+                    microphonePlaybackPauseResumeState,
+               boundaryID == explicitMicrophoneResumeBoundaryID,
+               operationID == nil {
+                microphoneResumeBoundaryIsCurrent = true
+            } else {
+                microphoneResumeBoundaryIsCurrent = false
+            }
+        } else {
+            microphoneResumeBoundaryIsCurrent = !requiresExplicitResume
+        }
         guard !isInterrupted,
               hostedCallPolicy == nil,
-              !requiresExplicitResume,
+              microphoneResumeBoundaryIsCurrent,
               !waitsForConnectedCallToEndBeforeRecovery,
               !mediaServicesAreLost else {
             publishSnapshot()
@@ -3318,23 +4623,191 @@ final class WorldwideAudioLifecycleController {
             return false
         }
 
-        if !proofAlreadyInvalidated {
-            onAudioProofInvalidated?(false)
-        }
-        if pendingPostCallMicrophoneRecoveryMilestone != nil,
-           let transition = expectedAudioCategoryTransition
+        if coalesceCurrentLiveRecovery,
+           let recoveryTransition = expectedAudioCategoryTransition
                 ?? completedAudioCategoryTransition,
+           recoveryTransition.purpose == .recovery,
+           nativeOperationIsCurrent(recoveryTransition),
+           audioPolicyOperationCanProceedDuringPlaybackPause(
+               recoveryTransition
+           ),
+           recoveryTransition.transactionOperation == nil
+                || (recoveryTransition.transactionOperation.map {
+                        !retiredAudioTransactionOperations.contains($0)
+                    } == true
+                    && (recoveryTransition.recoveryAuthorization?.isValid
+                            == true
+                        || (recoveryTransition.recoveryAuthorization?
+                                .hasAcceptedTerminalOutcome == true
+                            && recoveryTransition.recoveryAuthorization?
+                                .terminalReceipt?
+                                .policyMatchesRequestedTarget == true))) {
+            // Resume/Retry may be tapped again while exact B is awaiting native acknowledgement or
+            // runtime proof. The live operation already represents the new user intent; preserve
+            // its authorization and proof instead of retiring it and staging a second B.
+            publishSnapshot()
+            return true
+        }
+
+        let preservesExactEstablishedMicrophone =
+            ownsExactEstablishedMicrophoneTopology(
+                preservingEstablishedMicrophoneAuthorization
+            )
+        if !proofAlreadyInvalidated {
+            invalidateAudioProofForLifecycle(
+                requiresFreshRecovery: false,
+                deferredRecoveryContext:
+                    preservesExactEstablishedMicrophone
+                        ? nil
+                        : context
+            )
+        }
+        guard deferredRecoveryAdmissionFence == nil else {
+            publishSnapshot()
+            return false
+        }
+        if let transition = expectedAudioCategoryTransition
+            ?? completedAudioCategoryTransition,
            transition.purpose == .outputOnlyMicrophone,
-           let token = transition.outputOnlyToken,
-           token.state == .succeeded || token.state == .failed {
-            guard cancelExpectedAudioCategoryTransition(
-                operationID: transition.operationID,
-                purpose: .outputOnlyMicrophone,
-                terminalCleanup: true
-            ) else {
+           let token = transition.outputOnlyToken {
+            let explicitMicrophoneResumeCanRetryValidatedC: Bool
+            if let explicitMicrophoneResumeBoundaryID,
+               requiresExplicitResume,
+               case let .recovering(boundaryID, operationID) =
+                microphonePlaybackPauseResumeState,
+               boundaryID == explicitMicrophoneResumeBoundaryID,
+               operationID == nil,
+               pendingDeferredRecovery?.operationID
+                == token.operationID,
+               deferredOutputOnlyRecoveryDisposition
+                == .retryableAfterValidatedNativeSuccess(
+                    operationID: token.operationID
+                ) {
+                explicitMicrophoneResumeCanRetryValidatedC = true
+            } else {
+                explicitMicrophoneResumeCanRetryValidatedC = false
+            }
+            guard token.operationID == transition.operationID,
+                  token.lifecycleGeneration == transition.generation,
+                  explicitMicrophoneResumeBoundaryID == nil
+                    || explicitMicrophoneResumeCanRetryValidatedC else {
+                playbackIsReady = false
+                runtimePlayoutIsReady = false
+                remoteAudioControl?.setEnabled(false)
+                  publishSnapshot()
+                  return false
+            }
+            if pendingDeferredRecovery?.operationID
+                != token.operationID {
+                pendingDeferredRecovery = PendingDeferredRecovery(
+                    operationID: token.operationID,
+                    requiresRemoteAudio: false,
+                    context:
+                        pendingPostCallMicrophoneRecoveryMilestone
+                            == nil
+                                ? context
+                                : "Audio recovery after microphone teardown and call end failed"
+                )
+            }
+            if deferredOutputOnlyRecoveryDisposition?.operationID
+                != token.operationID {
+                deferredOutputOnlyRecoveryDisposition =
+                    .awaitingVMValidation(
+                        operationID: token.operationID
+                    )
+            }
+            switch token.state {
+            case .armed, .executing:
+                // The VM owns the asynchronous native C. B may be staged only after C returns
+                // successfully and that task proves current peer/session/teardown ownership.
+                playbackIsReady = false
+                runtimePlayoutIsReady = false
+                remoteAudioControl?.setEnabled(false)
+                publishSnapshot()
+                return true
+            case .succeeded:
+                // A terminal C can remain current when its first ordered drain request was
+                // refused. Token success alone is insufficient: the owning async VM task must
+                // first validate current peer/session ownership and the enclosing native result.
+                guard deferredOutputOnlyRecoveryDisposition
+                        == .retryableAfterValidatedNativeSuccess(
+                            operationID: token.operationID
+                        ) else {
+                    playbackIsReady = false
+                    runtimePlayoutIsReady = false
+                    remoteAudioControl?.setEnabled(false)
+                    publishSnapshot()
+                    return deferredOutputOnlyRecoveryDisposition
+                        == .awaitingVMValidation(
+                            operationID: token.operationID
+                        )
+                }
+                let deferredRecovery = pendingDeferredRecovery
+                let retiringTransaction = transition.transactionOperation
+                guard cancelExpectedAudioCategoryTransition(
+                    operationID: transition.operationID,
+                    purpose: .outputOnlyMicrophone,
+                    terminalCleanup: true
+                ) else {
+                    playbackIsReady = false
+                    runtimePlayoutIsReady = false
+                    remoteAudioControl?.setEnabled(false)
+                    playbackErrorText = pendingPostCallMicrophoneRecoveryMilestone
+                        == nil
+                            ? "Screen and control are still available. Tap Retry Audio to restore iPhone audio."
+                            : "Screen and control are still available. Tap Retry Audio to restore iPhone audio after the call."
+                    publishSnapshot()
+                    return false
+                }
+                guard let deferredRecovery else {
+                    playbackIsReady = false
+                    runtimePlayoutIsReady = false
+                    remoteAudioControl?.setEnabled(false)
+                    playbackDiagnosticText =
+                        "The terminal microphone teardown lost its deferred recovery ownership."
+                    publishSnapshot()
+                    return false
+                }
+                pendingDeferredRecovery = deferredRecovery
+                deferredOutputOnlyRecoveryDisposition = nil
+                let recoveryBoundary: AudioTransactionBoundaryReceipt?
+                if let boundary = pendingAudioTransactionBoundary,
+                   boundary.blocker == retiringTransaction {
+                    recoveryBoundary = boundary
+                } else {
+                    recoveryBoundary = nil
+                }
+                _ = advanceMicrophoneTopologyGeneration()
+                return recoverPlayback(
+                    context: deferredRecovery.context,
+                    proofAlreadyInvalidated: true,
+                    successorBoundary: recoveryBoundary,
+                    explicitMicrophoneResumeBoundaryID:
+                        explicitMicrophoneResumeBoundaryID
+                )
+            case .failed, .revoked:
+                playbackIsReady = false
+                runtimePlayoutIsReady = false
+                remoteAudioControl?.setEnabled(false)
+                if pendingPostCallMicrophoneRecoveryMilestone != nil {
+                    playbackErrorText =
+                        "Screen and control are still available. Tap Retry Audio to restore iPhone audio after the call."
+                    playbackDiagnosticText =
+                        "The post-call microphone teardown did not complete successfully."
+                }
                 publishSnapshot()
                 return false
             }
+        }
+        if let disposition = deferredOutputOnlyRecoveryDisposition {
+            // C may already have retired into a one-shot receipt while the VM still awaits its
+            // enclosing native result. Only receipt consumption may clear this zero-transition
+            // handoff and stage B.
+            publishSnapshot()
+            if case .awaitingVMValidation = disposition {
+                return true
+            }
+            return false
         }
         let recoveryCategory = microphoneTopologyIsEnabled
                 ? AVAudioSession.Category.playAndRecord.rawValue
@@ -3371,10 +4844,42 @@ final class WorldwideAudioLifecycleController {
             publishSnapshot()
             return false
         }
+        if recoveryCategory
+            == AVAudioSession.Category.playback.rawValue {
+            let deferredRecovery = pendingDeferredRecovery
+            pendingDeferredRecovery = PendingDeferredRecovery(
+                operationID: recoveryOperationID,
+                requiresRemoteAudio:
+                    deferredRecovery?.requiresRemoteAudio ?? false,
+                context: deferredRecovery?.context ?? context
+            )
+            deferredOutputOnlyRecoveryDisposition = nil
+        }
+        if let explicitMicrophoneResumeBoundaryID {
+            guard case let .recovering(boundaryID, operationID) =
+                    microphonePlaybackPauseResumeState,
+                  boundaryID == explicitMicrophoneResumeBoundaryID,
+                  operationID == nil else {
+                _ = cancelExpectedAudioCategoryTransition(
+                    operationID: recoveryOperationID,
+                    purpose: .recovery,
+                    terminalCleanup: true
+                )
+                publishSnapshot()
+                return false
+            }
+            microphonePlaybackPauseResumeState = .recovering(
+                boundaryID: boundaryID,
+                operationID: recoveryOperationID
+            )
+        }
         guard let recoveryTransition =
                 expectedAudioCategoryTransition,
               recoveryTransition.operationID
                 == recoveryOperationID else {
+            failMicrophonePlaybackPauseRecovery(
+                operationID: recoveryOperationID
+            )
             failClosedAfterStaleNativeOperation()
             publishSnapshot()
             return false
@@ -3386,6 +4891,9 @@ final class WorldwideAudioLifecycleController {
         guard !usesTransactionalRecovery
                 || (recoveryTransactionOperation != nil
                     && recoveryTransactionProof != nil) else {
+            failMicrophonePlaybackPauseRecovery(
+                operationID: recoveryOperationID
+            )
             failClosedAfterStaleNativeOperation()
             publishSnapshot()
             return false
@@ -3409,6 +4917,9 @@ final class WorldwideAudioLifecycleController {
                     operationID: recoveryOperationID,
                     purpose: .recovery,
                     terminalCleanup: true
+                )
+                failMicrophonePlaybackPauseRecovery(
+                    operationID: recoveryOperationID
                 )
                 publishSnapshot()
                 return false
@@ -3436,6 +4947,9 @@ final class WorldwideAudioLifecycleController {
                     // synchronous gate opening exactly as before transaction ownership existed.
                     failClosedAfterStaleNativeOperation()
                 }
+                failMicrophonePlaybackPauseRecovery(
+                    operationID: recoveryOperationID
+                )
                 publishSnapshot()
                 return false
             }
@@ -3450,6 +4964,9 @@ final class WorldwideAudioLifecycleController {
                     playbackIsReady = false
                     runtimePlayoutIsReady = false
                     remoteAudioControl?.setEnabled(false)
+                    failMicrophonePlaybackPauseRecovery(
+                        operationID: recoveryOperationID
+                    )
                     publishSnapshot()
                     return false
                 }
@@ -3471,7 +4988,25 @@ final class WorldwideAudioLifecycleController {
             playbackErrorText = nil
             playbackDiagnosticText = nil
             if !playback.requiresRuntimePlayoutProof {
-                cancelExpectedAudioCategoryTransition(
+                let transitionWasRetired =
+                    cancelExpectedAudioCategoryTransition(
+                    operationID: recoveryOperationID,
+                    preservingMicrophonePlaybackPauseRecovery: true
+                )
+                guard transitionWasRetired else {
+                    failMicrophonePlaybackPauseRecovery(
+                        operationID: recoveryOperationID
+                    )
+                    closePlaybackGatesAndInvalidateProof()
+                    publishSnapshot()
+                    return false
+                }
+                if pendingDeferredRecovery?.operationID
+                    == recoveryOperationID {
+                    pendingDeferredRecovery = nil
+                    deferredOutputOnlyRecoveryDisposition = nil
+                }
+                allowMicrophonePlaybackPauseRecovery(
                     operationID: recoveryOperationID
                 )
             }
@@ -3491,12 +5026,23 @@ final class WorldwideAudioLifecycleController {
                     purpose: .recovery,
                     terminalCleanup: true
                 )
+            failMicrophonePlaybackPauseRecovery(
+                operationID: recoveryOperationID
+            )
             guard cancellationSucceeded else {
                 playbackIsReady = false
                 runtimePlayoutIsReady = false
                 remoteAudioControl?.setEnabled(false)
                 publishSnapshot()
                 return false
+            }
+            if pendingDeferredRecovery?.operationID
+                == recoveryOperationID {
+                pendingDeferredRecovery = nil
+                if deferredOutputOnlyRecoveryDisposition?.operationID
+                    == recoveryOperationID {
+                    deferredOutputOnlyRecoveryDisposition = nil
+                }
             }
             playbackIsReady = false
             recordPlaybackFailure(context: context, error: error)
@@ -3506,17 +5052,70 @@ final class WorldwideAudioLifecycleController {
     }
 
     private func closePlaybackGatesAndInvalidateProof(
-        preservingInitializedWebRTCAudioDevice: Bool = false
+        preservingInitializedWebRTCAudioDevice: Bool = false,
+        deferredRecoveryContext: String? = nil,
+        deferredRecoveryRequiresRemoteAudio: Bool = false
     ) {
+        if requiresExplicitResume {
+            revokeMicrophonePlaybackPauseResume()
+        }
         runtimePlayoutIsReady = false
         playbackIsReady = false
         remoteAudioControl?.setEnabled(false)
-        onAudioProofInvalidated?(true)
+        invalidateAudioProofForLifecycle(
+            requiresFreshRecovery: true,
+            deferredRecoveryContext: deferredRecoveryContext,
+            deferredRecoveryRequiresRemoteAudio:
+                deferredRecoveryRequiresRemoteAudio
+        )
         if preservingInitializedWebRTCAudioDevice {
             playback.prepareForHostedCallInterruption()
         } else {
             playback.prepareManualAudioDisabled()
         }
+    }
+
+    /// Proof invalidation synchronously calls into the VM, which can arm output-only teardown C.
+    /// Install the admission fence first and let `beginIPhoneMicrophoneOutputOnlyTransition` bind
+    /// it to C atomically. If C was required but could not be armed, retain the unbound fence and
+    /// fail closed instead of allowing snapshot reconciliation to recreate A.
+    private func invalidateAudioProofForLifecycle(
+        requiresFreshRecovery: Bool,
+        deferredRecoveryContext: String?,
+        deferredRecoveryRequiresRemoteAudio: Bool = false
+    ) {
+        let expectsOutputOnlyTeardown =
+            deferredRecoveryContext != nil
+                && microphoneTopologyIsEnabled
+                && onAudioProofInvalidated != nil
+        let fenceID: UUID?
+        if expectsOutputOnlyTeardown,
+           let deferredRecoveryContext {
+            let fence = DeferredRecoveryAdmissionFence(
+                fenceID: UUID(),
+                requiresRemoteAudio:
+                    deferredRecoveryRequiresRemoteAudio,
+                context: deferredRecoveryContext
+            )
+            deferredRecoveryAdmissionFence = fence
+            fenceID = fence.fenceID
+        } else {
+            fenceID = nil
+        }
+
+        onAudioProofInvalidated?(requiresFreshRecovery)
+
+        guard let fenceID,
+              deferredRecoveryAdmissionFence?.fenceID == fenceID else {
+            return
+        }
+        playbackIsReady = false
+        runtimePlayoutIsReady = false
+        remoteAudioControl?.setEnabled(false)
+        playbackErrorText =
+            "Screen and control are still available. Reconnect this session to restore iPhone audio."
+        playbackDiagnosticText =
+            "The audio recovery could not arm its exact microphone teardown."
     }
 
     private func failClosedAfterPassiveMicrophoneHandoffFailure(
@@ -3541,9 +5140,10 @@ final class WorldwideAudioLifecycleController {
         if isInterrupted {
             hostedCallPolicyIsClosedForCurrentInterruption = true
         }
-        closePlaybackGatesAndInvalidateProof()
+        revokeMicrophonePlaybackPauseResume()
         retireExpectedAudioCategoryTransitionForBoundary()
         _ = advanceMicrophoneTopologyGeneration()
+        closePlaybackGatesAndInvalidateProof()
     }
 
     private func recordPlaybackFailure(context: String, error: Error) {
@@ -3553,6 +5153,7 @@ final class WorldwideAudioLifecycleController {
             failedStartupPolicy
         )
         runtimePlayoutIsReady = false
+        revokeMicrophonePlaybackPauseResume()
         remoteAudioControl?.setEnabled(false)
         playbackErrorText = "Screen and control are still available. iOS interrupted or rejected the current audio route. Restore the intended route, then tap Retry Audio."
         playbackDiagnosticText = "\(context): \(error.localizedDescription)"
@@ -3564,6 +5165,46 @@ final class WorldwideAudioLifecycleController {
     ) -> Bool {
         guard isPrepared else { return false }
         synchronizeLiveCallStateIfNeeded()
+        let recoveryTransition = expectedAudioCategoryTransition
+            ?? completedAudioCategoryTransition
+        let ownsCurrentOutputOnlyRecovery =
+            recoveryTransition?.purpose == .recovery
+                && recoveryTransition?.category
+                    == AVAudioSession.Category.playback.rawValue
+                && recoveryTransition?.mode
+                    == AVAudioSession.Mode.default.rawValue
+                && recoveryTransition?.categoryOptionsRawValue
+                    == Self.normalCategoryOptionsRawValue
+                && pendingDeferredRecovery?.operationID
+                    == recoveryTransition?.operationID
+                && recoveryTransition.map(nativeOperationIsCurrent)
+                    == true
+        let ownsExactOutputOnlyRecovery =
+            ownsCurrentOutputOnlyRecovery
+                && recoveryTransition?.transactionOperation != nil
+                && recoveryTransition?.recoveryAuthorization?
+                    .hasAcceptedTerminalOutcome == true
+                && recoveryTransition?.recoveryAuthorization?
+                    .terminalReceipt?
+                    .policyMatchesRequestedTarget == true
+        #if DEBUG
+        // Controller-only tests deliberately retain one unpublished legacy recovery seam because
+        // Simulator cannot prove a native transaction target. It may consume only the exact,
+        // current, tagless B after the VM has accepted its installed output-only policy. Release
+        // builds can reach this milestone only through the receipt-owned branch above.
+        let ownsUnpublishedLegacyOutputOnlyRecovery =
+            ownsCurrentOutputOnlyRecovery
+                && playbackIsReady
+                && recoveryTransition?.recoveryAuthorization == nil
+                && recoveryTransition?.transactionTagGeneration == nil
+                && onPlayoutRecoveryTransactionStagingRequested == nil
+                && onTransactionalPlaybackRecoveryRequested == nil
+        #else
+        let ownsUnpublishedLegacyOutputOnlyRecovery = false
+        #endif
+        let ownsRetirableOutputOnlyRecovery =
+            ownsExactOutputOnlyRecovery
+                || ownsUnpublishedLegacyOutputOnlyRecovery
         guard pendingPostCallMicrophoneRecoveryMilestone
                 == milestone,
               !isCallActive,
@@ -3573,9 +5214,40 @@ final class WorldwideAudioLifecycleController {
               !mediaServicesAreLost,
               hostedCallPolicy == nil,
               transportIsHealthy,
-              playbackIsReady
+              playbackIsReady || ownsExactOutputOnlyRecovery
         else {
             return false
+        }
+        if ownsRetirableOutputOnlyRecovery {
+            guard let recoveryTransition,
+                  cancelExpectedAudioCategoryTransition(
+                    operationID: recoveryTransition.operationID,
+                    purpose: .recovery,
+                    terminalCleanup: true
+                  ) else {
+                playbackIsReady = false
+                runtimePlayoutIsReady = false
+                remoteAudioControl?.setEnabled(false)
+                playbackErrorText =
+                    "Screen and control are still available. Tap Retry Audio to restore iPhone audio after the call."
+                playbackDiagnosticText =
+                    "The post-call output-only recovery could not cross its exact ordered drain boundary."
+                publishSnapshot()
+                return false
+            }
+            if pendingDeferredRecovery?.operationID
+                == recoveryTransition.operationID {
+                pendingDeferredRecovery = nil
+                deferredOutputOnlyRecoveryDisposition = nil
+            }
+            // The installed output-only policy is sufficient to reopen input admission, but it
+            // is not fresh speaker-playout proof. Keep every output gate closed while the VM
+            // synchronously starts the new microphone A transaction.
+            playbackIsReady = false
+            runtimePlayoutIsReady = false
+            remoteAudioControl?.setEnabled(false)
+            playbackErrorText = nil
+            playbackDiagnosticText = nil
         }
         pendingPostCallMicrophoneRecoveryMilestone = nil
         onPostCallRecoveryCompleted?()
@@ -3598,10 +5270,92 @@ final class WorldwideAudioLifecycleController {
     func microphoneActivationIsAllowed() -> Bool {
         guard isPrepared else { return false }
         synchronizeLiveCallStateIfNeeded()
+        let currentTransition = expectedAudioCategoryTransition
+            ?? completedAudioCategoryTransition
         return microphoneCallDisposition != .blocked
             && !microphoneInterruptionIsActive
-            && !requiresExplicitResume
+            && currentTransition?.purpose != .outputOnlyMicrophone
+            && pendingDeferredRecovery == nil
+            && deferredRecoveryAdmissionFence == nil
+            && microphoneActivationPolicyAllowsPlaybackPause
             && !mediaServicesAreLost
+    }
+
+    private var microphoneActivationPolicyAllowsPlaybackPause: Bool {
+        guard requiresExplicitResume else { return true }
+        guard playbackIsReady else { return false }
+        if case .allowed = microphonePlaybackPauseResumeState {
+            return true
+        }
+        return false
+    }
+
+    private func revokeMicrophonePlaybackPauseResume() {
+        microphonePlaybackPauseResumeState = requiresExplicitResume
+            ? .required(boundaryID: UUID())
+            : .notRequired
+    }
+
+    private func allowMicrophonePlaybackPauseRecovery(
+        operationID: UUID
+    ) {
+        guard case let .recovering(boundaryID, currentOperationID) =
+                microphonePlaybackPauseResumeState,
+              currentOperationID == operationID else {
+            return
+        }
+        microphonePlaybackPauseResumeState = .allowed(
+            boundaryID: boundaryID
+        )
+    }
+
+    private func failMicrophonePlaybackPauseRecovery(
+        operationID: UUID
+    ) {
+        guard case let .recovering(boundaryID, currentOperationID) =
+                microphonePlaybackPauseResumeState,
+              currentOperationID == operationID else {
+            return
+        }
+        microphonePlaybackPauseResumeState = .required(
+            boundaryID: boundaryID
+        )
+    }
+
+    private var currentAudioPolicyOperationCanProceedDuringPlaybackPause: Bool {
+        guard requiresExplicitResume else { return true }
+        guard let operation = expectedAudioCategoryTransition
+                ?? completedAudioCategoryTransition else {
+            return false
+        }
+        return audioPolicyOperationCanProceedDuringPlaybackPause(
+            operation
+        )
+    }
+
+    private func audioPolicyOperationCanProceedDuringPlaybackPause(
+        _ operation: ExpectedAudioCategoryTransition
+    ) -> Bool {
+        guard requiresExplicitResume else { return true }
+        switch microphonePlaybackPauseResumeState {
+        case .recovering(_, let operationID):
+            return operation.purpose == .recovery
+                && operationID == operation.operationID
+        case .allowed:
+            guard playbackIsReady else { return false }
+            switch operation.purpose {
+            case .topology:
+                return operation.category
+                    == AVAudioSession.Category.playAndRecord.rawValue
+            case .outputOnlyMicrophone:
+                return operation.category
+                    == AVAudioSession.Category.playback.rawValue
+            case .recovery, .callPrivacyRollback, .hostedCall:
+                return false
+            }
+        case .notRequired, .required:
+            return false
+        }
     }
 
     private func synchronizeLiveCallStateIfNeeded() {
