@@ -2410,6 +2410,64 @@ final class WorldwideSessionGenerationFenceTests: XCTestCase {
     }
 
     @MainActor
+    func testSecureFocusFeedbackPresentsSecureKeyboardAndUsesExactGeneration() async throws {
+        let viewModel = WorldwideSessionViewModel()
+        let peer = try makeViewerPeer()
+        let tapSent = expectation(description: "tap sent")
+        let secureTextSent = expectation(description: "secure text sent")
+        let secureGeneration: UInt64 = 808
+        var sentActions: [WebRTCInputAction] = []
+        viewModel.debugInstallRemoteInputSender { _, action, _, _, _, _ in
+            sentActions.append(action)
+            if sentActions.count == 1 {
+                tapSent.fulfill()
+            } else if sentActions.count == 2 {
+                secureTextSent.fulfill()
+            }
+            return UInt64(sentActions.count)
+        }
+        let fixture = viewModel.debugInstallActiveScreenPresentationForTests(peer: peer)
+        let capability = try XCTUnwrap(viewModel.debugRemoteInputState.capability)
+
+        viewModel.sendRemoteTap(
+            normalizedPoint: CGPoint(x: 0.25, y: 0.75),
+            viewerVideoSize: CGSize(width: 1_080, height: 2_340)
+        )
+        await fulfillment(of: [tapSent], timeout: 2)
+        for _ in 0 ..< 20 where viewModel.debugRemoteInputState.pendingActionCount == 0 {
+            await Task.yield()
+        }
+        XCTAssertEqual(viewModel.debugRemoteInputState.pendingActionCount, 1)
+
+        viewModel.debugDeliverRemoteInputFeedbackForRaceTests(
+            WebRTCInputFeedback(
+                id: 1,
+                screenRequestID: capability.screenRequestID,
+                inputSessionID: capability.inputSessionID,
+                result: .accepted,
+                focus: .editable(generation: secureGeneration, secure: true)
+            )
+        )
+
+        XCTAssertEqual(viewModel.focusedInputGeneration, secureGeneration)
+        XCTAssertTrue(viewModel.focusedInputIsSecure)
+        XCTAssertTrue(fixture.authorization.isValid)
+
+        viewModel.sendRemoteText("credential", focusGeneration: secureGeneration)
+        await fulfillment(of: [secureTextSent], timeout: 2)
+        XCTAssertEqual(
+            sentActions,
+            [
+                .tap(.init(x: 0.25, y: 0.75)),
+                .insertText("credential", focusGeneration: secureGeneration),
+            ]
+        )
+
+        viewModel.disconnect()
+        await peer.close(reason: .viewerDisconnected)
+    }
+
+    @MainActor
     func testFormatTransitionRejectionKeepsKeyboardFocusForNextCommittedText() async throws {
         let viewModel = WorldwideSessionViewModel()
         let peer = try makeViewerPeer()
@@ -2960,6 +3018,16 @@ final class WorldwideSessionGenerationFenceTests: XCTestCase {
 
     @MainActor
     func testFocusedWindowResizeRequestsSelectsAndCommitsWithExactFocusAndGeometry() async throws {
+        try await assertResizePreservesExactFocusAndGeometry(secure: false)
+    }
+
+    @MainActor
+    func testSecureFocusedWindowResizeRequestsSelectsAndCommitsPreservePrivacy() async throws {
+        try await assertResizePreservesExactFocusAndGeometry(secure: true)
+    }
+
+    @MainActor
+    private func assertResizePreservesExactFocusAndGeometry(secure: Bool) async throws {
         let viewModel = WorldwideSessionViewModel()
         let peer = try makeViewerPeer()
         let focusGeneration: UInt64 = 501
@@ -2977,6 +3045,7 @@ final class WorldwideSessionGenerationFenceTests: XCTestCase {
             screenRequestID: focusGeneration,
             supportsFocusedWindowResize: true
         )
+        viewModel.debugSetRemoteKeyboardFocusForTests(focusGeneration, secure: secure)
         let capability = try XCTUnwrap(viewModel.debugRemoteInputState.capability)
 
         XCTAssertTrue(
@@ -2990,6 +3059,7 @@ final class WorldwideSessionGenerationFenceTests: XCTestCase {
         XCTAssertEqual(sentActions, [.requestFocusedWindowResizeTarget])
         XCTAssertEqual(sentSizes, [.init(width: 1_080, height: 2_340)])
         XCTAssertEqual(viewModel.debugRemoteInputState.focusGeneration, focusGeneration)
+        XCTAssertEqual(viewModel.focusedInputIsSecure, secure)
 
         let targetA = WebRTCWindowResizeTarget(
             generation: UUID(),
@@ -3001,7 +3071,7 @@ final class WorldwideSessionGenerationFenceTests: XCTestCase {
                 screenRequestID: capability.screenRequestID,
                 inputSessionID: capability.inputSessionID,
                 result: .accepted,
-                focus: .editable(generation: focusGeneration, secure: false),
+                focus: .editable(generation: focusGeneration, secure: secure),
                 windowResize: .init(kind: .targetAcquired, target: targetA)
             )
         )
@@ -3031,7 +3101,7 @@ final class WorldwideSessionGenerationFenceTests: XCTestCase {
                 screenRequestID: capability.screenRequestID,
                 inputSessionID: capability.inputSessionID,
                 result: .accepted,
-                focus: .editable(generation: focusGeneration, secure: false),
+                focus: .editable(generation: focusGeneration, secure: secure),
                 windowResize: .init(kind: .windowSelected, target: targetB)
             )
         )
@@ -3064,7 +3134,7 @@ final class WorldwideSessionGenerationFenceTests: XCTestCase {
                 screenRequestID: capability.screenRequestID,
                 inputSessionID: capability.inputSessionID,
                 result: .accepted,
-                focus: .editable(generation: focusGeneration, secure: false),
+                focus: .editable(generation: focusGeneration, secure: secure),
                 windowResize: .init(
                     kind: .resizeCommitted,
                     committedTargetGeneration: targetB.generation,
@@ -3078,10 +3148,90 @@ final class WorldwideSessionGenerationFenceTests: XCTestCase {
             successor
         )
         XCTAssertEqual(viewModel.debugRemoteInputState.focusGeneration, focusGeneration)
+        XCTAssertEqual(viewModel.focusedInputIsSecure, secure)
         viewModel.cancelFocusedWindowResize()
         XCTAssertEqual(viewModel.debugRemoteInputState.focusGeneration, focusGeneration)
+        XCTAssertEqual(viewModel.focusedInputIsSecure, secure)
         XCTAssertTrue(fixture.authorization.isValid)
 
+        viewModel.disconnect()
+        await peer.close(reason: .viewerDisconnected)
+    }
+
+    @MainActor
+    func testSecureResizeFeedbackPreservesPrivacyAcrossRejectionAndRetirement() async throws {
+        for (accepted, retired) in [(false, false), (false, true), (true, true)] {
+            try await assertResizeFeedbackPrivacy(
+                initiallySecure: true, feedbackSecure: true,
+                accepted: accepted, retired: retired, retainsFocus: true
+            )
+        }
+    }
+
+    @MainActor
+    func testResizeFeedbackRejectsSameGenerationSecureClassificationChanges() async throws {
+        for initiallySecure in [false, true] {
+            for accepted in [false, true] {
+                for retired in [false, true] {
+                    try await assertResizeFeedbackPrivacy(
+                        initiallySecure: initiallySecure, feedbackSecure: !initiallySecure,
+                        accepted: accepted, retired: retired, retainsFocus: false
+                    )
+                }
+            }
+        }
+    }
+
+    @MainActor
+    private func assertResizeFeedbackPrivacy(
+        initiallySecure: Bool,
+        feedbackSecure: Bool,
+        accepted: Bool,
+        retired: Bool,
+        retainsFocus: Bool
+    ) async throws {
+        let viewModel = WorldwideSessionViewModel()
+        let peer = try makeViewerPeer()
+        let generation: UInt64 = 811
+        viewModel.debugInstallRemoteInputSender { _, _, _, _, _, _ in 1 }
+        let fixture = viewModel.debugInstallActiveScreenPresentationForTests(
+            peer: peer, screenRequestID: generation, supportsFocusedWindowResize: true
+        )
+        viewModel.debugSetRemoteKeyboardFocusForTests(generation, secure: initiallySecure)
+        let capability = try XCTUnwrap(viewModel.debugRemoteInputState.capability)
+        XCTAssertTrue(viewModel.beginFocusedWindowResize(
+            for: fixture.lease,
+            containerSize: CGSize(width: 390, height: 844),
+            viewerVideoSize: CGSize(width: 1_080, height: 2_340)
+        ))
+        for _ in 0 ..< 40 where viewModel.debugRemoteInputState.pendingActionCount < 1 {
+            await Task.yield()
+        }
+        XCTAssertEqual(viewModel.debugRemoteInputState.pendingActionCount, 1)
+        if retired { viewModel.cancelFocusedWindowResize() }
+        viewModel.debugDeliverRemoteInputFeedbackForRaceTests(
+            WebRTCInputFeedback(
+                id: 1,
+                screenRequestID: capability.screenRequestID,
+                inputSessionID: capability.inputSessionID,
+                result: accepted ? .accepted : .rejected,
+                rejectionReason: accepted ? nil : .invalidRequest,
+                focus: .editable(generation: generation, secure: feedbackSecure),
+                windowResize: accepted ? .init(
+                    kind: .targetAcquired,
+                    target: .init(
+                        generation: UUID(),
+                        normalizedFrame: .init(x: 0.1, y: 0.2, width: 0.5, height: 0.4)
+                    )
+                ) : nil
+            )
+        )
+
+        XCTAssertEqual(viewModel.focusedInputGeneration, retainsFocus ? generation : nil)
+        XCTAssertEqual(viewModel.focusedInputIsSecure, retainsFocus && initiallySecure)
+        XCTAssertFalse(viewModel.focusedWindowResizeState.isActive)
+        XCTAssertNil(viewModel.focusedWindowResizeState.interaction?.target)
+        XCTAssertTrue(fixture.authorization.isValid)
         viewModel.disconnect()
         await peer.close(reason: .viewerDisconnected)
     }

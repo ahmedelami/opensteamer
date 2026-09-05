@@ -953,7 +953,7 @@ final class MacRemoteInputControllerTests: XCTestCase {
         XCTAssertEqual(drag(controller), .accepted(.none))
     }
 
-    func testPrimaryDragGrantsOnlySameNonsecureEditableFocus() {
+    func testPrimaryDragPreservesSecureFocusClassification() {
         let system = MockMacRemoteInputSystem()
         let field = system.makeElement(role: "AXTextArea", settable: true)
         system.hitElement = field
@@ -972,16 +972,19 @@ final class MacRemoteInputControllerTests: XCTestCase {
         let secure = system.makeElement(
             role: "AXTextField",
             subrole: "AXSecureTextField",
-            settable: true
+            settable: false
         )
         system.hitElement = secure
         system.currentFocusedElement = secure
-        XCTAssertEqual(drag(controller), .accepted(.none))
         XCTAssertEqual(
-            text(controller, generation: 1, value: "must stay local"),
-            .rejected(.focusChanged)
+            drag(controller),
+            .accepted(.editable(generation: 2, secure: true))
         )
-        XCTAssertEqual(system.postedTexts, ["selected replacement"])
+        XCTAssertEqual(
+            text(controller, generation: 2, value: "secure replacement"),
+            .accepted(.editable(generation: 2, secure: true))
+        )
+        XCTAssertEqual(system.postedTexts, ["selected replacement", "secure replacement"])
     }
 
     func testPrimaryDragRejectsWhilePhysicalPrimaryButtonIsHeld() {
@@ -1303,14 +1306,14 @@ final class MacRemoteInputControllerTests: XCTestCase {
 
     // MARK: - Accessibility focus and keyboard capability
 
-    func testSecureEditableAncestorNeverGrantsRemoteKeyboardFocus() {
+    func testSecureEditableAncestorGrantsPrivacyMarkedRemoteKeyboardFocus() {
         let system = MockMacRemoteInputSystem()
         let hitChild = system.makeElement(role: "AXStaticText", settable: false)
         let focusedFieldEditor = system.makeElement(role: "AXGroup", settable: false)
         let secureField = system.makeElement(
             role: "AXTextField",
             subrole: "AXSecureTextField",
-            settable: true
+            settable: false
         )
         let editableContainer = system.makeElement(role: "AXTextArea", settable: true)
         system.setParent(secureField, of: hitChild)
@@ -1327,13 +1330,48 @@ final class MacRemoteInputControllerTests: XCTestCase {
                 normalizedPoint: .init(x: 0.4, y: 0.3),
                 viewerVideoSize: .init(width: 1_920, height: 1_080)
             ),
-            .accepted(.none)
+            .accepted(.editable(generation: 1, secure: true))
         )
         XCTAssertEqual(
-            text(controller, generation: 1, value: "canonical focus"),
-            .rejected(.focusChanged)
+            text(controller, generation: 1, value: "credential"),
+            .accepted(.editable(generation: 1, secure: true))
+        )
+        XCTAssertEqual(
+            key(controller, generation: 1),
+            .accepted(.editable(generation: 1, secure: true))
+        )
+        XCTAssertEqual(
+            controller.pressKey(
+                screenRequestID: showID,
+                inputSessionID: sessionID,
+                focusGeneration: 1,
+                key: .returnKey
+            ),
+            .accepted(.editable(generation: 1, secure: true))
         )
         XCTAssertEqual(system.postedMousePoints.count, 1)
+        XCTAssertEqual(system.postedTexts, ["credential"])
+        XCTAssertEqual(system.postedKeys, [.backspace, .returnKey])
+    }
+
+    func testMalformedSecureAncestorDoesNotFallThroughToEditableContainer() {
+        let system = MockMacRemoteInputSystem()
+        let secureContainer = system.makeElement(
+            role: "AXGroup",
+            subrole: "AXSecureTextField",
+            settable: false
+        )
+        let editableContainer = system.makeElement(role: "AXTextArea", settable: true)
+        system.setParent(editableContainer, of: secureContainer)
+        system.hitElement = secureContainer
+        system.currentFocusedElement = secureContainer
+        let controller = armedController(system: system)
+
+        XCTAssertEqual(tap(controller), .accepted(.none))
+        XCTAssertEqual(
+            text(controller, generation: 1, value: "blocked"),
+            .rejected(.focusChanged)
+        )
         XCTAssertTrue(system.postedTexts.isEmpty)
     }
 
@@ -1362,6 +1400,13 @@ final class MacRemoteInputControllerTests: XCTestCase {
         )
         XCTAssertTrue(system.postedTexts.isEmpty)
         XCTAssertTrue(system.postedKeys.isEmpty)
+
+        XCTAssertEqual(tap(controller), .accepted(.editable(generation: 2, secure: true)))
+        XCTAssertEqual(
+            text(controller, generation: 2, value: "fresh credential"),
+            .accepted(.editable(generation: 2, secure: true))
+        )
+        XCTAssertEqual(system.postedTexts, ["fresh credential"])
     }
 
     func testClickingAnotherElementClearsOldKeyboardGrant() {
@@ -2367,6 +2412,101 @@ final class MacRemoteInputControllerTests: XCTestCase {
         )
         XCTAssertEqual(reacquired.result, .accepted(.none))
         XCTAssertEqual(text(controller, generation: 1, value: "blocked"), .rejected(.focusChanged))
+    }
+
+    func testSecureResizeOperationsPreserveGenerationAndPrivacyClassification() throws {
+        let system = MockMacRemoteInputSystem()
+        let window = system.makeResizableWindow(
+            frame: CGRect(x: 300, y: 180, width: 900, height: 600)
+        )
+        let field = system.makeElement(
+            role: "AXTextField", subrole: "AXSecureTextField", settable: false
+        )
+        system.setParent(window, of: field)
+        system.hitElement = field
+        system.currentFocusedElement = field
+        system.currentFocusedWindow = window
+        let controller = armedController(system: system)
+        let expected: MacRemoteInputResult = .accepted(.editable(generation: 1, secure: true))
+        XCTAssertEqual(tap(controller), expected)
+
+        let acquired = controller.requestFocusedWindowResizeTarget(
+            screenRequestID: showID, inputSessionID: sessionID,
+            viewerVideoSize: .init(width: 1_920, height: 1_080)
+        )
+        XCTAssertEqual(acquired.result, expected)
+        let selected = controller.selectWindowForResize(
+            screenRequestID: showID, inputSessionID: sessionID,
+            normalizedPoint: .init(x: 0.3, y: 0.3),
+            viewerVideoSize: .init(width: 1_920, height: 1_080)
+        )
+        XCTAssertEqual(selected.result, expected)
+        let target = try XCTUnwrap(selected.windowResizeFeedback?.target.generation)
+        let committed = controller.commitFocusedWindowResize(
+            screenRequestID: showID, inputSessionID: sessionID,
+            targetGeneration: target,
+            start: .init(x: 0.2, y: 0.2), end: .init(x: 0.1, y: 0.1),
+            viewerVideoSize: .init(width: 1_920, height: 1_080)
+        )
+        XCTAssertEqual(committed.result, expected)
+        XCTAssertNotNil(committed.windowResizeFeedback)
+        XCTAssertEqual(text(controller, generation: 1, value: "synthetic"), expected)
+        XCTAssertEqual(key(controller, generation: 1), expected)
+        XCTAssertEqual(system.postedMousePoints.count, 1)
+    }
+
+    func testResizeOperationsRevokeFocusWhenSecureClassificationChanges() throws {
+        for initiallySecure in [false, true] {
+            for operation in ["acquire", "select", "commit"] {
+                let system = MockMacRemoteInputSystem()
+                let window = system.makeResizableWindow(
+                    frame: CGRect(x: 300, y: 180, width: 900, height: 600)
+                )
+                let field = system.makeElement(
+                    role: "AXTextField",
+                    subrole: initiallySecure ? "AXSecureTextField" : nil,
+                    settable: true
+                )
+                system.setParent(window, of: field)
+                system.hitElement = field
+                system.currentFocusedElement = field
+                system.currentFocusedWindow = window
+                let controller = armedController(system: system)
+                XCTAssertEqual(tap(controller), .accepted(.editable(generation: 1, secure: initiallySecure)))
+                let target = try XCTUnwrap(controller.requestFocusedWindowResizeTarget(
+                    screenRequestID: showID, inputSessionID: sessionID,
+                    viewerVideoSize: .init(width: 1_920, height: 1_080)
+                ).windowResizeFeedback?.target.generation)
+                system.setSubrole(initiallySecure ? nil : "AXSecureTextField", of: field)
+
+                let result: MacRemoteInputResult
+                switch operation {
+                case "acquire":
+                    result = controller.requestFocusedWindowResizeTarget(
+                        screenRequestID: showID, inputSessionID: sessionID,
+                        viewerVideoSize: .init(width: 1_920, height: 1_080)
+                    ).result
+                case "select":
+                    result = controller.selectWindowForResize(
+                        screenRequestID: showID, inputSessionID: sessionID,
+                        normalizedPoint: .init(x: 0.3, y: 0.3),
+                        viewerVideoSize: .init(width: 1_920, height: 1_080)
+                    ).result
+                default:
+                    result = controller.commitFocusedWindowResize(
+                        screenRequestID: showID, inputSessionID: sessionID,
+                        targetGeneration: target,
+                        start: .init(x: 0.2, y: 0.2), end: .init(x: 0.1, y: 0.1),
+                        viewerVideoSize: .init(width: 1_920, height: 1_080)
+                    ).result
+                }
+                XCTAssertEqual(result, .accepted(.none), operation)
+                XCTAssertEqual(text(controller, generation: 1, value: "blocked"), .rejected(.focusChanged))
+                XCTAssertEqual(key(controller, generation: 1), .rejected(.focusChanged))
+                XCTAssertTrue(system.postedTexts.isEmpty)
+                XCTAssertTrue(system.postedKeys.isEmpty)
+            }
+        }
     }
 
     func testStaleResizeGenerationCannotMutateWindow() throws {

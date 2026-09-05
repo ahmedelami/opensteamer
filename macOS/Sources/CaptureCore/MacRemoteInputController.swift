@@ -612,10 +612,11 @@ public final class MacRemoteInputController: @unchecked Sendable {
         }
         let focus = AuthorizedFocus(
             element: focusedEditable.element,
-            generation: nextFocusGeneration
+            generation: nextFocusGeneration,
+            secure: focusedEditable.secure
         )
         authorizedFocus = focus
-        return .accepted(.editable(generation: focus.generation, secure: false))
+        return .accepted(.editable(generation: focus.generation, secure: focus.secure))
     }
 
     /// Performs one complete primary-button drag for the exact active screen share.
@@ -792,10 +793,11 @@ public final class MacRemoteInputController: @unchecked Sendable {
         }
         let focus = AuthorizedFocus(
             element: focusedEditable.element,
-            generation: nextFocusGeneration
+            generation: nextFocusGeneration,
+            secure: focusedEditable.secure
         )
         authorizedFocus = focus
-        return .accepted(.editable(generation: focus.generation, secure: false))
+        return .accepted(.editable(generation: focus.generation, secure: focus.secure))
     }
 
     /// Posts one stateless pixel scroll at the initial remote touch anchor.
@@ -1710,7 +1712,7 @@ public final class MacRemoteInputController: @unchecked Sendable {
             return .none
         }
         authorizedFocus = focus
-        return .editable(generation: focus.generation, secure: false)
+        return .editable(generation: focus.generation, secure: focus.secure)
     }
 
     private enum WindowResizeTransactionResult {
@@ -1837,7 +1839,7 @@ public final class MacRemoteInputController: @unchecked Sendable {
         guard system.postUnicodeText(text) else {
             return rejectKeyboardAction(.injectionFailed)
         }
-        return .accepted(.editable(generation: focus.generation, secure: false))
+        return .accepted(.editable(generation: focus.generation, secure: focus.secure))
     }
 
     /// Posts one allowed key into the exact focus generation granted by a tap.
@@ -1882,7 +1884,7 @@ public final class MacRemoteInputController: @unchecked Sendable {
         guard system.postKey(key) else {
             return rejectKeyboardAction(.injectionFailed)
         }
-        return .accepted(.editable(generation: focus.generation, secure: false))
+        return .accepted(.editable(generation: focus.generation, secure: focus.secure))
     }
 
     /// Validates protocol text limits and rejects control/function-key scalars.
@@ -2097,23 +2099,23 @@ public final class MacRemoteInputController: @unchecked Sendable {
             }
             visited.append(element)
 
-            // A secure field is a hard traversal boundary. Returning nil here, rather than
-            // merely treating the field itself as non-editable, prevents a secure descendant
-            // from falling through to an otherwise editable container above it.
-            if system.subrole(of: element) == "AXSecureTextField" {
-                return nil
-            }
-
-            if let editable = editableElement(exactly: element) {
+            let secure = system.subrole(of: element) == "AXSecureTextField"
+            if let editable = editableElement(exactly: element, secure: secure) {
                 return editable
             }
+            // A malformed or disabled secure field remains a hard traversal boundary. It must
+            // never fall through to an editable container above it.
+            if secure { return nil }
             current = system.parent(of: element)
         }
         return nil
     }
 
     /// Applies the role, enabled-state, and writable-value editability policy.
-    private func editableElement(exactly element: MacRemoteAccessibilityElement) -> EditableElement? {
+    private func editableElement(
+        exactly element: MacRemoteAccessibilityElement,
+        secure: Bool
+    ) -> EditableElement? {
         // Some first-party controls (including TextEdit's AXTextArea) omit AXEnabled even though
         // AXValue is settable. Only an explicit false is a disabled-control signal; editability
         // still requires an approved role + settable value, or AXEditable == true below.
@@ -2121,12 +2123,21 @@ public final class MacRemoteInputController: @unchecked Sendable {
             return nil
         }
 
+        if secure {
+            // Secure controls may intentionally deny AXValue reads/writes even though they accept
+            // real keyboard events. Authorize only the exact secure text field (or an element that
+            // explicitly advertises editability), never an ancestor fallback.
+            let roleIsSecureTextField = system.role(of: element) == "AXTextField"
+            guard roleIsSecureTextField || system.isEditable(element) == true else { return nil }
+            return EditableElement(element: element, secure: true)
+        }
+
         let roleIsEditable = system.role(of: element)
             .map(Self.editableRoles.contains) == true
             && system.isValueSettable(element)
         guard roleIsEditable || system.isEditable(element) == true else { return nil }
 
-        return EditableElement(element: element)
+        return EditableElement(element: element, secure: secure)
     }
 
     /// Gives AppKit a bounded 50 ms window to move focus after pointer injection.
@@ -2156,7 +2167,8 @@ public final class MacRemoteInputController: @unchecked Sendable {
     private func verifyFocusedElement(_ focus: AuthorizedFocus) -> Bool {
         guard let currentlyFocused = system.focusedElement(),
               let editable = editableAncestor(from: currentlyFocused),
-              system.elementsEqual(editable.element, focus.element) else {
+              system.elementsEqual(editable.element, focus.element),
+              editable.secure == focus.secure else {
             return false
         }
         return true
@@ -2243,6 +2255,7 @@ private struct PreparedLogicalScrollDelta: Sendable {
 private struct AuthorizedFocus: Sendable {
     let element: MacRemoteAccessibilityElement
     let generation: UInt64
+    let secure: Bool
 }
 
 /// Exact AX and geometry identity authorized by the most recent target acquisition.
@@ -2390,6 +2403,7 @@ enum MacRemoteWindowResizeGeometry {
 /// Validated accessibility element that may receive keyboard input.
 private struct EditableElement {
     let element: MacRemoteAccessibilityElement
+    let secure: Bool
 }
 
 /// Maps iPhone-relative coordinates into the selected Core Graphics display bounds.

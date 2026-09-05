@@ -31,29 +31,39 @@ struct FocusedWindowResizeBinding: Equatable {
 }
 
 enum FocusedWindowResizePendingOperation: Equatable {
-    case targetRequest(operationID: UUID, focusGeneration: UInt64?)
-    case selection(operationID: UUID, focusGeneration: UInt64?)
+    case targetRequest(operationID: UUID, focusGeneration: UInt64?, focusIsSecure: Bool)
+    case selection(operationID: UUID, focusGeneration: UInt64?, focusIsSecure: Bool)
     case commit(
         operationID: UUID,
         consumedTargetGeneration: UUID,
-        focusGeneration: UInt64?
+        focusGeneration: UInt64?,
+        focusIsSecure: Bool
     )
 
     var operationID: UUID {
         switch self {
-        case .targetRequest(let operationID, _),
-             .selection(let operationID, _),
-             .commit(let operationID, _, _):
+        case .targetRequest(let operationID, _, _),
+             .selection(let operationID, _, _),
+             .commit(let operationID, _, _, _):
             operationID
         }
     }
 
     var focusGeneration: UInt64? {
         switch self {
-        case .targetRequest(_, let focusGeneration),
-             .selection(_, let focusGeneration),
-             .commit(_, _, let focusGeneration):
+        case .targetRequest(_, let focusGeneration, _),
+             .selection(_, let focusGeneration, _),
+             .commit(_, _, let focusGeneration, _):
             focusGeneration
+        }
+    }
+
+    var focusIsSecure: Bool {
+        switch self {
+        case .targetRequest(_, _, let secure),
+             .selection(_, _, let secure),
+             .commit(_, _, _, let secure):
+            secure
         }
     }
 
@@ -62,7 +72,7 @@ enum FocusedWindowResizePendingOperation: Equatable {
         case (.targetRequest, .requestFocusedWindowResizeTarget),
              (.selection, .selectWindowForResize):
             true
-        case (.commit(_, let consumedGeneration, _),
+        case (.commit(_, let consumedGeneration, _, _),
               .commitFocusedWindowResize(let actionGeneration, _, _)):
             consumedGeneration == actionGeneration
         default:
@@ -4704,7 +4714,8 @@ final class WorldwideSessionViewModel: ObservableObject {
         let interactionID = UUID()
         let operation = FocusedWindowResizePendingOperation.targetRequest(
             operationID: UUID(),
-            focusGeneration: focusedInputGeneration
+            focusGeneration: focusedInputGeneration,
+            focusIsSecure: focusedInputIsSecure
         )
         focusedWindowResizeState = .active(
             FocusedWindowResizeInteraction(
@@ -4746,7 +4757,8 @@ final class WorldwideSessionViewModel: ObservableObject {
 
         let operation = FocusedWindowResizePendingOperation.selection(
             operationID: UUID(),
-            focusGeneration: focusedInputGeneration
+            focusGeneration: focusedInputGeneration,
+            focusIsSecure: focusedInputIsSecure
         )
         interaction.target = nil
         interaction.pending = operation
@@ -4790,7 +4802,8 @@ final class WorldwideSessionViewModel: ObservableObject {
         let operation = FocusedWindowResizePendingOperation.commit(
             operationID: UUID(),
             consumedTargetGeneration: targetGeneration,
-            focusGeneration: focusedInputGeneration
+            focusGeneration: focusedInputGeneration,
+            focusIsSecure: focusedInputIsSecure
         )
         // The consumed generation is one-shot. Feedback may install only a fresh successor.
         interaction.target = nil
@@ -9651,7 +9664,8 @@ final class WorldwideSessionViewModel: ObservableObject {
         guard feedback.result == .accepted else {
             applyRetiredFocusedWindowResizeFocusRevocation(
                 feedback.focus,
-                expectedGeneration: operation.focusGeneration
+                expectedGeneration: operation.focusGeneration,
+                expectedSecure: operation.focusIsSecure
             )
             handleRemoteInputRejection(
                 feedback.rejectionReason,
@@ -9665,7 +9679,8 @@ final class WorldwideSessionViewModel: ObservableObject {
               Self.focusedWindowResizeFeedback(resize, matches: operation),
               Self.focusedWindowResizeFocus(
                   feedback.focus,
-                  matches: operation.focusGeneration
+                  matches: operation.focusGeneration,
+                  secure: operation.focusIsSecure
               ) else {
             revokeRemoteKeyboardFocusIfOwned(
                 by: operation.focusGeneration
@@ -9675,7 +9690,8 @@ final class WorldwideSessionViewModel: ObservableObject {
         }
         applyRetiredFocusedWindowResizeFocusRevocation(
             feedback.focus,
-            expectedGeneration: operation.focusGeneration
+            expectedGeneration: operation.focusGeneration,
+            expectedSecure: operation.focusIsSecure
         )
     }
 
@@ -9683,11 +9699,13 @@ final class WorldwideSessionViewModel: ObservableObject {
     /// existed when the request was sent, but it can never install or resurrect editable focus.
     private func applyRetiredFocusedWindowResizeFocusRevocation(
         _ focus: WebRTCInputFocus,
-        expectedGeneration: UInt64?
+        expectedGeneration: UInt64?,
+        expectedSecure: Bool
     ) {
         guard Self.focusedWindowResizeFocus(
             focus,
-            matches: expectedGeneration
+            matches: expectedGeneration,
+            secure: expectedSecure
         ) else {
             revokeRemoteKeyboardFocusIfOwned(by: expectedGeneration)
             return
@@ -9721,7 +9739,8 @@ final class WorldwideSessionViewModel: ObservableObject {
               ),
               Self.focusedWindowResizeFocus(
                   feedback.focus,
-                  matches: operation.focusGeneration
+                  matches: operation.focusGeneration,
+                  secure: operation.focusIsSecure
               ) else {
             clearRemoteKeyboardFocus()
             cancelFocusedWindowResize()
@@ -9747,7 +9766,8 @@ final class WorldwideSessionViewModel: ObservableObject {
         }
         if Self.focusedWindowResizeFocus(
             feedback.focus,
-            matches: operation.focusGeneration
+            matches: operation.focusGeneration,
+            secure: operation.focusIsSecure
         ) {
             applyRemoteInputFocus(feedback.focus)
         } else {
@@ -9767,7 +9787,7 @@ final class WorldwideSessionViewModel: ObservableObject {
         case .selection:
             return feedback.kind == .windowSelected
                 && feedback.committedTargetGeneration == nil
-        case .commit(_, let consumedTargetGeneration, _):
+        case .commit(_, let consumedTargetGeneration, _, _):
             return feedback.kind == .resizeCommitted
                 && feedback.committedTargetGeneration == consumedTargetGeneration
                 && feedback.target.generation != consumedTargetGeneration
@@ -9776,15 +9796,14 @@ final class WorldwideSessionViewModel: ObservableObject {
 
     private static func focusedWindowResizeFocus(
         _ focus: WebRTCInputFocus,
-        matches expectedGeneration: UInt64?
+        matches expectedGeneration: UInt64?,
+        secure expectedSecure: Bool
     ) -> Bool {
         switch focus {
         case .none:
             return true
-        case .editable(let generation, secure: false):
-            return expectedGeneration == generation
-        case .editable(_, secure: true):
-            return false
+        case .editable(let generation, let secure):
+            return expectedGeneration == generation && expectedSecure == secure
         }
     }
 
@@ -9865,22 +9884,21 @@ final class WorldwideSessionViewModel: ObservableObject {
     }
 
     private func applyRemoteInputFocus(_ focus: WebRTCInputFocus) {
-        guard let generation = Self.remoteKeyboardGeneration(for: focus) else {
-            if case .editable(_, secure: true) = focus {
-                lastDiagnostic = "Secure Mac text fields stay local and cannot receive remote typing."
-            }
+        guard let keyboardFocus = Self.remoteKeyboardFocus(for: focus) else {
             clearRemoteKeyboardFocus()
             return
         }
-        focusedInputGeneration = generation
-        focusedInputIsSecure = false
+        focusedInputGeneration = keyboardFocus.generation
+        focusedInputIsSecure = keyboardFocus.secure
     }
 
-    /// A second, viewer-side fail-closed boundary for older or compromised hosts.
-    /// The current Mac host never advertises editable focus for secure AX controls.
-    static func remoteKeyboardGeneration(for focus: WebRTCInputFocus) -> UInt64? {
-        guard case .editable(let generation, secure: false) = focus else { return nil }
-        return generation
+    /// Maps any host-proven editable focus into the generation and keyboard privacy mode used by
+    /// the viewer. A secure field keeps the same capability checks as ordinary editable focus.
+    static func remoteKeyboardFocus(
+        for focus: WebRTCInputFocus
+    ) -> (generation: UInt64, secure: Bool)? {
+        guard case .editable(let generation, let secure) = focus else { return nil }
+        return (generation, secure)
     }
 
     private func clearRemoteKeyboardFocus() {
@@ -10477,9 +10495,9 @@ final class WorldwideSessionViewModel: ObservableObject {
         handleRemoteInputFeedback(feedback)
     }
 
-    func debugSetRemoteKeyboardFocusForTests(_ generation: UInt64?) {
+    func debugSetRemoteKeyboardFocusForTests(_ generation: UInt64?, secure: Bool = false) {
         focusedInputGeneration = generation
-        focusedInputIsSecure = false
+        focusedInputIsSecure = generation != nil && secure
     }
 
     /// Routes tests through the production terminal-session path without requiring live media.

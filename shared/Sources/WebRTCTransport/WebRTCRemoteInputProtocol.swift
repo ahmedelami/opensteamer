@@ -765,7 +765,8 @@ public struct WebRTCInputRequest: Codable, Equatable, Sendable {
     }
 }
 
-/// Host-reported editability state; secure fields never authorize committed-text insertion.
+/// Host-reported editability state; secure fields retain the same generation-bound authority
+/// while asking the viewer to use privacy-preserving keyboard traits.
 public enum WebRTCInputFocus: Codable, Equatable, Sendable {
     case none
     case editable(generation: UInt64, secure: Bool)
