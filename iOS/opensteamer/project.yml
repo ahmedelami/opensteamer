@@ -66,7 +66,7 @@ targets:
           # TestFlight build cannot replace its app container or binary.
           PRODUCT_BUNDLE_IDENTIFIER: com.elamin.opensteamer
           DEVELOPMENT_TEAM: MSMG8CJLB3
-          CURRENT_PROJECT_VERSION: 62
+          CURRENT_PROJECT_VERSION: 63
           CODE_SIGN_STYLE: Automatic
           OPENSTEAMER_RENDEZVOUS_URL: "wss://audiostreamer-rendezvous.elaminahmed03.workers.dev"
     scheme:
