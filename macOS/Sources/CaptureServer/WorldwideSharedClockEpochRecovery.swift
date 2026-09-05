@@ -137,6 +137,20 @@ enum WorldwideSharedClockEpochRecoveryAdmissionPolicy {
                 == expectedReplacementKey(after: rejectedKey)
     }
 
+    static func diagnosticDescription(
+        snapshot: WorldwideIPhoneMicrophoneForwardingHostSnapshot,
+        after rejectedKey: WorldwideIPhoneMicrophoneForwardingKey
+    ) -> String {
+        let expectedOwnership = snapshot.currentKey
+            == expectedReplacementKey(after: rejectedKey)
+        return "expectedOwnership=\(expectedOwnership) "
+            + "transportAuthorized=\(snapshot.transportAuthorized) "
+            + "queueRunning=\(snapshot.queueRunning) "
+            + "exactTrackAdmitted=\(snapshot.exactTrackAdmitted) "
+            + "phase=\(snapshot.phase.rawValue) "
+            + "lastFailure=\(snapshot.lastFailureCategory?.rawValue ?? "none")"
+    }
+
     private static func nextNonzero(_ value: UInt64) -> UInt64 {
         let next = value &+ 1
         return next == 0 ? 1 : next
@@ -152,6 +166,7 @@ enum WorldwideVirtualMicrophoneEpochStateReadError:
     case coreAudioStatus(OSStatus)
     case unexpectedPropertySize(UInt32)
     case invalidDefaultInputUID
+    case driverDiagnostics(WorldwideVirtualMicrophoneDriverDiagnosticError)
 }
 
 struct WorldwideVirtualMicrophoneEpochStateObservation:
@@ -164,6 +179,7 @@ struct WorldwideVirtualMicrophoneEpochStateObservation:
     let hiddenWriterRunningSecondPass: Bool
     let visibleInputRunningSecondPass: Bool
     let defaultInputUIDSecondPass: String
+    let driverIdleProven: Bool
 
     func provesGlobalIdleCandidate(
         parkedOn route:
@@ -175,14 +191,20 @@ struct WorldwideVirtualMicrophoneEpochStateObservation:
             && !hiddenWriterRunningFirstPass
             && !hiddenWriterRunningSecondPass
             && !visibleInputRunningSecondPass
+            && driverIdleProven
     }
 }
 
-/// Reads the public endpoint-running properties in a mirrored two-pass order.
-/// This is a retry gate, not a replacement for the authoritative post-start
-/// clock proof: any race after these reads still reaches the signed-32 policy
-/// before decoded PCM admission.
+/// Requires mirrored public running flags and coherent driver snapshots; HAL
+/// can report idle while a retained driver client still owns the clock epoch.
+/// This retry gate never replaces the post-start clock proof before PCM admission.
 struct WorldwideVirtualMicrophoneEpochStateReader: Sendable {
+    typealias UInt32PropertyRead = @Sendable (
+        AudioDeviceID,
+        AudioObjectPropertyAddress,
+        inout UInt32,
+        inout UInt32
+    ) -> OSStatus
     typealias DeviceRunningRead = @Sendable (
         AudioDeviceID
     ) -> Result<
@@ -193,25 +215,60 @@ struct WorldwideVirtualMicrophoneEpochStateReader: Sendable {
         String,
         WorldwideVirtualMicrophoneEpochStateReadError
     >
+    typealias DriverDiagnosticRead = @Sendable (AudioDeviceID) -> Result<
+        WorldwideVirtualMicrophoneDriverDiagnosticSnapshot,
+        WorldwideVirtualMicrophoneDriverDiagnosticError
+    >
 
     private let readDeviceRunning: DeviceRunningRead
     private let readDefaultInputUID: DefaultInputUIDRead
+    private let readDriverDiagnostic: DriverDiagnosticRead
 
     init() {
+        self.init(
+            readUInt32Property: { deviceID, address, size, value in
+                var address = address
+                return AudioObjectGetPropertyData(
+                    deviceID,
+                    &address,
+                    0,
+                    nil,
+                    &size,
+                    &value
+                )
+            },
+            readDefaultInputUID: {
+                Self.systemDefaultInputUID()
+            },
+            readDriverDiagnostic: { deviceID in
+                WorldwideVirtualMicrophoneDriverDiagnosticReader().read(deviceID)
+            }
+        )
+    }
+
+    init(
+        readUInt32Property: @escaping UInt32PropertyRead,
+        readDefaultInputUID: @escaping DefaultInputUIDRead,
+        readDriverDiagnostic: @escaping DriverDiagnosticRead
+    ) {
         readDeviceRunning = { deviceID in
-            Self.systemDeviceRunning(deviceID)
+            Self.systemDeviceRunning(
+                deviceID,
+                readUInt32Property: readUInt32Property
+            )
         }
-        readDefaultInputUID = {
-            Self.systemDefaultInputUID()
-        }
+        self.readDefaultInputUID = readDefaultInputUID
+        self.readDriverDiagnostic = readDriverDiagnostic
     }
 
     init(
         readDeviceRunning: @escaping DeviceRunningRead,
-        readDefaultInputUID: @escaping DefaultInputUIDRead
+        readDefaultInputUID: @escaping DefaultInputUIDRead,
+        readDriverDiagnostic: @escaping DriverDiagnosticRead
     ) {
         self.readDeviceRunning = readDeviceRunning
         self.readDefaultInputUID = readDefaultInputUID
+        self.readDriverDiagnostic = readDriverDiagnostic
     }
 
     func observe(
@@ -267,6 +324,17 @@ struct WorldwideVirtualMicrophoneEpochStateReader: Sendable {
             return .failure(error)
         }
 
+        var driverObservations: [WorldwideVirtualMicrophoneDriverDiagnosticSnapshot] = []
+        for deviceID in [visibleInputDeviceID, hiddenWriterDeviceID,
+                         hiddenWriterDeviceID, visibleInputDeviceID] {
+            switch readDriverDiagnostic(deviceID) {
+            case .success(let observation):
+                driverObservations.append(observation)
+            case .failure(let error):
+                return .failure(.driverDiagnostics(error))
+            }
+        }
+
         let defaultInputUIDSecondPass: String
         switch readDefaultInputUID() {
         case .success(let value):
@@ -284,7 +352,10 @@ struct WorldwideVirtualMicrophoneEpochStateReader: Sendable {
                 hiddenWriterRunningSecondPass: hiddenSecond,
                 visibleInputRunningSecondPass: visibleSecond,
                 defaultInputUIDSecondPass:
-                    defaultInputUIDSecondPass
+                    defaultInputUIDSecondPass,
+                driverIdleProven:
+                    WorldwideVirtualMicrophoneDriverDiagnosticSnapshot
+                        .provesMirroredIdle(driverObservations)
             )
         )
     }
@@ -350,7 +421,8 @@ struct WorldwideVirtualMicrophoneEpochStateReader: Sendable {
     }
 
     private static func systemDeviceRunning(
-        _ deviceID: AudioDeviceID
+        _ deviceID: AudioDeviceID,
+        readUInt32Property: UInt32PropertyRead
     ) -> Result<
         Bool,
         WorldwideVirtualMicrophoneEpochStateReadError
@@ -358,18 +430,18 @@ struct WorldwideVirtualMicrophoneEpochStateReader: Sendable {
         guard deviceID != kAudioObjectUnknown else {
             return .failure(.invalidDevice)
         }
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyDeviceIsRunning,
+        // The host's own IO can be stopped while another process still pins
+        // the shared epoch. Only system-wide inactivity permits this retry.
+        let address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyDeviceIsRunningSomewhere,
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain
         )
         var value: UInt32 = 1
         var size = UInt32(MemoryLayout<UInt32>.size)
-        let status = AudioObjectGetPropertyData(
+        let status = readUInt32Property(
             deviceID,
-            &address,
-            0,
-            nil,
+            address,
             &size,
             &value
         )

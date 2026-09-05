@@ -220,6 +220,143 @@ final class WorldwideSharedClockEpochRecoveryTests: XCTestCase {
         )
     }
 
+    func testReadmissionDiagnosticReportsEveryAdmissionPredicateAndPhase() {
+        let snapshot = WorldwideIPhoneMicrophoneForwardingHostSnapshot
+            .inactive(policy: .enabled)
+
+        XCTAssertEqual(
+            WorldwideSharedClockEpochRecoveryAdmissionPolicy
+                .diagnosticDescription(
+                    snapshot: snapshot,
+                    after: forwardingKey()
+                ),
+            "expectedOwnership=false transportAuthorized=false "
+                + "queueRunning=false exactTrackAdmitted=false "
+                + "phase=waitingForPeer lastFailure=none"
+        )
+    }
+
+    func testProductionPropertyBoundaryRequiresSystemWideEndpointIdle() throws {
+        let visibleID = AudioDeviceID(31)
+        let hiddenID = AudioDeviceID(32)
+        let parkingRoute = try XCTUnwrap(
+            WorldwideSharedClockEpochRecoveryParkingRoute(
+                defaultInputUID: "BuiltInMicrophoneDevice"
+            )
+        )
+
+        let activeDeviceSets: [Set<AudioDeviceID>] = [
+            [], [visibleID], [hiddenID], [visibleID, hiddenID],
+        ]
+        for activeDevices in activeDeviceSets {
+            let properties = LockedEpochPropertyReads(
+                activeDevices: activeDevices
+            )
+            let reader = try propertyReader(properties)
+            let observation = try reader.observe(
+                visibleInputDeviceID: visibleID,
+                hiddenWriterDeviceID: hiddenID
+            ).get()
+
+            XCTAssertEqual(
+                observation.provesGlobalIdleCandidate(parkedOn: parkingRoute),
+                activeDevices.isEmpty,
+                "Process-local idle must not hide a client in another process."
+            )
+            XCTAssertEqual(
+                properties.reads.map(\.deviceID),
+                [visibleID, hiddenID, hiddenID, visibleID]
+            )
+            for read in properties.reads {
+                XCTAssertEqual(
+                    read.selector,
+                    kAudioDevicePropertyDeviceIsRunningSomewhere
+                )
+                XCTAssertEqual(read.scope, kAudioObjectPropertyScopeGlobal)
+                XCTAssertEqual(read.element, kAudioObjectPropertyElementMain)
+                XCTAssertEqual(read.requestedSize, UInt32(MemoryLayout<UInt32>.size))
+            }
+        }
+    }
+
+    func testSystemWidePropertyFailureDoesNotFallBackToProcessLocalIdle() throws {
+        let failure = kAudioHardwareUnknownPropertyError
+        let properties = LockedEpochPropertyReads(status: failure)
+
+        XCTAssertEqual(
+            try propertyReader(properties).observe(
+                visibleInputDeviceID: 31,
+                hiddenWriterDeviceID: 32
+            ),
+            .failure(.coreAudioStatus(failure))
+        )
+        XCTAssertEqual(properties.reads.count, 1)
+        XCTAssertEqual(
+            properties.reads.first?.selector,
+            kAudioDevicePropertyDeviceIsRunningSomewhere
+        )
+    }
+
+    func testSystemWidePropertyRejectsMalformedSizes() throws {
+        let malformedSizes: [UInt32] = [0, 3, 8]
+        for size in malformedSizes {
+            let properties = LockedEpochPropertyReads(returnedSize: size)
+            XCTAssertEqual(
+                try propertyReader(properties).observe(
+                    visibleInputDeviceID: 31,
+                    hiddenWriterDeviceID: 32
+                ),
+                .failure(.unexpectedPropertySize(size))
+            )
+            XCTAssertEqual(properties.reads.count, 1)
+        }
+    }
+
+    func testInvalidEndpointDoesNotReadSystemWideProperty() throws {
+        let properties = LockedEpochPropertyReads()
+        XCTAssertEqual(
+            try propertyReader(properties).observe(
+                visibleInputDeviceID: kAudioObjectUnknown,
+                hiddenWriterDeviceID: 32
+            ),
+            .failure(.invalidDevice)
+        )
+        XCTAssertTrue(properties.reads.isEmpty)
+    }
+
+    func testPublicIdleCannotOverrideAnActiveOrChangedDriverEpoch() throws {
+        let route = try XCTUnwrap(
+            WorldwideSharedClockEpochRecoveryParkingRoute(defaultInputUID: "BuiltInMicrophoneDevice")
+        )
+        for changedMode in ["active", "new-instance", "new-lifecycle", "new-session", "new-seed"] {
+            let diagnostics = try driverDiagnostics(["idle", "idle", changedMode, "idle"])
+            let reader = WorldwideVirtualMicrophoneEpochStateReader(
+                readDeviceRunning: { _ in .success(false) },
+                readDefaultInputUID: { .success("BuiltInMicrophoneDevice") },
+                readDriverDiagnostic: { diagnostics.read($0) }
+            )
+            let observation = try reader.observe(
+                visibleInputDeviceID: 31,
+                hiddenWriterDeviceID: 32
+            ).get()
+            XCTAssertFalse(observation.provesGlobalIdleCandidate(parkedOn: route))
+            XCTAssertEqual(diagnostics.readOrder, [31, 32, 32, 31])
+        }
+    }
+
+    func testDriverDiagnosticReadFailureKeepsPublicIdleUnproved() {
+        let failure = WorldwideVirtualMicrophoneDriverDiagnosticError.property(kAudioHardwareUnknownPropertyError)
+        let reader = WorldwideVirtualMicrophoneEpochStateReader(
+            readDeviceRunning: { _ in .success(false) },
+            readDefaultInputUID: { .success("BuiltInMicrophoneDevice") },
+            readDriverDiagnostic: { _ in .failure(failure) }
+        )
+        XCTAssertEqual(
+            reader.observe(visibleInputDeviceID: 31, hiddenWriterDeviceID: 32),
+            .failure(.driverDiagnostics(failure))
+        )
+    }
+
     func testReaderRequiresTwoPassIdleAcrossBothEndpoints() throws {
         let visibleID = AudioDeviceID(41)
         let hiddenID = AudioDeviceID(42)
@@ -236,7 +373,8 @@ final class WorldwideSharedClockEpochRecoveryTests: XCTestCase {
                     WorldwideVirtualMicrophoneEndpointContract
                         .retiredLegacyVisibleDeviceUID
                 )
-            }
+            },
+            readDriverDiagnostic: try idleDriverDiagnostics()
         )
 
         let observation = try reader.observe(
@@ -275,7 +413,8 @@ final class WorldwideSharedClockEpochRecoveryTests: XCTestCase {
                     WorldwideVirtualMicrophoneEndpointContract
                         .retiredLegacyVisibleDeviceUID
                 )
-            }
+            },
+            readDriverDiagnostic: try idleDriverDiagnostics()
         )
 
         let observation = try reader.observe(
@@ -315,7 +454,8 @@ final class WorldwideSharedClockEpochRecoveryTests: XCTestCase {
             },
             readDefaultInputUID: {
                 defaultInputs.read()
-            }
+            },
+            readDriverDiagnostic: try idleDriverDiagnostics()
         )
         let parkingRoute = try XCTUnwrap(
             WorldwideSharedClockEpochRecoveryParkingRoute(
@@ -425,6 +565,37 @@ final class WorldwideSharedClockEpochRecoveryTests: XCTestCase {
         )
     }
 
+    private func propertyReader(
+        _ properties: LockedEpochPropertyReads
+    ) throws -> WorldwideVirtualMicrophoneEpochStateReader {
+        WorldwideVirtualMicrophoneEpochStateReader(
+            readUInt32Property: { deviceID, address, size, value in
+                properties.read(deviceID, address, &size, &value)
+            },
+            readDefaultInputUID: {
+                .success("BuiltInMicrophoneDevice")
+            },
+            readDriverDiagnostic: try idleDriverDiagnostics()
+        )
+    }
+
+    private func idleDriverDiagnostics() throws
+        -> WorldwideVirtualMicrophoneEpochStateReader.DriverDiagnosticRead {
+        let reads = try driverDiagnostics(["idle", "idle", "idle", "idle"])
+        return { deviceID in reads.read(deviceID) }
+    }
+
+    private func driverDiagnostics(_ modes: [String]) throws -> LockedDriverDiagnosticReads {
+        let snapshots = try modes.enumerated().map { index, mode in
+            try WorldwideVirtualMicrophoneDriverDiagnosticSnapshot.decode(
+                VirtualMicrophoneDiagnosticFixture.data(
+                    mode, sequence: UInt64(index + 1), capturedHostTicks: UInt64(index + 101)
+                )
+            ).get()
+        }
+        return LockedDriverDiagnosticReads(snapshots.map { .success($0) })
+    }
+
     private func signed32HeadroomRejection()
         -> BlackHoleFaceTimeClockRejection {
         .insufficientSigned32Headroom(
@@ -438,6 +609,85 @@ final class WorldwideSharedClockEpochRecoveryTests: XCTestCase {
                 BlackHoleFaceTimeClockPolicy
                     .maximumProjectedSampleTime
         )
+    }
+}
+
+private final class LockedDriverDiagnosticReads: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [Result<WorldwideVirtualMicrophoneDriverDiagnosticSnapshot,
+                                WorldwideVirtualMicrophoneDriverDiagnosticError>]
+    private var order: [AudioDeviceID] = []
+
+    init(_ values: [Result<WorldwideVirtualMicrophoneDriverDiagnosticSnapshot,
+                          WorldwideVirtualMicrophoneDriverDiagnosticError>]) {
+        self.values = values
+    }
+
+    func read(_ deviceID: AudioDeviceID) -> Result<
+        WorldwideVirtualMicrophoneDriverDiagnosticSnapshot,
+        WorldwideVirtualMicrophoneDriverDiagnosticError
+    > {
+        lock.withLock {
+            order.append(deviceID)
+            return values.isEmpty ? .failure(.staleObservation) : values.removeFirst()
+        }
+    }
+
+    var readOrder: [AudioDeviceID] { lock.withLock { order } }
+}
+
+private final class LockedEpochPropertyReads: @unchecked Sendable {
+    struct Read: Sendable {
+        let deviceID: AudioDeviceID
+        let selector: AudioObjectPropertySelector
+        let scope: AudioObjectPropertyScope
+        let element: AudioObjectPropertyElement
+        let requestedSize: UInt32
+    }
+
+    private let lock = NSLock()
+    private let activeDevices: Set<AudioDeviceID>
+    private let status: OSStatus
+    private let returnedSize: UInt32
+    private var recordedReads: [Read] = []
+
+    init(
+        activeDevices: Set<AudioDeviceID> = [],
+        status: OSStatus = noErr,
+        returnedSize: UInt32 = UInt32(MemoryLayout<UInt32>.size)
+    ) {
+        self.activeDevices = activeDevices
+        self.status = status
+        self.returnedSize = returnedSize
+    }
+
+    func read(
+        _ deviceID: AudioDeviceID,
+        _ address: AudioObjectPropertyAddress,
+        _ size: inout UInt32,
+        _ value: inout UInt32
+    ) -> OSStatus {
+        lock.withLock {
+            recordedReads.append(
+                Read(
+                    deviceID: deviceID,
+                    selector: address.mSelector,
+                    scope: address.mScope,
+                    element: address.mElement,
+                    requestedSize: size
+                )
+            )
+        }
+        size = returnedSize
+        // The old process-local selector always sees the idle host. Only the
+        // system-wide selector exposes this other process's active client.
+        value = address.mSelector == kAudioDevicePropertyDeviceIsRunningSomewhere
+            && activeDevices.contains(deviceID) ? 1 : 0
+        return status
+    }
+
+    var reads: [Read] {
+        lock.withLock { recordedReads }
     }
 }
 

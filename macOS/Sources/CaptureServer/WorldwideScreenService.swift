@@ -4878,8 +4878,12 @@ actor WorldwideScreenService {
                 )
                 logger.error(
                     "Worldwide iPhone microphone fresh-epoch recovery " +
-                        "failed closed because track or transport ownership " +
-                        "changed during exact readmission"
+                        "failed exact readmission: " +
+                        WorldwideSharedClockEpochRecoveryAdmissionPolicy
+                            .diagnosticDescription(
+                                snapshot: forwarding,
+                                after: key
+                            )
                 )
                 return
             }
