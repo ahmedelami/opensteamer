@@ -172,7 +172,7 @@ struct WorldwideVirtualMicrophoneDriverDiagnosticReader: Sendable {
               CFGetTypeID(property) == CFDataGetTypeID() else {
             return .failure(.propertyType)
         }
-        let data = unsafeBitCast(property, to: CFData.self)
+        let data = unsafeDowncast(property, to: CFData.self)
         guard CFDataGetLength(data) == WorldwideVirtualMicrophoneDriverDiagnosticSnapshot.byteCount else {
             return .failure(.snapshotSize(CFDataGetLength(data)))
         }
