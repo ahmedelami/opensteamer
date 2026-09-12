@@ -148,6 +148,54 @@ public struct ScreenVideoFrameGeometry: Equatable, Sendable {
         )
     }
 
+    /// Converts a logical AX rectangle into the encoded frame's normalized coordinate space
+    /// without requiring it to be contained by the display. This is reserved for negotiated Move
+    /// feedback; callers must separately prove a recoverable visible title-bar intersection.
+    /// Meaningful capture-content insets are not representable in that wire contract, so they must
+    /// finish format renegotiation before feedback is published.
+    public func frameUnclippedNormalizedRect(
+        forGlobalRect globalRect: CGRect,
+        in displayBounds: CGRect
+    ) -> CGRect? {
+        guard Self.isFinitePositiveRect(globalRect),
+              Self.isFinitePositiveRect(displayBounds),
+              !requiresCaptureFormatRenegotiation else { return nil }
+        let contentNormalizedRect = CGRect(
+            x: (globalRect.minX - displayBounds.minX) / displayBounds.width,
+            y: (globalRect.minY - displayBounds.minY) / displayBounds.height,
+            width: globalRect.width / displayBounds.width,
+            height: globalRect.height / displayBounds.height
+        )
+        let surfaceRect = CGRect(
+            x: contentRect.minX + (contentNormalizedRect.minX * contentRect.width),
+            y: contentRect.minY + (contentNormalizedRect.minY * contentRect.height),
+            width: contentNormalizedRect.width * contentRect.width,
+            height: contentNormalizedRect.height * contentRect.height
+        )
+        let result = CGRect(
+            x: surfaceRect.minX / CGFloat(surfaceWidth),
+            y: surfaceRect.minY / CGFloat(surfaceHeight),
+            width: surfaceRect.width / CGFloat(surfaceWidth),
+            height: surfaceRect.height / CGFloat(surfaceHeight)
+        )
+        return Self.isFinitePositiveRect(result) ? result : nil
+    }
+
+    /// Produces the encoded-frame-normalized, unit-contained portion of an offscreen Move target
+    /// visible in the captured display. It shares the unclipped helper's exact-surface requirement
+    /// so the two rectangles cannot describe different coordinate spaces.
+    public func frameNormalizedVisibleIntersection(
+        forGlobalRect globalRect: CGRect,
+        in displayBounds: CGRect
+    ) -> CGRect? {
+        guard Self.isFinitePositiveRect(globalRect),
+              Self.isFinitePositiveRect(displayBounds),
+              !requiresCaptureFormatRenegotiation else { return nil }
+        let visible = globalRect.intersection(displayBounds)
+        guard Self.isFinitePositiveRect(visible) else { return nil }
+        return frameNormalizedRect(forGlobalRect: visible, in: displayBounds)
+    }
+
     /// Converts an encoded-frame normalized rectangle back into global logical AX coordinates.
     /// Rectangles touching ScreenCaptureKit letterbox pixels are rejected rather than projected.
     public func globalRect(

@@ -13,9 +13,16 @@ final class WorldwideFocusedWindowMoveDispatchTests: XCTestCase {
             .commitFocusedWindowMove(targetGeneration: generation, start: .init(x: 0.2, y: 0.3), end: .init(x: 0.4, y: 0.5))
         ]
         let old = WebRTCInputCapability(inputSessionID: session, screenRequestID: 3, supportsFocusedWindowResize: true)
+        let moveOnly = WebRTCInputCapability(
+            inputSessionID: session,
+            screenRequestID: 3,
+            supportsFocusedWindowMove: true
+        )
         let current = WorldwideScreenService.remoteInputCapability(inputSessionID: session, screenRequestID: 3)
         XCTAssertFalse(old.supportsFocusedWindowMoveScaleRebinding)
         XCTAssertTrue(current.supportsFocusedWindowMoveScaleRebinding)
+        XCTAssertFalse(old.supportsFocusedWindowMoveRecoverableOffscreen)
+        XCTAssertTrue(current.supportsFocusedWindowMoveRecoverableOffscreen)
         let spy = WindowMoveDispatchSpy()
         for (index, action) in actions.enumerated() {
             XCTAssertFalse(WorldwideScreenService.remoteInputActionIsSupported(action, capability: old))
@@ -34,6 +41,33 @@ final class WorldwideFocusedWindowMoveDispatchTests: XCTestCase {
             .init(id: 4, screenRequestID: 3, inputSessionID: session, action: .requestFocusedWindowResizeTarget,
                   viewerVideoSize: .init(width: 1920, height: 1080)), to: spy
         ))
+
+        let offscreen = WebRTCInputAction.commitFocusedWindowMove(
+            targetGeneration: generation,
+            start: .init(x: 0.2, y: 0.3),
+            end: .init(x: 0.4, y: 0.5),
+            allowsRecoverableOffscreen: true
+        )
+        XCTAssertFalse(WorldwideScreenService.remoteInputActionIsSupported(
+            offscreen,
+            capability: moveOnly
+        ))
+        XCTAssertTrue(WorldwideScreenService.remoteInputActionIsSupported(
+            offscreen,
+            capability: current
+        ))
+        let outcome = try XCTUnwrap(WorldwideFocusedWindowMoveDispatcher.dispatch(
+            .init(
+                id: 5,
+                screenRequestID: 3,
+                inputSessionID: session,
+                action: offscreen,
+                viewerVideoSize: .init(width: 1_920, height: 1_080)
+            ),
+            to: spy
+        ))
+        XCTAssertTrue(outcome.isWindowMove)
+        XCTAssertEqual(spy.action, offscreen)
     }
 }
 
@@ -61,7 +95,7 @@ private final class WindowMoveDispatchSpy: WorldwideFocusedWindowMoveDispatching
         record(.selectWindowForMove(at: .init(x: normalizedPoint.x, y: normalizedPoint.y)), screenRequestID, inputSessionID, viewerVideoSize)
     }
 
-    func commitFocusedWindowMove(screenRequestID: UInt64, inputSessionID: UUID, targetGeneration: UUID, start: MacRemoteNormalizedPoint, end: MacRemoteNormalizedPoint, viewerVideoSize: MacRemoteInputVideoSize?) -> MacRemoteWindowResizeDiagnosedResult {
-        record(.commitFocusedWindowMove(targetGeneration: targetGeneration, start: .init(x: start.x, y: start.y), end: .init(x: end.x, y: end.y)), screenRequestID, inputSessionID, viewerVideoSize)
+    func commitFocusedWindowMove(screenRequestID: UInt64, inputSessionID: UUID, targetGeneration: UUID, start: MacRemoteNormalizedPoint, end: MacRemoteNormalizedPoint, viewerVideoSize: MacRemoteInputVideoSize?, allowsRecoverableOffscreen: Bool) -> MacRemoteWindowResizeDiagnosedResult {
+        record(.commitFocusedWindowMove(targetGeneration: targetGeneration, start: .init(x: start.x, y: start.y), end: .init(x: end.x, y: end.y), allowsRecoverableOffscreen: allowsRecoverableOffscreen), screenRequestID, inputSessionID, viewerVideoSize)
     }
 }

@@ -345,7 +345,8 @@ protocol WorldwideFocusedWindowMoveDispatching: Sendable {
     func commitFocusedWindowMove(
         screenRequestID: UInt64, inputSessionID: UUID, targetGeneration: UUID,
         start: MacRemoteNormalizedPoint, end: MacRemoteNormalizedPoint,
-        viewerVideoSize: MacRemoteInputVideoSize?
+        viewerVideoSize: MacRemoteInputVideoSize?,
+        allowsRecoverableOffscreen: Bool
     ) -> MacRemoteWindowResizeDiagnosedResult
 }
 
@@ -369,11 +370,17 @@ enum WorldwideFocusedWindowMoveDispatcher {
                 screenRequestID: request.screenRequestID, inputSessionID: request.inputSessionID,
                 normalizedPoint: .init(x: point.x, y: point.y), viewerVideoSize: size
             )
-        case .commitFocusedWindowMove(let generation, let start, let end):
+        case .commitFocusedWindowMove(
+            let generation,
+            let start,
+            let end,
+            let allowsRecoverableOffscreen
+        ):
             result = controller.commitFocusedWindowMove(
                 screenRequestID: request.screenRequestID, inputSessionID: request.inputSessionID,
                 targetGeneration: generation, start: .init(x: start.x, y: start.y),
-                end: .init(x: end.x, y: end.y), viewerVideoSize: size
+                end: .init(x: end.x, y: end.y), viewerVideoSize: size,
+                allowsRecoverableOffscreen: allowsRecoverableOffscreen
             )
         default:
             return nil
@@ -4630,8 +4637,12 @@ actor WorldwideScreenService {
              .selectWindowForResize,
              .commitFocusedWindowResize:
             capability.supportsFocusedWindowResize
-        case .requestFocusedWindowMoveTarget, .selectWindowForMove, .commitFocusedWindowMove:
+        case .requestFocusedWindowMoveTarget, .selectWindowForMove:
             capability.supportsFocusedWindowMove
+        case .commitFocusedWindowMove(_, _, _, let allowsRecoverableOffscreen):
+            capability.supportsFocusedWindowMove
+                && (!allowsRecoverableOffscreen
+                    || capability.supportsFocusedWindowMoveRecoverableOffscreen)
         case .tap, .insertText, .backspace, .returnKey:
             true
         }
@@ -4649,7 +4660,8 @@ actor WorldwideScreenService {
             supportsScroll: true,
             supportsFocusedWindowResize: true,
             supportsFocusedWindowMove: true,
-            supportsFocusedWindowMoveScaleRebinding: true
+            supportsFocusedWindowMoveScaleRebinding: true,
+            supportsFocusedWindowMoveRecoverableOffscreen: true
         )
     }
 
@@ -4794,11 +4806,20 @@ actor WorldwideScreenService {
         }
         guard let kind else { return nil }
         let frame = feedback.target.normalizedFrame
+        let unclipped = feedback.target.unclippedNormalizedFrame
         return WebRTCWindowMoveFeedback(
             kind: kind, committedTargetGeneration: feedback.committedTargetGeneration,
             target: .init(
                 generation: feedback.target.generation,
-                normalizedFrame: .init(x: frame.minX, y: frame.minY, width: frame.width, height: frame.height)
+                normalizedFrame: .init(
+                    x: frame.minX,
+                    y: frame.minY,
+                    width: frame.width,
+                    height: frame.height
+                ),
+                unclippedNormalizedFrame: unclipped.map {
+                    .init(x: $0.minX, y: $0.minY, width: $0.width, height: $0.height)
+                }
             )
         )
     }

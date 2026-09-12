@@ -47,6 +47,66 @@ final class FocusedWindowMoveGeometryTests: XCTestCase {
         XCTAssertEqual(normalized.height, native.height / 500, accuracy: 0.000_001)
     }
 
+    func testNegotiatedMoveMayLeaveDisplayWhileRetainingTopBandAndHorizontalGrip() throws {
+        let bounds = CGRect(x: -1_920, y: -1_080, width: 1_920, height: 1_080)
+        let original = CGRect(x: -600, y: -400, width: 640, height: 400)
+        let moved = try XCTUnwrap(FocusedWindowMoveGeometry.proposedFrame(
+            original: original,
+            start: CGPoint(x: -1_920, y: -1_080),
+            end: CGPoint(x: 0, y: 0),
+            displayBounds: bounds,
+            allowsRecoverableOffscreen: true
+        ))
+
+        XCTAssertEqual(moved.size, original.size)
+        XCTAssertEqual(
+            moved.minX,
+            bounds.maxX - bounds.width * FocusedWindowMoveGeometry.minimumVisibleHorizontalGripFraction,
+            accuracy: 0.000_001
+        )
+        XCTAssertEqual(
+            moved.minY,
+            bounds.maxY - bounds.height * FocusedWindowMoveGeometry.minimumVisibleTopBandFraction,
+            accuracy: 0.000_001
+        )
+        XCTAssertTrue(FocusedWindowMoveGeometry.isRecoverable(moved, in: bounds))
+        XCTAssertFalse(bounds.contains(moved))
+    }
+
+    func testRecoverablePartialTargetCanMoveBackAndLegacyPathRejectsIt() throws {
+        let bounds = CGRect(x: 0, y: 0, width: 1_000, height: 600)
+        let partial = CGRect(x: -450, y: 100, width: 500, height: 300)
+        XCTAssertTrue(FocusedWindowMoveGeometry.isRecoverable(partial, in: bounds))
+        XCTAssertNil(FocusedWindowMoveGeometry.proposedFrame(
+            original: partial,
+            start: CGPoint(x: 100, y: 100),
+            end: CGPoint(x: 300, y: 100),
+            displayBounds: bounds
+        ))
+        XCTAssertEqual(
+            FocusedWindowMoveGeometry.proposedFrame(
+                original: partial,
+                start: CGPoint(x: 100, y: 100),
+                end: CGPoint(x: 300, y: 100),
+                displayBounds: bounds,
+                allowsRecoverableOffscreen: true
+            ),
+            CGRect(x: -250, y: 100, width: 500, height: 300)
+        )
+    }
+
+    func testOffscreenMoveRejectsLostTitleBandLostGripAndUnboundedWindow() {
+        let bounds = CGRect(x: 0, y: 0, width: 1_000, height: 600)
+        for frame in [
+            CGRect(x: -476, y: 100, width: 500, height: 300),
+            CGRect(x: 100, y: -1, width: 500, height: 300),
+            CGRect(x: 100, y: 583, width: 500, height: 300),
+            CGRect(x: 0, y: 0, width: 65_000, height: 300)
+        ] {
+            XCTAssertFalse(FocusedWindowMoveGeometry.isRecoverable(frame, in: bounds))
+        }
+    }
+
     func testMalformedGeometryAndOutsideImageOriginsAreRejected() {
         let bounds = CGRect(x: 0, y: 0, width: 800, height: 600)
         let original = CGRect(x: 100, y: 100, width: 300, height: 200)

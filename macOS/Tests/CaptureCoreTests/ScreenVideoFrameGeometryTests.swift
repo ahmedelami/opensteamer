@@ -394,6 +394,45 @@ final class ScreenVideoFrameGeometryTests: XCTestCase {
                 in: display
             )
         )
+
+        let offscreen = CGRect(x: 300, y: 0, width: 500, height: 400)
+        XCTAssertNil(
+            geometry.frameUnclippedNormalizedRect(forGlobalRect: offscreen, in: display)
+        )
+        XCTAssertNil(
+            geometry.frameNormalizedVisibleIntersection(forGlobalRect: offscreen, in: display)
+        )
+    }
+
+    func testOffscreenMoveFramesUseEncodedSurfaceAndAllowHalfPixelRounding() throws {
+        let geometry = try XCTUnwrap(
+            ScreenVideoFrameGeometry(
+                surfaceWidth: 100,
+                surfaceHeight: 100,
+                contentRect: CGRect(x: 0.5, y: 0.5, width: 99, height: 99),
+                contentScale: 1,
+                scaleFactor: 1
+            )
+        )
+        XCTAssertFalse(geometry.requiresCaptureFormatRenegotiation)
+        let display = CGRect(x: 0, y: 0, width: 100, height: 100)
+        let offscreen = CGRect(x: -10, y: 20, width: 30, height: 40)
+
+        let full = try XCTUnwrap(
+            geometry.frameUnclippedNormalizedRect(forGlobalRect: offscreen, in: display)
+        )
+        let visible = try XCTUnwrap(
+            geometry.frameNormalizedVisibleIntersection(forGlobalRect: offscreen, in: display)
+        )
+
+        XCTAssertEqual(full.minX, -0.094, accuracy: 0.000_001)
+        XCTAssertEqual(full.minY, 0.203, accuracy: 0.000_001)
+        XCTAssertEqual(full.width, 0.297, accuracy: 0.000_001)
+        XCTAssertEqual(full.height, 0.396, accuracy: 0.000_001)
+        XCTAssertEqual(visible.minX, 0.005, accuracy: 0.000_001)
+        XCTAssertEqual(visible.minY, 0.203, accuracy: 0.000_001)
+        XCTAssertEqual(visible.width, 0.198, accuracy: 0.000_001)
+        XCTAssertEqual(visible.height, 0.396, accuracy: 0.000_001)
     }
 
     func testMalformedOrOutOfSurfaceGeometryFailsClosed() {

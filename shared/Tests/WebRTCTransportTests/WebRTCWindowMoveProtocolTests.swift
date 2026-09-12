@@ -15,18 +15,17 @@ final class WebRTCWindowMoveProtocolTests: XCTestCase {
             inputSessionID: session,
             screenRequestID: 1,
             supportsFocusedWindowMove: true,
-            supportsFocusedWindowMoveScaleRebinding: true
+            supportsFocusedWindowMoveScaleRebinding: true,
+            supportsFocusedWindowMoveRecoverableOffscreen: true
         )
         let data = try JSONEncoder().encode(current)
         XCTAssertEqual(try JSONDecoder().decode(WebRTCInputCapability.self, from: data), current)
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
-        for keyPath in [
-            \WebRTCInputCapability.supportsFocusedWindowMove,
-            \WebRTCInputCapability.supportsFocusedWindowMoveScaleRebinding
+        for (keyPath, key) in [
+            (\WebRTCInputCapability.supportsFocusedWindowMove, "supportsFocusedWindowMove"),
+            (\WebRTCInputCapability.supportsFocusedWindowMoveScaleRebinding, "supportsFocusedWindowMoveScaleRebinding"),
+            (\WebRTCInputCapability.supportsFocusedWindowMoveRecoverableOffscreen, "supportsFocusedWindowMoveRecoverableOffscreen")
         ] {
-            let key = keyPath == \WebRTCInputCapability.supportsFocusedWindowMove
-                ? "supportsFocusedWindowMove"
-                : "supportsFocusedWindowMoveScaleRebinding"
             var legacyObject = object
             legacyObject.removeValue(forKey: key)
             let legacy = try JSONDecoder().decode(
@@ -66,6 +65,121 @@ final class WebRTCWindowMoveProtocolTests: XCTestCase {
         }
     }
 
+    func testMoveOffscreenOptInIsAdditiveStrictAndAbsentForLegacyCommit() throws {
+        let legacy = WebRTCInputAction.commitFocusedWindowMove(
+            targetGeneration: generation,
+            start: .init(x: 0.1, y: 0.8),
+            end: .init(x: 0.7, y: 0.2)
+        )
+        let current = WebRTCInputAction.commitFocusedWindowMove(
+            targetGeneration: generation,
+            start: .init(x: 0.1, y: 0.8),
+            end: .init(x: 0.7, y: 0.2),
+            allowsRecoverableOffscreen: true
+        )
+        let legacyObject = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(legacy)) as? [String: Any]
+        )
+        XCTAssertNil(legacyObject["allowsRecoverableOffscreen"])
+        let currentData = try JSONEncoder().encode(current)
+        let currentObject = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: currentData) as? [String: Any]
+        )
+        XCTAssertEqual(currentObject["allowsRecoverableOffscreen"] as? Bool, true)
+        XCTAssertEqual(try JSONDecoder().decode(WebRTCInputAction.self, from: currentData), current)
+
+        var invalid = currentObject
+        invalid["allowsRecoverableOffscreen"] = "true"
+        XCTAssertThrowsError(try JSONDecoder().decode(
+            WebRTCInputAction.self,
+            from: JSONSerialization.data(withJSONObject: invalid)
+        ))
+        invalid = currentObject
+        invalid["kind"] = "focusedWindowResizeCommit"
+        XCTAssertThrowsError(try JSONDecoder().decode(
+            WebRTCInputAction.self,
+            from: JSONSerialization.data(withJSONObject: invalid)
+        ))
+    }
+
+    func testMoveOffscreenOptInIsRejectedByEveryOtherActionShape() throws {
+        let otherActions: [WebRTCInputAction] = [
+            .tap(.init(x: 0.1, y: 0.2)),
+            .primaryDrag(start: .init(x: 0.1, y: 0.2), end: .init(x: 0.3, y: 0.4)),
+            .scroll(anchor: .init(x: 0.1, y: 0.2), deltaX: 1, deltaY: -1),
+            .requestFocusedWindowResizeTarget,
+            .selectWindowForResize(at: .init(x: 0.1, y: 0.2)),
+            .commitFocusedWindowResize(
+                targetGeneration: generation,
+                start: .init(x: 0.1, y: 0.2),
+                end: .init(x: 0.3, y: 0.4)
+            ),
+            .requestFocusedWindowMoveTarget,
+            .selectWindowForMove(at: .init(x: 0.1, y: 0.2)),
+            .insertText("x", focusGeneration: 1),
+            .backspace(focusGeneration: 1),
+            .returnKey(focusGeneration: 1),
+        ]
+
+        for action in otherActions {
+            var object = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: JSONEncoder().encode(action))
+                    as? [String: Any]
+            )
+            object["allowsRecoverableOffscreen"] = true
+            XCTAssertThrowsError(
+                try JSONDecoder().decode(
+                    WebRTCInputAction.self,
+                    from: JSONSerialization.data(withJSONObject: object)
+                ),
+                "Unexpected offscreen opt-in must reject \(action)"
+            )
+        }
+    }
+
+    func testMoveTargetKeepsLegacyVisibleIntersectionAndValidatesOptionalFullFrame() throws {
+        let visible = WebRTCNormalizedRect(x: 0, y: 0.2, width: 0.2, height: 0.5)
+        let legacyJSON = """
+        {"generation":"\(generation.uuidString)","normalizedFrame":{"x":0,"y":0.2,"width":0.2,"height":0.5}}
+        """
+        let legacy = try JSONDecoder().decode(
+            WebRTCWindowMoveTarget.self,
+            from: Data(legacyJSON.utf8)
+        )
+        XCTAssertEqual(legacy.normalizedFrame, visible)
+        XCTAssertNil(legacy.unclippedNormalizedFrame)
+
+        let full = WebRTCWindowMoveUnclippedNormalizedRect(
+            x: -0.3,
+            y: 0.2,
+            width: 0.5,
+            height: 0.5
+        )
+        let current = WebRTCWindowMoveTarget(
+            generation: generation,
+            normalizedFrame: visible,
+            unclippedNormalizedFrame: full
+        )
+        XCTAssertEqual(
+            try JSONDecoder().decode(
+                WebRTCWindowMoveTarget.self,
+                from: JSONEncoder().encode(current)
+            ),
+            current
+        )
+
+        XCTAssertThrowsError(try JSONEncoder().encode(WebRTCWindowMoveTarget(
+            generation: UUID(),
+            normalizedFrame: .init(x: 0.8, y: 0.2, width: 0.2, height: 0.5),
+            unclippedNormalizedFrame: full
+        )))
+        XCTAssertThrowsError(try JSONEncoder().encode(WebRTCWindowMoveTarget(
+            generation: UUID(),
+            normalizedFrame: visible,
+            unclippedNormalizedFrame: .init(x: -Double.infinity, y: 0, width: 1, height: 1)
+        )))
+    }
+
     func testFeedbackBindsExactMoveStageAndConsumedGeneration() throws {
         let target = WebRTCWindowMoveTarget(generation: UUID(), normalizedFrame: .init(x: 0.1, y: 0.2, width: 0.5, height: 0.5))
         let kinds: [WebRTCWindowMoveFeedbackKind] = [.targetAcquired, .windowSelected, .moveCommitted]
@@ -91,7 +205,11 @@ final class WebRTCWindowMoveProtocolTests: XCTestCase {
         let move = WebRTCWindowMoveFeedback(kind: .targetAcquired, target: target)
         XCTAssertThrowsError(try JSONEncoder().encode(WebRTCInputFeedback(
             id: 1, screenRequestID: 1, inputSessionID: session, result: .accepted,
-            windowResize: .init(kind: .targetAcquired, target: target), windowMove: move
+            windowResize: .init(
+                kind: .targetAcquired,
+                target: .init(generation: generation, normalizedFrame: target.normalizedFrame)
+            ),
+            windowMove: move
         )))
         XCTAssertThrowsError(try JSONEncoder().encode(WebRTCInputFeedback(
             id: 1, screenRequestID: 1, inputSessionID: session, result: .rejected,
@@ -130,6 +248,39 @@ final class WebRTCWindowMoveProtocolTests: XCTestCase {
         await host.close(reason: .hostStopped)
     }
 
+    func testRecoverableOffscreenCommitNeedsExactAdvertisedCapability() async throws {
+        let moveOnly = WebRTCInputCapability(
+            inputSessionID: session,
+            screenRequestID: 1,
+            supportsFocusedWindowMove: true
+        )
+        let viewer = try WebRTCPeer(configuration: .init(role: .viewer, iceServers: []))
+        let authorization = WebRTCInputAuthorization()
+        try await viewer.installViewerInputSessionForTesting(
+            capability: moveOnly,
+            authorization: authorization
+        )
+        let action = WebRTCInputAction.commitFocusedWindowMove(
+            targetGeneration: generation,
+            start: .init(x: 0.2, y: 0.2),
+            end: .init(x: 0.8, y: 0.8),
+            allowsRecoverableOffscreen: true
+        )
+        do {
+            _ = try await viewer.requestInput(
+                action,
+                viewerVideoSize: .init(width: 1_920, height: 1_080),
+                capability: moveOnly,
+                authorization: authorization
+            )
+            XCTFail("Offscreen opt-in must require its own advertised capability")
+        } catch WebRTCTransportError.invalidInputRequest {
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+        await viewer.close(reason: .viewerDisconnected)
+    }
+
     func testMoveCommitReplayRetainsFeedbackAndNeverRepeatsApplicationWork() async throws {
         let host = try WebRTCPeer(configuration: .init(role: .host, iceServers: []))
         let capability = WebRTCInputCapability(inputSessionID: session, screenRequestID: 1, supportsFocusedWindowMove: true)
@@ -157,5 +308,102 @@ final class WebRTCWindowMoveProtocolTests: XCTestCase {
         }, [expected, expected])
         XCTAssertTrue(authorization.isValid)
         await host.close(reason: .hostStopped)
+    }
+
+    func testMoveCommitDuplicateIdentityIncludesRecoverableOffscreenOptIn() async throws {
+        for initialOptIn in [false, true] {
+            let host = try WebRTCPeer(configuration: .init(role: .host, iceServers: []))
+            let capability = WebRTCInputCapability(
+                inputSessionID: session,
+                screenRequestID: initialOptIn ? 2 : 1,
+                supportsFocusedWindowMove: true,
+                supportsFocusedWindowMoveRecoverableOffscreen: true
+            )
+            let authorization = WebRTCInputAuthorization()
+            try await host.installHostInputSessionForTesting(
+                capability: capability,
+                authorization: authorization
+            )
+            await host.beginRemoteInputControlDataCaptureForTesting()
+
+            func request(
+                start: WebRTCNormalizedPoint,
+                end: WebRTCNormalizedPoint,
+                viewerVideoSize: WebRTCInputVideoSize,
+                allowsRecoverableOffscreen: Bool
+            ) -> WebRTCInputRequest {
+                WebRTCInputRequest(
+                    id: 7,
+                    screenRequestID: capability.screenRequestID,
+                    inputSessionID: capability.inputSessionID,
+                    action: .commitFocusedWindowMove(
+                        targetGeneration: generation,
+                        start: start,
+                        end: end,
+                        allowsRecoverableOffscreen: allowsRecoverableOffscreen
+                    ),
+                    viewerVideoSize: viewerVideoSize
+                )
+            }
+
+            let first = request(
+                start: .init(x: 0.1, y: 0.8),
+                end: .init(x: 0.7, y: 0.2),
+                viewerVideoSize: .init(width: 1_920, height: 1_080),
+                allowsRecoverableOffscreen: initialOptIn
+            )
+            let firstWasAccepted = await host.receiveInputRequestForTesting(first)
+            XCTAssertTrue(firstWasAccepted)
+
+            let move = WebRTCWindowMoveFeedback(
+                kind: .moveCommitted,
+                committedTargetGeneration: generation,
+                target: .init(
+                    generation: UUID(),
+                    normalizedFrame: .init(x: 0.1, y: 0.2, width: 0.5, height: 0.5)
+                )
+            )
+            try await host.sendInputFeedback(for: first.id, result: .accepted, windowMove: move)
+
+            let equivalentDuplicate = request(
+                start: .init(x: 0.9, y: 0.7),
+                end: .init(x: 0.2, y: 0.3),
+                viewerVideoSize: .init(width: 750, height: 1_334),
+                allowsRecoverableOffscreen: initialOptIn
+            )
+            let duplicateWasAccepted = await host.receiveInputRequestForTesting(
+                equivalentDuplicate
+            )
+            XCTAssertTrue(duplicateWasAccepted)
+
+            var snapshot = await host.remoteInputReceiveDebugSnapshotForTesting()
+            XCTAssertEqual(snapshot.receivedRequestHistoryCount, 1)
+            XCTAssertEqual(snapshot.admittedRequestEventCount, 1)
+            XCTAssertEqual(snapshot.sentFeedbackHistoryCount, 1)
+            XCTAssertEqual(snapshot.capturedControlData.count, 2)
+            XCTAssertTrue(authorization.isValid)
+
+            let conflictingDuplicate = request(
+                start: .init(x: 0.4, y: 0.6),
+                end: .init(x: 0.6, y: 0.4),
+                viewerVideoSize: .init(width: 1_536, height: 864),
+                allowsRecoverableOffscreen: !initialOptIn
+            )
+            let conflictWasAccepted = await host.receiveInputRequestForTesting(
+                conflictingDuplicate
+            )
+            XCTAssertFalse(conflictWasAccepted)
+
+            snapshot = await host.remoteInputReceiveDebugSnapshotForTesting()
+            XCTAssertEqual(snapshot.receivedRequestHistoryCount, 0)
+            XCTAssertEqual(snapshot.admittedRequestEventCount, 1)
+            XCTAssertEqual(snapshot.sentFeedbackHistoryCount, 0)
+            XCTAssertEqual(snapshot.capturedControlData.count, 2)
+            XCTAssertFalse(authorization.isValid)
+            let capabilityAfterConflict = await host.currentInputCapability()
+            XCTAssertNil(capabilityAfterConflict)
+
+            await host.close(reason: .hostStopped)
+        }
     }
 }

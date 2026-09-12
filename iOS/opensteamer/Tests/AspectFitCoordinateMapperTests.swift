@@ -1,6 +1,8 @@
 import CoreGraphics
 import Streaming
+import SwiftUI
 import UIKit
+import WebRTCTransport
 import XCTest
 @testable import opensteamer
 
@@ -128,6 +130,118 @@ final class AspectFitCoordinateMapperTests: XCTestCase {
 
         XCTAssertEqual(clamped.x, 1, accuracy: 0.000_001)
         XCTAssertEqual(clamped.y, 0, accuracy: 0.000_001)
+    }
+
+    func testNegotiatedMoveMapsFullRectBeyondVideoWithoutChangingVisibleIntersection() throws {
+        let container = CGSize(width: 390, height: 700)
+        let video = CGSize(width: 1_920, height: 1_080)
+        let visibleVideo = try XCTUnwrap(AspectFitCoordinateMapper.visibleVideoRect(
+            containerSize: container,
+            videoSize: video
+        ))
+        let full = try XCTUnwrap(AspectFitCoordinateMapper.unclippedViewRect(
+            forNormalizedRect: CGRect(x: -0.3, y: 0.2, width: 0.5, height: 0.4),
+            containerSize: container,
+            videoSize: video
+        ))
+        let visibleIntersection = try XCTUnwrap(AspectFitCoordinateMapper.viewRect(
+            forNormalizedRect: CGRect(x: 0, y: 0.2, width: 0.2, height: 0.4),
+            containerSize: container,
+            videoSize: video
+        ))
+
+        XCTAssertLessThan(full.minX, visibleVideo.minX)
+        XCTAssertEqual(full.intersection(visibleVideo), visibleIntersection)
+        XCTAssertNil(AspectFitCoordinateMapper.unclippedViewRect(
+            forNormalizedRect: CGRect(x: -129, y: 0, width: 1, height: 1),
+            containerSize: container,
+            videoSize: video
+        ))
+    }
+
+    @MainActor
+    func testViewerMovePreviewUsesFullFrameOnlyForNegotiatedMove() throws {
+        let target = FocusedWindowInteractionTarget(move: .init(
+            generation: UUID(),
+            normalizedFrame: .init(x: 0, y: 0.2, width: 0.2, height: 0.4),
+            unclippedNormalizedFrame: .init(
+                x: -0.3,
+                y: 0.2,
+                width: 0.5,
+                height: 0.4
+            )
+        ))
+        let start = CGPoint(x: 0.4, y: 0.4)
+        let end = CGPoint(x: 0.5, y: 0.4)
+
+        let negotiated = try XCTUnwrap(
+            WorldwideScreenViewerView.focusedWindowMovePreviewFrame(
+                target: target,
+                start: start,
+                end: end,
+                allowsRecoverableOffscreen: true
+            )
+        )
+        XCTAssertEqual(negotiated.minX, -0.2, accuracy: 0.000_001)
+        XCTAssertEqual(negotiated.width, 0.5, accuracy: 0.000_001)
+
+        let legacy = try XCTUnwrap(
+            WorldwideScreenViewerView.focusedWindowMovePreviewFrame(
+                target: target,
+                start: start,
+                end: end,
+                allowsRecoverableOffscreen: false
+            )
+        )
+        XCTAssertEqual(legacy.minX, 0.1, accuracy: 0.000_001)
+        XCTAssertEqual(legacy.width, 0.2, accuracy: 0.000_001)
+
+        let missingFullFrame = FocusedWindowInteractionTarget(move: .init(
+            generation: UUID(),
+            normalizedFrame: .init(x: 0, y: 0.2, width: 0.2, height: 0.4)
+        ))
+        XCTAssertNil(WorldwideScreenViewerView.focusedWindowMovePreviewFrame(
+            target: missingFullFrame,
+            start: start,
+            end: end,
+            allowsRecoverableOffscreen: true
+        ))
+    }
+
+    @MainActor
+    func testFocusedWindowOverlayClipsOffscreenGeometryToVisibleVideo() throws {
+        let renderer = ImageRenderer(content:
+            FocusedWindowResizeOverlay(
+                targetRect: nil,
+                ghostRect: CGRect(x: 0, y: 50, width: 100, height: 100),
+                showsResizeQuadrants: false,
+                clipRect: CGRect(x: 50, y: 0, width: 150, height: 200)
+            )
+            .frame(width: 200, height: 200)
+        )
+        renderer.scale = 1
+        renderer.isOpaque = false
+        let image = try XCTUnwrap(renderer.uiImage?.cgImage)
+        let width = image.width
+        let height = image.height
+        let context = try XCTUnwrap(CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGBitmapInfo.byteOrder32Big.rawValue
+                | CGImageAlphaInfo.premultipliedLast.rawValue
+        ))
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        let pixels = try XCTUnwrap(context.data).assumingMemoryBound(to: UInt8.self)
+        func alpha(x: Int, y: Int) -> UInt8 {
+            pixels[((y * width) + x) * 4 + 3]
+        }
+
+        XCTAssertEqual(alpha(x: 25, y: 100), 0)
+        XCTAssertGreaterThan(alpha(x: 75, y: 100), 0)
     }
 
     func testPrimaryDragRequiresMovementAndAnOriginInsideVideo() throws {

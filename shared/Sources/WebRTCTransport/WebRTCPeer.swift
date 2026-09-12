@@ -184,8 +184,9 @@ struct WebRTCIOSPeerRetirementDebugSnapshot: Equatable, Sendable {
 
 /// The non-sensitive action identity needed to reject cross-action duplicate IDs and to bind
 /// resize feedback to the exact stage that produced it. Pointer coordinates, text, and keyboard
-/// focus generations are deliberately not retained. A commit generation is opaque authority, not
-/// user content, and must be retained so feedback cannot acknowledge a different target.
+/// focus generations are deliberately not retained. A commit generation and security-relevant
+/// opt-in are opaque authority, not user content, and must be retained so feedback cannot
+/// acknowledge a different target or authorization mode.
 enum WebRTCInputRequestActionBinding: Equatable, Sendable {
     case tap
     case primaryDrag
@@ -195,7 +196,10 @@ enum WebRTCInputRequestActionBinding: Equatable, Sendable {
     case focusedWindowResizeCommit(targetGeneration: UUID)
     case focusedWindowMoveTargetRequest
     case focusedWindowMoveSelection
-    case focusedWindowMoveCommit(targetGeneration: UUID)
+    case focusedWindowMoveCommit(
+        targetGeneration: UUID,
+        allowsRecoverableOffscreen: Bool
+    )
     case text
     case backspace
     case returnKey
@@ -218,8 +222,16 @@ enum WebRTCInputRequestActionBinding: Equatable, Sendable {
             self = .focusedWindowMoveTargetRequest
         case .selectWindowForMove:
             self = .focusedWindowMoveSelection
-        case .commitFocusedWindowMove(let targetGeneration, _, _):
-            self = .focusedWindowMoveCommit(targetGeneration: targetGeneration)
+        case .commitFocusedWindowMove(
+            let targetGeneration,
+            _,
+            _,
+            let allowsRecoverableOffscreen
+        ):
+            self = .focusedWindowMoveCommit(
+                targetGeneration: targetGeneration,
+                allowsRecoverableOffscreen: allowsRecoverableOffscreen
+            )
         case .insertText:
             self = .text
         case .backspace:
@@ -242,7 +254,7 @@ enum WebRTCInputRequestActionBinding: Equatable, Sendable {
                     return move.kind == .targetAcquired && move.committedTargetGeneration == nil
                 case .focusedWindowMoveSelection:
                     return move.kind == .windowSelected && move.committedTargetGeneration == nil
-                case .focusedWindowMoveCommit(let generation):
+                case .focusedWindowMoveCommit(let generation, _):
                     return move.kind == .moveCommitted && move.committedTargetGeneration == generation
                 default:
                     return false
@@ -10624,9 +10636,12 @@ public actor WebRTCPeer {
              .commitFocusedWindowResize:
             capability.supportsFocusedWindowResize
         case .requestFocusedWindowMoveTarget,
-             .selectWindowForMove,
-             .commitFocusedWindowMove:
+             .selectWindowForMove:
             capability.supportsFocusedWindowMove
+        case .commitFocusedWindowMove(_, _, _, let allowsRecoverableOffscreen):
+            capability.supportsFocusedWindowMove
+                && (!allowsRecoverableOffscreen
+                    || capability.supportsFocusedWindowMoveRecoverableOffscreen)
         case .tap, .insertText, .backspace, .returnKey:
             true
         }

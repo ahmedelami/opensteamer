@@ -3330,8 +3330,318 @@ final class MacRemoteInputControllerTests: XCTestCase {
         XCTAssertNil(result.windowResizeFeedback)
     }
 
+    func testNegotiatedMoveExtendsOffscreenButLegacyMoveKeepsDisplayClamp() throws {
+        for allowsOffscreen in [false, true] {
+            let system = MockMacRemoteInputSystem()
+            let window = system.makeResizableWindow(
+                frame: CGRect(x: 240, y: 240, width: 640, height: 400)
+            )
+            system.currentFocusedWindow = window
+            let controller = armedController(system: system)
+            let size = MacRemoteInputVideoSize(width: 1_920, height: 1_080)
+            let generation = try XCTUnwrap(controller.requestFocusedWindowMoveTarget(
+                screenRequestID: showID,
+                inputSessionID: sessionID,
+                viewerVideoSize: size
+            ).windowResizeFeedback?.target.generation)
+
+            let result = controller.commitFocusedWindowMove(
+                screenRequestID: showID,
+                inputSessionID: sessionID,
+                targetGeneration: generation,
+                start: .init(x: 0, y: 0.5),
+                end: .init(x: 1, y: 0.5),
+                viewerVideoSize: size,
+                allowsRecoverableOffscreen: allowsOffscreen
+            )
+
+            XCTAssertEqual(result.result, .accepted(.none))
+            let frame = try XCTUnwrap(system.windowFrame(window))
+            XCTAssertEqual(frame.size, CGSize(width: 640, height: 400))
+            XCTAssertEqual(frame.minY, 240, accuracy: 0.000_001)
+            XCTAssertEqual(frame.minX, allowsOffscreen ? 1_824 : 1_280, accuracy: 0.000_001)
+            XCTAssertTrue(system.windowSizeWrites.isEmpty)
+            if allowsOffscreen {
+                let visible = try XCTUnwrap(result.windowResizeFeedback?.target.normalizedFrame)
+                XCTAssertEqual(visible.minX, 0.95, accuracy: 0.000_001)
+                XCTAssertEqual(visible.minY, 240.0 / 1_080.0, accuracy: 0.000_001)
+                XCTAssertEqual(visible.width, 0.05, accuracy: 0.000_001)
+                XCTAssertEqual(visible.height, 400.0 / 1_080.0, accuracy: 0.000_001)
+                let full = try XCTUnwrap(
+                    result.windowResizeFeedback?.target.unclippedNormalizedFrame
+                )
+                XCTAssertEqual(full.minX, 0.95, accuracy: 0.000_001)
+                XCTAssertEqual(full.minY, 240.0 / 1_080.0, accuracy: 0.000_001)
+                XCTAssertEqual(full.width, 1.0 / 3.0, accuracy: 0.000_001)
+                XCTAssertEqual(full.height, 400.0 / 1_080.0, accuracy: 0.000_001)
+            } else {
+                XCTAssertEqual(frame.maxX, 1_920, accuracy: 0.000_001)
+            }
+        }
+    }
+
+    func testRecoverablePartialMoveTargetCanBePulledBackWhileResizeRejectsIt() throws {
+        let system = MockMacRemoteInputSystem()
+        let partial = CGRect(x: -500, y: 240, width: 640, height: 400)
+        let window = system.makeResizableWindow(frame: partial)
+        system.currentFocusedWindow = window
+        let controller = armedController(system: system)
+        let size = MacRemoteInputVideoSize(width: 1_920, height: 1_080)
+
+        XCTAssertEqual(controller.requestFocusedWindowResizeTarget(
+            screenRequestID: showID,
+            inputSessionID: sessionID,
+            viewerVideoSize: size
+        ).result, .rejected(.windowUnavailable))
+        let target = try XCTUnwrap(controller.requestFocusedWindowMoveTarget(
+            screenRequestID: showID,
+            inputSessionID: sessionID,
+            viewerVideoSize: size
+        ).windowResizeFeedback?.target)
+        XCTAssertEqual(target.normalizedFrame.minX, 0, accuracy: 0.000_001)
+        XCTAssertEqual(
+            try XCTUnwrap(target.unclippedNormalizedFrame).minX,
+            -500.0 / 1_920.0,
+            accuracy: 0.000_001
+        )
+
+        let result = controller.commitFocusedWindowMove(
+            screenRequestID: showID,
+            inputSessionID: sessionID,
+            targetGeneration: target.generation,
+            start: .init(x: 0.1, y: 0.5),
+            end: .init(x: 0.3, y: 0.5),
+            viewerVideoSize: size,
+            allowsRecoverableOffscreen: true
+        )
+        XCTAssertEqual(result.result, .accepted(.none))
+        XCTAssertEqual(system.windowFrame(window), CGRect(x: -116, y: 240, width: 640, height: 400))
+        XCTAssertTrue(system.windowSizeWrites.isEmpty)
+    }
+
+    func testMoveAcceptsOnlyMonotonicConstrainedReadbackWithoutAxisDrift() throws {
+        do {
+            let system = MockMacRemoteInputSystem()
+            let (result, window, _, _) = try performTestMove(
+                system: system,
+                allowsRecoverableOffscreen: true
+            ) { window in
+                system.afterWindowPositionWrite = {
+                    system.afterWindowPositionWrite = nil
+                    system.setFrame(CGRect(x: 350, y: 180, width: 640, height: 400), of: window)
+                }
+            }
+            XCTAssertEqual(result.result, .accepted(.none))
+            XCTAssertEqual(system.windowFrame(window), CGRect(x: 350, y: 180, width: 640, height: 400))
+        }
+
+        do {
+            let system = MockMacRemoteInputSystem()
+            let (result, _, _, _) = try performTestMove(
+                system: system,
+                allowsRecoverableOffscreen: true,
+                start: .init(x: 0.05, y: 0.5),
+                end: .init(x: 0.15, y: 0.5)
+            ) { window in
+                system.afterWindowPositionWrite = {
+                    system.afterWindowPositionWrite = nil
+                    system.setFrame(
+                        CGRect(x: 350, y: 250, width: 640, height: 400),
+                        of: window
+                    )
+                }
+            }
+            guard case .rejected = result.result else {
+                return XCTFail("Accepted drift on an untouched move axis")
+            }
+            XCTAssertNil(result.windowResizeFeedback)
+        }
+
+        for actual in [
+            CGRect(x: 240, y: 240, width: 640, height: 400),
+            CGRect(x: 100, y: 180, width: 640, height: 400),
+            CGRect(x: 350, y: 250, width: 640, height: 400),
+            CGRect(x: 500, y: 180, width: 640, height: 400),
+            CGRect(x: 350, y: -10, width: 640, height: 400),
+            CGRect(x: 1_900, y: 180, width: 640, height: 400)
+        ] {
+            let system = MockMacRemoteInputSystem()
+            let (result, _, _, _) = try performTestMove(
+                system: system,
+                allowsRecoverableOffscreen: true
+            ) { window in
+                system.afterWindowPositionWrite = {
+                    system.afterWindowPositionWrite = nil
+                    system.setFrame(actual, of: window)
+                }
+            }
+            guard case .rejected = result.result else {
+                return XCTFail("Accepted invalid constrained readback \(actual)")
+            }
+            XCTAssertNil(result.windowResizeFeedback)
+            XCTAssertTrue(system.windowSizeWrites.isEmpty)
+        }
+    }
+
+    func testNegotiatedMovePublishesConstrainedPartialAXReadbackWithFreshAuthority() throws {
+        let consumed = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+        let successor = UUID(uuidString: "66666666-7777-8888-9999-AAAAAAAAAAAA")!
+        let generations = MockUUIDSequence([consumed, consumed, successor])
+        let system = MockMacRemoteInputSystem()
+        let window = system.makeResizableWindow(
+            frame: CGRect(x: 240, y: 240, width: 640, height: 400)
+        )
+        system.currentFocusedWindow = window
+        let clock = MockMacRemoteInputClock()
+        let controller = MacRemoteInputController(
+            allowRemoteControl: true,
+            system: system,
+            clock: clock,
+            makeWindowResizeGeneration: { generations.next() }
+        )
+        stabilize(try XCTUnwrap(fullFrameGeometry(for: system.bounds!)), on: controller, clock: clock)
+        XCTAssertEqual(
+            controller.arm(
+                displayID: displayID,
+                screenRequestID: showID,
+                inputSessionID: sessionID
+            ),
+            .armed
+        )
+        let size = MacRemoteInputVideoSize(width: 1_920, height: 1_080)
+        let target = try XCTUnwrap(controller.requestFocusedWindowMoveTarget(
+            screenRequestID: showID,
+            inputSessionID: sessionID,
+            viewerVideoSize: size
+        ).windowResizeFeedback?.target)
+        XCTAssertEqual(target.generation, consumed)
+
+        let constrainedReadback = CGRect(x: 1_700, y: 240, width: 640, height: 400)
+        system.afterWindowPositionWrite = {
+            system.afterWindowPositionWrite = nil
+            system.setFrame(constrainedReadback, of: window)
+        }
+        let result = controller.commitFocusedWindowMove(
+            screenRequestID: showID,
+            inputSessionID: sessionID,
+            targetGeneration: consumed,
+            start: .init(x: 0, y: 0.5),
+            end: .init(x: 1, y: 0.5),
+            viewerVideoSize: size,
+            allowsRecoverableOffscreen: true
+        )
+
+        XCTAssertEqual(result.result, .accepted(.none))
+        XCTAssertEqual(system.windowFrame(window), constrainedReadback)
+        XCTAssertEqual(system.windowPositionWrites, [CGPoint(x: 1_824, y: 240)])
+        XCTAssertTrue(system.windowSizeWrites.isEmpty)
+        let feedback = try XCTUnwrap(result.windowResizeFeedback)
+        XCTAssertEqual(feedback.kind, .moveCommitted)
+        XCTAssertEqual(feedback.committedTargetGeneration, consumed)
+        XCTAssertEqual(feedback.target.generation, successor)
+        let visible = feedback.target.normalizedFrame
+        XCTAssertEqual(visible.minX, 1_700.0 / 1_920.0, accuracy: 0.000_001)
+        XCTAssertEqual(visible.minY, 240.0 / 1_080.0, accuracy: 0.000_001)
+        XCTAssertEqual(visible.width, 220.0 / 1_920.0, accuracy: 0.000_001)
+        XCTAssertEqual(visible.height, 400.0 / 1_080.0, accuracy: 0.000_001)
+        let unclipped = try XCTUnwrap(feedback.target.unclippedNormalizedFrame)
+        XCTAssertEqual(unclipped.minX, 1_700.0 / 1_920.0, accuracy: 0.000_001)
+        XCTAssertEqual(unclipped.minY, 240.0 / 1_080.0, accuracy: 0.000_001)
+        XCTAssertEqual(unclipped.width, 640.0 / 1_920.0, accuracy: 0.000_001)
+        XCTAssertEqual(unclipped.height, 400.0 / 1_080.0, accuracy: 0.000_001)
+    }
+
+    func testNegotiatedRecoverableEdgeOutwardNoOpSkipsAXWriteAndReturnsFreshAuthority() throws {
+        let consumed = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+        let successor = UUID(uuidString: "66666666-7777-8888-9999-AAAAAAAAAAAA")!
+        let generations = MockUUIDSequence([consumed, consumed, successor])
+        let system = MockMacRemoteInputSystem()
+        let recoveryEdge = CGRect(x: 1_824, y: 240, width: 640, height: 400)
+        let window = system.makeResizableWindow(frame: recoveryEdge)
+        system.currentFocusedWindow = window
+        let clock = MockMacRemoteInputClock()
+        let controller = MacRemoteInputController(
+            allowRemoteControl: true,
+            system: system,
+            clock: clock,
+            makeWindowResizeGeneration: { generations.next() }
+        )
+        stabilize(try XCTUnwrap(fullFrameGeometry(for: system.bounds!)), on: controller, clock: clock)
+        XCTAssertEqual(
+            controller.arm(
+                displayID: displayID,
+                screenRequestID: showID,
+                inputSessionID: sessionID
+            ),
+            .armed
+        )
+        let size = MacRemoteInputVideoSize(width: 1_920, height: 1_080)
+        let target = try XCTUnwrap(controller.requestFocusedWindowMoveTarget(
+            screenRequestID: showID,
+            inputSessionID: sessionID,
+            viewerVideoSize: size
+        ).windowResizeFeedback?.target)
+        XCTAssertEqual(target.generation, consumed)
+
+        let result = controller.commitFocusedWindowMove(
+            screenRequestID: showID,
+            inputSessionID: sessionID,
+            targetGeneration: consumed,
+            start: .init(x: 0, y: 0.5),
+            end: .init(x: 1, y: 0.5),
+            viewerVideoSize: size,
+            allowsRecoverableOffscreen: true
+        )
+
+        XCTAssertEqual(result.result, .accepted(.none))
+        XCTAssertEqual(system.windowFrame(window), recoveryEdge)
+        XCTAssertTrue(system.windowPositionWrites.isEmpty)
+        XCTAssertTrue(system.windowSizeWrites.isEmpty)
+        let feedback = try XCTUnwrap(result.windowResizeFeedback)
+        XCTAssertEqual(feedback.kind, .moveCommitted)
+        XCTAssertEqual(feedback.committedTargetGeneration, consumed)
+        XCTAssertEqual(feedback.target.generation, successor)
+    }
+
+    func testNegotiatedMoveFailureFromPartialTargetRollsBackOnlyPosition() throws {
+        let system = MockMacRemoteInputSystem()
+        let original = CGRect(x: -500, y: 240, width: 640, height: 400)
+        let window = system.makeResizableWindow(frame: original)
+        system.currentFocusedWindow = window
+        let controller = armedController(system: system)
+        let size = MacRemoteInputVideoSize(width: 1_920, height: 1_080)
+        let generation = try XCTUnwrap(controller.requestFocusedWindowMoveTarget(
+            screenRequestID: showID,
+            inputSessionID: sessionID,
+            viewerVideoSize: size
+        ).windowResizeFeedback?.target.generation)
+        system.failNextPositionAfterApplying = true
+
+        let result = controller.commitFocusedWindowMove(
+            screenRequestID: showID,
+            inputSessionID: sessionID,
+            targetGeneration: generation,
+            start: .init(x: 0.1, y: 0.5),
+            end: .init(x: 0.3, y: 0.5),
+            viewerVideoSize: size,
+            allowsRecoverableOffscreen: true
+        )
+
+        XCTAssertEqual(result.result, .rejected(.windowResizeFailed))
+        XCTAssertNil(result.windowResizeFeedback)
+        XCTAssertEqual(system.windowFrame(window), original)
+        XCTAssertEqual(
+            system.windowPositionWrites,
+            [CGPoint(x: -116, y: 240), original.origin]
+        )
+        XCTAssertTrue(system.windowSizeWrites.isEmpty)
+    }
+
     private func performTestMove(
         system: MockMacRemoteInputSystem,
+        allowsRecoverableOffscreen: Bool = false,
+        start: MacRemoteNormalizedPoint = .init(x: 0.05, y: 0.9),
+        end: MacRemoteNormalizedPoint = .init(x: 0.15, y: 0.8),
         configure: ((MacRemoteAccessibilityElement) -> Void)? = nil
     ) throws -> (MacRemoteWindowResizeDiagnosedResult, MacRemoteAccessibilityElement, MacRemoteInputController, UUID) {
         let window = system.makeResizableWindow(frame: CGRect(x: 240, y: 240, width: 640, height: 400))
@@ -3344,7 +3654,9 @@ final class MacRemoteInputControllerTests: XCTestCase {
         configure?(window)
         let result = controller.commitFocusedWindowMove(
             screenRequestID: showID, inputSessionID: sessionID, targetGeneration: generation,
-            start: .init(x: 0.05, y: 0.9), end: .init(x: 0.15, y: 0.8), viewerVideoSize: viewer
+            start: start, end: end,
+            viewerVideoSize: viewer,
+            allowsRecoverableOffscreen: allowsRecoverableOffscreen
         )
         return (result, window, controller, generation)
     }

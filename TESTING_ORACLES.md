@@ -187,12 +187,23 @@ fail-closed. Mutants that remove the new capability gate, use tolerant floating-
 matching, accept a changed host transform, or retire the safe target during the bounded client
 presentation gap must fail.
 The production controller must write only position, preserve size and exact secure/editable
-focus, clamp translation to the display, observe actual readback, and issue a fresh successor.
+focus, observe actual readback, and issue a fresh successor. Legacy Move remains fully display
+contained. Recoverable offscreen Move requires a separate advertised capability and an explicit
+viewer commit opt-in; retain a visible top/title-bar band and horizontal grip, and return both a
+legacy unit-contained visible intersection and the bounded full frame. Prove an already-recoverable
+partial target can move inward, while Resize, an old viewer, and an old host keep strict containment.
+Both Move feedback rectangles are normalized to the encoded frame. A capture-content inset beyond
+the half-pixel framework-rounding allowance must suppress both until format renegotiation completes;
+the wire does not carry enough transform metadata to interpret meaningful letterboxing safely.
 Cover wrong-mode/stale target, changed frame/focus/geometry/permission, constrained or failed
-position writes, and lost authorization. Unknown state must not authorize blind rollback.
-An outward drag already clamped at a display edge is a no-op: perform no AX writes,
-revalidate ownership and issue a fresh target so the next inward drag remains usable.
-Do not confuse that with a setter ignoring a genuinely changed proposal, which must fail.
+position writes, and lost authorization. Accept same-size application-constrained readback only
+when it progresses monotonically toward the requested origin without overshoot, opposite motion,
+or untouched-axis drift and remains recoverable. Unknown state must not authorize blind rollback.
+An outward drag already clamped at its negotiated edge is a no-op: perform no AX writes,
+revalidate ownership and issue a fresh target so the next inward drag remains usable. Do not
+confuse that with a setter ignoring a genuinely changed proposal, which must fail. Mutants that
+remove the opt-in gate, reuse the clipped frame as the next preview origin, accept a lost grip/top
+band, or relax generic normalized rectangles and Resize must fail.
 Behavioral mutations must reject a forbidden size write and acceptance of stale authority.
 Signed iOS lifecycle tests must retire selection/commit feedback across mode, scene, track,
 frame, Show and input-session replacement without dismissing preserved keyboard focus.

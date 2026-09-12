@@ -172,10 +172,16 @@ public struct MacRemoteInputDiagnosedResult: Equatable, Sendable {
 public struct MacRemoteWindowResizeTarget: Equatable, Sendable {
     public let generation: UUID
     public let normalizedFrame: CGRect
+    public let unclippedNormalizedFrame: CGRect?
 
-    public init(generation: UUID, normalizedFrame: CGRect) {
+    public init(
+        generation: UUID,
+        normalizedFrame: CGRect,
+        unclippedNormalizedFrame: CGRect? = nil
+    ) {
         self.generation = generation
         self.normalizedFrame = normalizedFrame
+        self.unclippedNormalizedFrame = unclippedNormalizedFrame
     }
 }
 
@@ -1120,7 +1126,8 @@ public final class MacRemoteInputController: @unchecked Sendable {
                 screenRequestID: screenRequestID,
                 inputSessionID: inputSessionID,
                 viewerVideoSize: viewerVideoSize,
-                operation: operation
+                operation: operation,
+                allowsRecoverableOffscreenMove: operation == .move
             )
             guard case .available(let context) = resolution else {
                 return diagnosedWindowResizeRejection(resolution)
@@ -1192,7 +1199,8 @@ public final class MacRemoteInputController: @unchecked Sendable {
                 screenRequestID: screenRequestID,
                 inputSessionID: inputSessionID,
                 viewerVideoSize: viewerVideoSize,
-                operation: operation
+                operation: operation,
+                allowsRecoverableOffscreenMove: operation == .move
             )
             guard case .available(let context) = resolution else {
                 return diagnosedWindowResizeRejection(resolution)
@@ -1219,7 +1227,8 @@ public final class MacRemoteInputController: @unchecked Sendable {
             guard let hitElement = system.element(at: globalPoint),
                   let window = windowAncestor(from: hitElement),
                   validatedResizableWindowFrame(
-                      window, in: context.displayBounds, operation: operation
+                      window, in: context.displayBounds, operation: operation,
+                      allowsRecoverableOffscreenMove: context.allowsRecoverableOffscreenMove
                   ) != nil,
                   system.focusWindow(window),
                   waitForFocusedWindow(matching: window) else {
@@ -1259,12 +1268,14 @@ public final class MacRemoteInputController: @unchecked Sendable {
         targetGeneration: UUID,
         start: MacRemoteNormalizedPoint,
         end: MacRemoteNormalizedPoint,
-        viewerVideoSize: MacRemoteInputVideoSize?
+        viewerVideoSize: MacRemoteInputVideoSize?,
+        allowsRecoverableOffscreen: Bool = false
     ) -> MacRemoteWindowResizeDiagnosedResult {
         commitFocusedWindow(
             screenRequestID: screenRequestID, inputSessionID: inputSessionID,
             targetGeneration: targetGeneration, start: start, end: end,
-            viewerVideoSize: viewerVideoSize, operation: .move
+            viewerVideoSize: viewerVideoSize, operation: .move,
+            allowsRecoverableOffscreenMove: allowsRecoverableOffscreen
         )
     }
 
@@ -1275,7 +1286,8 @@ public final class MacRemoteInputController: @unchecked Sendable {
         start: MacRemoteNormalizedPoint,
         end: MacRemoteNormalizedPoint,
         viewerVideoSize: MacRemoteInputVideoSize?,
-        operation: MacRemoteWindowOperation
+        operation: MacRemoteWindowOperation,
+        allowsRecoverableOffscreenMove: Bool = false
     ) -> MacRemoteWindowResizeDiagnosedResult {
         withLock {
             guard targetGeneration != Self.zeroUUID,
@@ -1287,7 +1299,8 @@ public final class MacRemoteInputController: @unchecked Sendable {
                 screenRequestID: screenRequestID,
                 inputSessionID: inputSessionID,
                 viewerVideoSize: viewerVideoSize,
-                operation: operation
+                operation: operation,
+                allowsRecoverableOffscreenMove: allowsRecoverableOffscreenMove
             )
             guard case .available(let context) = resolution else {
                 authorizedWindowResizeTarget = nil
@@ -1308,7 +1321,8 @@ public final class MacRemoteInputController: @unchecked Sendable {
                   let currentFrame = validatedResizableWindowFrame(
                       target.element,
                       in: context.displayBounds,
-                      operation: operation
+                      operation: operation,
+                      allowsRecoverableOffscreenMove: context.allowsRecoverableOffscreenMove
                   ),
                   MacRemoteWindowResizeGeometry.approximatelyEqual(
                       currentFrame,
@@ -1350,7 +1364,8 @@ public final class MacRemoteInputController: @unchecked Sendable {
             ) : nil
             let moveProposal = operation == .move ? FocusedWindowMoveGeometry.proposedFrame(
                 original: target.originalFrame, start: globalStart, end: globalEnd,
-                displayBounds: context.displayBounds
+                displayBounds: context.displayBounds,
+                allowsRecoverableOffscreen: context.allowsRecoverableOffscreenMove
             ) : nil
             guard let proposedFrame = resizeProposal?.frame ?? moveProposal else {
                 authorizedWindowResizeTarget = nil
@@ -1391,7 +1406,8 @@ public final class MacRemoteInputController: @unchecked Sendable {
                 screenRequestID: screenRequestID,
                 inputSessionID: inputSessionID,
                 viewerVideoSize: viewerVideoSize,
-                operation: operation
+                operation: operation,
+                allowsRecoverableOffscreenMove: allowsRecoverableOffscreenMove
             )
             guard case .available(let finalContext) = finalResolution else {
                 authorizedWindowResizeTarget = nil
@@ -1422,7 +1438,9 @@ public final class MacRemoteInputController: @unchecked Sendable {
                   let finalFrame = validatedResizableWindowFrame(
                       finalTarget.element,
                       in: finalContext.displayBounds,
-                      operation: operation
+                      operation: operation,
+                      allowsRecoverableOffscreenMove:
+                          finalContext.allowsRecoverableOffscreenMove
                   ),
                   MacRemoteWindowResizeGeometry.approximatelyEqual(
                       finalFrame,
@@ -1465,9 +1483,9 @@ public final class MacRemoteInputController: @unchecked Sendable {
                     context: finalContext,
                     expectedFocus: finalTarget.element
                 ),
-                      let normalizedFrame = finalContext.frameGeometry.frameNormalizedRect(
-                          forGlobalRect: finalFrame,
-                          in: finalContext.displayBounds
+                      let normalizedFrames = normalizedWindowTargetFrames(
+                          for: finalFrame,
+                          context: finalContext
                       ) else {
                     return rejectCommittedResizeAfterRollback(
                         window: finalTarget.element,
@@ -1482,7 +1500,8 @@ public final class MacRemoteInputController: @unchecked Sendable {
                     generation: successorGeneration,
                     consumedGeneration: finalTarget.generation,
                     finalFrame: finalFrame,
-                    normalizedFrame: normalizedFrame,
+                    normalizedFrame: normalizedFrames.visible,
+                    unclippedNormalizedFrame: normalizedFrames.unclipped,
                     context: finalContext,
                     preservedFocus: preservedFocus
                 )
@@ -1508,7 +1527,8 @@ public final class MacRemoteInputController: @unchecked Sendable {
         screenRequestID: UInt64,
         inputSessionID: UUID,
         viewerVideoSize: MacRemoteInputVideoSize?,
-        operation: MacRemoteWindowOperation = .resize
+        operation: MacRemoteWindowOperation = .resize,
+        allowsRecoverableOffscreenMove: Bool = false
     ) -> MacRemoteWindowResizeContextResolution {
         guard !isPermanentlyInvalidated, allowRemoteControl else {
             return .rejected(.disabled, diagnostic: nil)
@@ -1589,7 +1609,9 @@ public final class MacRemoteInputController: @unchecked Sendable {
                 session: session,
                 displayBounds: displayBounds,
                 frameGeometry: frameGeometry,
-                viewerVideoSize: viewerVideoSize
+                viewerVideoSize: viewerVideoSize,
+                allowsRecoverableOffscreenMove:
+                    operation == .move && allowsRecoverableOffscreenMove
             )
         )
     }
@@ -1617,6 +1639,29 @@ public final class MacRemoteInputController: @unchecked Sendable {
         }
     }
 
+    private func normalizedWindowTargetFrames(
+        for frame: CGRect,
+        context: MacRemoteWindowResizeContext
+    ) -> (visible: CGRect, unclipped: CGRect?)? {
+        switch context.operation {
+        case .resize:
+            guard let visible = context.frameGeometry.frameNormalizedRect(
+                forGlobalRect: frame,
+                in: context.displayBounds
+            ) else { return nil }
+            return (visible, nil)
+        case .move:
+            guard let visible = context.frameGeometry.frameNormalizedVisibleIntersection(
+                forGlobalRect: frame,
+                in: context.displayBounds
+            ), let unclipped = context.frameGeometry.frameUnclippedNormalizedRect(
+                forGlobalRect: frame,
+                in: context.displayBounds
+            ) else { return nil }
+            return (visible, unclipped)
+        }
+    }
+
     private func installWindowResizeTarget(
         for window: MacRemoteAccessibilityElement,
         kind: MacRemoteWindowResizeFeedbackKind,
@@ -1628,11 +1673,12 @@ public final class MacRemoteInputController: @unchecked Sendable {
               let frame = validatedResizableWindowFrame(
                   window,
                   in: context.displayBounds,
-                  operation: context.operation
+                  operation: context.operation,
+                  allowsRecoverableOffscreenMove: context.allowsRecoverableOffscreenMove
               ),
-              let normalizedFrame = context.frameGeometry.frameNormalizedRect(
-                  forGlobalRect: frame,
-                  in: context.displayBounds
+              let normalizedFrames = normalizedWindowTargetFrames(
+                  for: frame,
+                  context: context
               ) else {
             authorizedWindowResizeTarget = nil
             return .init(
@@ -1663,7 +1709,8 @@ public final class MacRemoteInputController: @unchecked Sendable {
                 kind: kind,
                 target: MacRemoteWindowResizeTarget(
                     generation: generation,
-                    normalizedFrame: normalizedFrame
+                    normalizedFrame: normalizedFrames.visible,
+                    unclippedNormalizedFrame: normalizedFrames.unclipped
                 )
             ),
             verifiedFocus: nil
@@ -1677,6 +1724,7 @@ public final class MacRemoteInputController: @unchecked Sendable {
         consumedGeneration: UUID,
         finalFrame: CGRect,
         normalizedFrame: CGRect,
+        unclippedNormalizedFrame: CGRect?,
         context: MacRemoteWindowResizeContext,
         preservedFocus: AuthorizedFocus?
     ) -> MacRemoteWindowResizeDiagnosedResult {
@@ -1697,7 +1745,8 @@ public final class MacRemoteInputController: @unchecked Sendable {
                 kind: context.operation == .move ? .moveCommitted : .resizeCommitted,
                 target: MacRemoteWindowResizeTarget(
                     generation: generation,
-                    normalizedFrame: normalizedFrame
+                    normalizedFrame: normalizedFrame,
+                    unclippedNormalizedFrame: unclippedNormalizedFrame
                 ),
                 committedTargetGeneration: consumedGeneration
             )
@@ -1746,10 +1795,17 @@ public final class MacRemoteInputController: @unchecked Sendable {
     private func validatedResizableWindowFrame(
         _ window: MacRemoteAccessibilityElement,
         in displayBounds: CGRect,
-        operation: MacRemoteWindowOperation = .resize
+        operation: MacRemoteWindowOperation = .resize,
+        allowsRecoverableOffscreenMove: Bool = false
     ) -> CGRect? {
         guard let frame = system.windowFrame(window),
-              isResizableWindow(window, with: frame, in: displayBounds, operation: operation) else {
+              isResizableWindow(
+                  window,
+                  with: frame,
+                  in: displayBounds,
+                  operation: operation,
+                  allowsRecoverableOffscreenMove: allowsRecoverableOffscreenMove
+              ) else {
             return nil
         }
         return frame
@@ -1760,9 +1816,13 @@ public final class MacRemoteInputController: @unchecked Sendable {
         _ window: MacRemoteAccessibilityElement,
         with frame: CGRect,
         in displayBounds: CGRect,
-        operation: MacRemoteWindowOperation = .resize
+        operation: MacRemoteWindowOperation = .resize,
+        allowsRecoverableOffscreenMove: Bool = false
     ) -> Bool {
-        system.role(of: window) == "AXWindow"
+        let positionIsAllowed = operation == .move && allowsRecoverableOffscreenMove
+            ? FocusedWindowMoveGeometry.isRecoverable(frame, in: displayBounds)
+            : MacRemoteWindowResizeGeometry.contains(frame, in: displayBounds, tolerance: 0.5)
+        return system.role(of: window) == "AXWindow"
             && system.subrole(of: window) == "AXStandardWindow"
             && system.isEnabled(window) == true
             && system.isWindowMinimized(window) == false
@@ -1770,11 +1830,7 @@ public final class MacRemoteInputController: @unchecked Sendable {
             && system.isWindowModal(window) == false
             && system.isWindowPositionSettable(window)
             && (operation == .move || system.isWindowSizeSettable(window))
-            && MacRemoteWindowResizeGeometry.contains(
-                frame,
-                in: displayBounds,
-                tolerance: 0.5
-            )
+            && positionIsAllowed
             && !Self.isFullscreenLike(frame, in: displayBounds)
     }
 
@@ -1861,7 +1917,20 @@ public final class MacRemoteInputController: @unchecked Sendable {
             context: context, expectedFocus: window
         ), let actual = ownedFrame,
            actual.size == originalFrame.size,
-           MacRemoteWindowResizeGeometry.approximatelyEqual(actual.origin, proposedFrame.origin) {
+           MacRemoteWindowResizeGeometry.followsRequestedMove(
+               actual,
+               from: originalFrame,
+               toward: proposedFrame
+           ), context.allowsRecoverableOffscreenMove
+                ? FocusedWindowMoveGeometry.isRecoverable(
+                    actual,
+                    in: context.displayBounds
+                )
+                : MacRemoteWindowResizeGeometry.contains(
+                    actual,
+                    in: context.displayBounds,
+                    tolerance: 0.5
+                ) {
             return .committed(actual)
         }
         return rollbackWindowFrame(
@@ -1976,7 +2045,8 @@ public final class MacRemoteInputController: @unchecked Sendable {
         } else { return false }
         guard let actual = system.windowFrame(window),
               isResizableWindow(
-                  window, with: actual, in: context.displayBounds, operation: context.operation
+                  window, with: actual, in: context.displayBounds, operation: context.operation,
+                  allowsRecoverableOffscreenMove: context.allowsRecoverableOffscreenMove
               ),
               size != nil
                 ? MacRemoteWindowResizeGeometry.approximatelyEqual(actual.origin, before.origin)
@@ -1998,7 +2068,8 @@ public final class MacRemoteInputController: @unchecked Sendable {
             screenRequestID: context.session.screenRequestID,
             inputSessionID: context.session.inputSessionID,
             viewerVideoSize: context.viewerVideoSize,
-            operation: context.operation
+            operation: context.operation,
+            allowsRecoverableOffscreenMove: context.allowsRecoverableOffscreenMove
         )
         guard case .available(let current) = resolution,
               current.frameGeometry.hasSameInputTransform(as: context.frameGeometry),
@@ -2013,7 +2084,8 @@ public final class MacRemoteInputController: @unchecked Sendable {
         default: return false
         }
         guard let actual = validatedResizableWindowFrame(
-            window, in: context.displayBounds, operation: context.operation
+            window, in: context.displayBounds, operation: context.operation,
+            allowsRecoverableOffscreenMove: context.allowsRecoverableOffscreenMove
         )
         else { return false }
         return MacRemoteWindowResizeGeometry.approximatelyEqual(actual, expectedFrame)
@@ -2029,6 +2101,28 @@ public final class MacRemoteInputController: @unchecked Sendable {
         // Cleanup never focuses a window. If focus changed, restore only the exact previously
         // owned window while the newly observed focus remains stable throughout cleanup.
         let cleanupFocus = system.focusedWindow()
+        if context.operation == .move {
+            guard let expected = frame,
+                  windowResizeTransactionIsAuthorized(
+                      window: window,
+                      expectedFrame: expected,
+                      context: context,
+                      expectedFocus: cleanupFocus
+                  ), writeWindowFrame(
+                      window,
+                      position: originalFrame.origin,
+                      ownedFrame: &frame,
+                      context: context,
+                      expectedFocus: cleanupFocus
+                  ), let restored = frame,
+                  windowResizeTransactionIsAuthorized(
+                      window: window,
+                      expectedFrame: restored,
+                      context: context,
+                      expectedFocus: cleanupFocus
+                  ) else { return false }
+            return MacRemoteWindowResizeGeometry.approximatelyEqual(restored, originalFrame)
+        }
         guard let expected = frame,
               windowResizeTransactionIsAuthorized(
                   window: window, expectedFrame: expected, context: context,
@@ -2546,6 +2640,7 @@ private struct MacRemoteWindowResizeContext: Sendable {
     let displayBounds: CGRect
     let frameGeometry: ScreenVideoFrameGeometry
     let viewerVideoSize: MacRemoteInputVideoSize
+    let allowsRecoverableOffscreenMove: Bool
 }
 
 private enum MacRemoteWindowResizeContextResolution {
@@ -2609,6 +2704,39 @@ enum MacRemoteWindowResizeGeometry {
         return !approximatelyEqual(actual, original)
             && follows(actual.width, original.width, proposed.width)
             && follows(actual.height, original.height, proposed.height)
+    }
+
+    /// Accepts exact or application-constrained position readback only when every axis stays on
+    /// the closed segment from the original origin to the requested origin. At least one changed
+    /// axis must make progress, while an untouched axis may not drift.
+    static func followsRequestedMove(
+        _ actual: CGRect,
+        from original: CGRect,
+        toward proposed: CGRect,
+        tolerance: CGFloat = 0.5
+    ) -> Bool {
+        guard actual.size == original.size,
+              isFinitePositiveRect(actual),
+              isFinitePositiveRect(original),
+              isFinitePositiveRect(proposed) else { return false }
+
+        func follows(_ value: CGFloat, from initial: CGFloat, toward requested: CGFloat) -> Bool {
+            let requestedDelta = requested - initial
+            let actualDelta = value - initial
+            if abs(requestedDelta) <= tolerance {
+                return abs(actualDelta) <= tolerance
+            }
+            if requestedDelta > 0 {
+                return actualDelta >= -tolerance
+                    && actualDelta <= requestedDelta + tolerance
+            }
+            return actualDelta <= tolerance
+                && actualDelta >= requestedDelta - tolerance
+        }
+
+        return !approximatelyEqual(actual.origin, original.origin, tolerance: tolerance)
+            && follows(actual.minX, from: original.minX, toward: proposed.minX)
+            && follows(actual.minY, from: original.minY, toward: proposed.minY)
     }
 
     static func anchoredOrigin(

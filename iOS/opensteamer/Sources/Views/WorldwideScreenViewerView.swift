@@ -620,11 +620,11 @@ struct WorldwideScreenViewerView: View {
             focusedWindowResizeGhostFrame = nil
             return
         }
-        focusedWindowResizeGhostFrame = FocusedWindowMoveGeometry.proposedFrame(
-            original: Self.cgRect(from: target.normalizedFrame),
+        focusedWindowResizeGhostFrame = Self.focusedWindowMovePreviewFrame(
+            target: target,
             start: endpoints.start,
             end: endpoints.end,
-            displayBounds: CGRect(x: 0, y: 0, width: 1, height: 1)
+            allowsRecoverableOffscreen: interaction.binding.allowsRecoverableOffscreenMove
         )
     }
 
@@ -657,24 +657,45 @@ struct WorldwideScreenViewerView: View {
     private func focusedWindowResizeOverlay(containerSize: CGSize) -> some View {
         if viewModel.focusedWindowResizeState.isActive,
            let videoSize = renderedVideoSize {
-            let targetRect = viewModel.focusedWindowResizeState.interaction?.target.flatMap {
-                AspectFitCoordinateMapper.viewRect(
-                    forNormalizedRect: Self.cgRect(from: $0.normalizedFrame),
+            let interaction = viewModel.focusedWindowResizeState.interaction
+            let usesUnclippedMoveFrame = interaction?.mode == .move
+                && interaction?.binding.allowsRecoverableOffscreenMove == true
+            let targetRect: CGRect? = interaction?.target.flatMap { target -> CGRect? in
+                if usesUnclippedMoveFrame {
+                    guard let full = target.unclippedNormalizedFrame else { return nil }
+                    return AspectFitCoordinateMapper.unclippedViewRect(
+                        forNormalizedRect: Self.cgRect(from: full),
+                        containerSize: containerSize,
+                        videoSize: videoSize
+                    )
+                }
+                return AspectFitCoordinateMapper.viewRect(
+                    forNormalizedRect: Self.cgRect(from: target.normalizedFrame),
                     containerSize: containerSize,
                     videoSize: videoSize
                 )
             }
             let ghostRect = focusedWindowResizeGhostFrame.flatMap {
-                AspectFitCoordinateMapper.viewRect(
-                    forNormalizedRect: $0,
-                    containerSize: containerSize,
-                    videoSize: videoSize
-                )
+                usesUnclippedMoveFrame
+                    ? AspectFitCoordinateMapper.unclippedViewRect(
+                        forNormalizedRect: $0,
+                        containerSize: containerSize,
+                        videoSize: videoSize
+                    )
+                    : AspectFitCoordinateMapper.viewRect(
+                        forNormalizedRect: $0,
+                        containerSize: containerSize,
+                        videoSize: videoSize
+                    )
             }
             FocusedWindowResizeOverlay(
                 targetRect: targetRect,
                 ghostRect: ghostRect,
-                showsResizeQuadrants: viewModel.focusedWindowResizeState.interaction?.mode == .resize
+                showsResizeQuadrants: interaction?.mode == .resize,
+                clipRect: AspectFitCoordinateMapper.visibleVideoRect(
+                    containerSize: containerSize,
+                    videoSize: videoSize
+                )
             )
             .allowsHitTesting(false)
             .accessibilityHidden(true)
@@ -783,6 +804,34 @@ struct WorldwideScreenViewerView: View {
             y: rect.y,
             width: rect.width,
             height: rect.height
+        )
+    }
+
+    private static func cgRect(
+        from rect: WebRTCWindowMoveUnclippedNormalizedRect
+    ) -> CGRect {
+        CGRect(x: rect.x, y: rect.y, width: rect.width, height: rect.height)
+    }
+
+    static func focusedWindowMovePreviewFrame(
+        target: FocusedWindowInteractionTarget,
+        start: CGPoint,
+        end: CGPoint,
+        allowsRecoverableOffscreen: Bool
+    ) -> CGRect? {
+        let original: CGRect
+        if allowsRecoverableOffscreen {
+            guard let full = target.unclippedNormalizedFrame else { return nil }
+            original = cgRect(from: full)
+        } else {
+            original = cgRect(from: target.normalizedFrame)
+        }
+        return FocusedWindowMoveGeometry.proposedFrame(
+            original: original,
+            start: start,
+            end: end,
+            displayBounds: CGRect(x: 0, y: 0, width: 1, height: 1),
+            allowsRecoverableOffscreen: allowsRecoverableOffscreen
         )
     }
 
@@ -1005,10 +1054,11 @@ struct WorldwideScreenViewerView: View {
     }
 }
 
-private struct FocusedWindowResizeOverlay: View {
+struct FocusedWindowResizeOverlay: View {
     let targetRect: CGRect?
     let ghostRect: CGRect?
     let showsResizeQuadrants: Bool
+    let clipRect: CGRect?
 
     var body: some View {
         ZStack {
@@ -1042,5 +1092,14 @@ private struct FocusedWindowResizeOverlay: View {
                     .shadow(color: .black.opacity(0.9), radius: 2)
             }
         }
+        .clipShape(FocusedWindowOverlayClipShape(clipRect: clipRect))
+    }
+}
+
+private struct FocusedWindowOverlayClipShape: Shape {
+    let clipRect: CGRect?
+
+    func path(in rect: CGRect) -> Path {
+        Path(clipRect ?? rect)
     }
 }

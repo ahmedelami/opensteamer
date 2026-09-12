@@ -447,6 +447,25 @@ struct FocusedWindowResizeBinding: Equatable {
     let trackIdentity: ObjectIdentifier
     let containerSize: CGSize
     let viewerVideoSize: CGSize
+    let allowsRecoverableOffscreenMove: Bool
+}
+
+struct FocusedWindowInteractionTarget: Equatable {
+    let generation: UUID
+    let normalizedFrame: WebRTCNormalizedRect
+    let unclippedNormalizedFrame: WebRTCWindowMoveUnclippedNormalizedRect?
+
+    init(resize target: WebRTCWindowResizeTarget) {
+        generation = target.generation
+        normalizedFrame = target.normalizedFrame
+        unclippedNormalizedFrame = nil
+    }
+
+    init(move target: WebRTCWindowMoveTarget) {
+        generation = target.generation
+        normalizedFrame = target.normalizedFrame
+        unclippedNormalizedFrame = target.unclippedNormalizedFrame
+    }
 }
 
 enum FocusedWindowResizePendingOperation: Equatable {
@@ -506,7 +525,7 @@ enum FocusedWindowResizePendingOperation: Equatable {
         case (.commit(_, let consumedGeneration, _, _, .resize),
               .commitFocusedWindowResize(let actionGeneration, _, _)),
              (.commit(_, let consumedGeneration, _, _, .move),
-              .commitFocusedWindowMove(let actionGeneration, _, _)):
+              .commitFocusedWindowMove(let actionGeneration, _, _, _)):
             consumedGeneration == actionGeneration
         default:
             false
@@ -518,7 +537,7 @@ struct FocusedWindowResizeInteraction: Equatable {
     let id: UUID
     let mode: FocusedWindowInteractionMode
     var binding: FocusedWindowResizeBinding
-    var target: WebRTCWindowResizeTarget?
+    var target: FocusedWindowInteractionTarget?
     var pending: FocusedWindowResizePendingOperation?
     /// A decoded size has changed, but Metal has not yet presented a frame with that exact size.
     /// The semantic Move selection may survive; every pointer gesture remains fenced meanwhile.
@@ -5889,7 +5908,12 @@ final class WorldwideSessionViewModel: ObservableObject {
         )
         let action: WebRTCInputAction = mode == .resize
             ? .commitFocusedWindowResize(targetGeneration: targetGeneration, start: start, end: end)
-            : .commitFocusedWindowMove(targetGeneration: targetGeneration, start: start, end: end)
+            : .commitFocusedWindowMove(
+                targetGeneration: targetGeneration,
+                start: start,
+                end: end,
+                allowsRecoverableOffscreen: interaction.binding.allowsRecoverableOffscreenMove
+            )
         enqueueRemoteInput(
             action,
             viewerVideoSize: Self.remoteInputVideoSize(from: viewerVideoSize),
@@ -5992,7 +6016,9 @@ final class WorldwideSessionViewModel: ObservableObject {
             screenRequestID: capability.screenRequestID,
             trackIdentity: trackIdentity,
             containerSize: containerSize,
-            viewerVideoSize: viewerVideoSize
+            viewerVideoSize: viewerVideoSize,
+            allowsRecoverableOffscreenMove: mode == .move
+                && capability.supportsFocusedWindowMoveRecoverableOffscreen
         )
     }
 
@@ -10929,6 +10955,9 @@ final class WorldwideSessionViewModel: ObservableObject {
                   feedback,
                   matches: operation
               ),
+              interaction.mode != .move
+                || !interaction.binding.allowsRecoverableOffscreenMove
+                || target.unclippedNormalizedFrame != nil,
               Self.focusedWindowResizeFocus(
                   feedback.focus,
                   matches: operation.focusGeneration,
@@ -10978,8 +11007,8 @@ final class WorldwideSessionViewModel: ObservableObject {
     private static func focusedWindowFeedbackTarget(
         _ feedback: WebRTCInputFeedback,
         matches operation: FocusedWindowResizePendingOperation
-    ) -> WebRTCWindowResizeTarget? {
-        let target: WebRTCWindowResizeTarget
+    ) -> FocusedWindowInteractionTarget? {
+        let target: FocusedWindowInteractionTarget
         let committedGeneration: UUID?
         let isTargetRequest: Bool
         let isSelection: Bool
@@ -10987,14 +11016,14 @@ final class WorldwideSessionViewModel: ObservableObject {
         switch operation.mode {
         case .resize:
             guard let resize = feedback.windowResize, feedback.windowMove == nil else { return nil }
-            target = resize.target
+            target = .init(resize: resize.target)
             committedGeneration = resize.committedTargetGeneration
             isTargetRequest = resize.kind == .targetAcquired
             isSelection = resize.kind == .windowSelected
             isCommit = resize.kind == .resizeCommitted
         case .move:
             guard let move = feedback.windowMove, feedback.windowResize == nil else { return nil }
-            target = move.target
+            target = .init(move: move.target)
             committedGeneration = move.committedTargetGeneration
             isTargetRequest = move.kind == .targetAcquired
             isSelection = move.kind == .windowSelected
@@ -11029,16 +11058,25 @@ final class WorldwideSessionViewModel: ObservableObject {
     }
 
     private static func focusedWindowResizeTargetIsValid(
-        _ target: WebRTCWindowResizeTarget
+        _ target: FocusedWindowInteractionTarget
     ) -> Bool {
         let frame = target.normalizedFrame
-        return target.generation != zeroUUID
+        guard target.generation != zeroUUID
             && frame.x.isFinite && frame.y.isFinite
             && frame.width.isFinite && frame.height.isFinite
             && frame.x >= 0 && frame.y >= 0
             && frame.width > 0 && frame.height > 0
             && frame.x + frame.width <= 1
-            && frame.y + frame.height <= 1
+            && frame.y + frame.height <= 1 else { return false }
+        guard let full = target.unclippedNormalizedFrame else { return true }
+        let tolerance = 0.000_000_001
+        return full.x.isFinite && full.y.isFinite
+            && full.width.isFinite && full.height.isFinite
+            && full.width > 0 && full.height > 0
+            && frame.x >= full.x - tolerance
+            && frame.y >= full.y - tolerance
+            && frame.x + frame.width <= full.x + full.width + tolerance
+            && frame.y + frame.height <= full.y + full.height + tolerance
     }
 
     private static let zeroUUID = UUID(
@@ -11932,7 +11970,8 @@ final class WorldwideSessionViewModel: ObservableObject {
         supportsScroll: Bool = false,
         supportsFocusedWindowResize: Bool = false,
         supportsFocusedWindowMove: Bool = false,
-        supportsFocusedWindowMoveScaleRebinding: Bool = false
+        supportsFocusedWindowMoveScaleRebinding: Bool = false,
+        supportsFocusedWindowMoveRecoverableOffscreen: Bool = false
     ) -> WorldwideScreenPresentationDebugFixture {
         debugInstallScreenSessionForTests(
             peer: newPeer,
@@ -11951,7 +11990,9 @@ final class WorldwideSessionViewModel: ObservableObject {
             supportsFocusedWindowResize: supportsFocusedWindowResize,
             supportsFocusedWindowMove: supportsFocusedWindowMove,
             supportsFocusedWindowMoveScaleRebinding:
-                supportsFocusedWindowMoveScaleRebinding
+                supportsFocusedWindowMoveScaleRebinding,
+            supportsFocusedWindowMoveRecoverableOffscreen:
+                supportsFocusedWindowMoveRecoverableOffscreen
         )
         let authorization = WebRTCInputAuthorization()
         debugFocusedWindowResizeTrackOwner = supportsFocusedWindowResize || supportsFocusedWindowMove
@@ -11979,7 +12020,8 @@ final class WorldwideSessionViewModel: ObservableObject {
         inputSessionID: UUID = UUID(),
         supportsFocusedWindowResize: Bool = true,
         supportsFocusedWindowMove: Bool = false,
-        supportsFocusedWindowMoveScaleRebinding: Bool = false
+        supportsFocusedWindowMoveScaleRebinding: Bool = false,
+        supportsFocusedWindowMoveRecoverableOffscreen: Bool = false
     ) -> WebRTCInputAuthorization? {
         guard let current = remoteInputCapability else { return nil }
         let replacement = WebRTCInputCapability(
@@ -11992,7 +12034,9 @@ final class WorldwideSessionViewModel: ObservableObject {
             supportsFocusedWindowResize: supportsFocusedWindowResize,
             supportsFocusedWindowMove: supportsFocusedWindowMove,
             supportsFocusedWindowMoveScaleRebinding:
-                supportsFocusedWindowMoveScaleRebinding
+                supportsFocusedWindowMoveScaleRebinding,
+            supportsFocusedWindowMoveRecoverableOffscreen:
+                supportsFocusedWindowMoveRecoverableOffscreen
         )
         let authorization = WebRTCInputAuthorization()
         installRemoteInputCapability(
@@ -13251,6 +13295,7 @@ private struct RemoteInputRequestScope: Hashable {
     let supportsFocusedWindowResize: Bool
     let supportsFocusedWindowMove: Bool
     let supportsFocusedWindowMoveScaleRebinding: Bool
+    let supportsFocusedWindowMoveRecoverableOffscreen: Bool
 
     init(
         sessionGeneration: UUID,
@@ -13269,6 +13314,8 @@ private struct RemoteInputRequestScope: Hashable {
         supportsFocusedWindowMove = capability.supportsFocusedWindowMove
         supportsFocusedWindowMoveScaleRebinding =
             capability.supportsFocusedWindowMoveScaleRebinding
+        supportsFocusedWindowMoveRecoverableOffscreen =
+            capability.supportsFocusedWindowMoveRecoverableOffscreen
     }
 }
 

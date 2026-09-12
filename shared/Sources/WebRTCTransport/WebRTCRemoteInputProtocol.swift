@@ -16,6 +16,7 @@ public struct WebRTCInputCapability: Codable, Equatable, Sendable {
     public let supportsFocusedWindowResize: Bool
     public let supportsFocusedWindowMove: Bool
     public let supportsFocusedWindowMoveScaleRebinding: Bool
+    public let supportsFocusedWindowMoveRecoverableOffscreen: Bool
 
     public init(
         inputSessionID: UUID,
@@ -26,7 +27,8 @@ public struct WebRTCInputCapability: Codable, Equatable, Sendable {
         supportsScroll: Bool = false,
         supportsFocusedWindowResize: Bool = false,
         supportsFocusedWindowMove: Bool = false,
-        supportsFocusedWindowMoveScaleRebinding: Bool = false
+        supportsFocusedWindowMoveScaleRebinding: Bool = false,
+        supportsFocusedWindowMoveRecoverableOffscreen: Bool = false
     ) {
         self.protocolVersion = protocolVersion
         self.inputSessionID = inputSessionID
@@ -38,6 +40,8 @@ public struct WebRTCInputCapability: Codable, Equatable, Sendable {
         self.supportsFocusedWindowMove = supportsFocusedWindowMove
         self.supportsFocusedWindowMoveScaleRebinding =
             supportsFocusedWindowMoveScaleRebinding
+        self.supportsFocusedWindowMoveRecoverableOffscreen =
+            supportsFocusedWindowMoveRecoverableOffscreen
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -50,6 +54,7 @@ public struct WebRTCInputCapability: Codable, Equatable, Sendable {
         case supportsFocusedWindowResize
         case supportsFocusedWindowMove
         case supportsFocusedWindowMoveScaleRebinding
+        case supportsFocusedWindowMoveRecoverableOffscreen
     }
 
     public init(from decoder: any Decoder) throws {
@@ -85,6 +90,13 @@ public struct WebRTCInputCapability: Codable, Equatable, Sendable {
         } else {
             false
         }
+        let supportsFocusedWindowMoveRecoverableOffscreen = if container.contains(
+            .supportsFocusedWindowMoveRecoverableOffscreen
+        ) {
+            try container.decode(Bool.self, forKey: .supportsFocusedWindowMoveRecoverableOffscreen)
+        } else {
+            false
+        }
         guard protocolVersion == Self.currentProtocolVersion,
               inputSessionID != Self.zeroUUID,
               screenRequestID > 0,
@@ -105,7 +117,9 @@ public struct WebRTCInputCapability: Codable, Equatable, Sendable {
             supportsFocusedWindowResize: supportsFocusedWindowResize,
             supportsFocusedWindowMove: supportsFocusedWindowMove,
             supportsFocusedWindowMoveScaleRebinding:
-                supportsFocusedWindowMoveScaleRebinding
+                supportsFocusedWindowMoveScaleRebinding,
+            supportsFocusedWindowMoveRecoverableOffscreen:
+                supportsFocusedWindowMoveRecoverableOffscreen
         )
     }
 
@@ -128,6 +142,10 @@ public struct WebRTCInputCapability: Codable, Equatable, Sendable {
         try container.encode(
             supportsFocusedWindowMoveScaleRebinding,
             forKey: .supportsFocusedWindowMoveScaleRebinding
+        )
+        try container.encode(
+            supportsFocusedWindowMoveRecoverableOffscreen,
+            forKey: .supportsFocusedWindowMoveRecoverableOffscreen
         )
     }
 
@@ -341,7 +359,141 @@ public struct WebRTCWindowResizeFeedback: Codable, Equatable, Sendable {
     }
 }
 
-public typealias WebRTCWindowMoveTarget = WebRTCWindowResizeTarget
+/// A finite positive rectangle in encoded-frame-normalized coordinates that may extend outside
+/// the unit square. The host extrapolates its current capture-content transform; a meaningful
+/// content inset must fail closed because that transform is not carried on the wire. The bounded
+/// range keeps untrusted feedback away from numeric geometry extremes.
+public struct WebRTCWindowMoveUnclippedNormalizedRect: Codable, Equatable, Sendable {
+    public static let maximumMagnitude = 128.0
+
+    public let x: Double
+    public let y: Double
+    public let width: Double
+    public let height: Double
+
+    public init(x: Double, y: Double, width: Double, height: Double) {
+        self.x = x
+        self.y = y
+        self.width = width
+        self.height = height
+    }
+
+    private enum CodingKeys: String, CodingKey { case x, y, width, height }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let x = try container.decode(Double.self, forKey: .x)
+        let y = try container.decode(Double.self, forKey: .y)
+        let width = try container.decode(Double.self, forKey: .width)
+        let height = try container.decode(Double.self, forKey: .height)
+        guard Self.isValid(x: x, y: y, width: width, height: height) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .x,
+                in: container,
+                debugDescription: "Invalid unclipped focused-window move rectangle."
+            )
+        }
+        self.init(x: x, y: y, width: width, height: height)
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        guard isValid else {
+            throw EncodingError.invalidValue(
+                self,
+                .init(
+                    codingPath: encoder.codingPath,
+                    debugDescription: "Invalid unclipped focused-window move rectangle."
+                )
+            )
+        }
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(x, forKey: .x)
+        try container.encode(y, forKey: .y)
+        try container.encode(width, forKey: .width)
+        try container.encode(height, forKey: .height)
+    }
+
+    var isValid: Bool {
+        Self.isValid(x: x, y: y, width: width, height: height)
+    }
+
+    private static func isValid(x: Double, y: Double, width: Double, height: Double) -> Bool {
+        let range = -maximumMagnitude ... maximumMagnitude
+        return x.isFinite && y.isFinite && width.isFinite && height.isFinite
+            && range.contains(x) && range.contains(y)
+            && width > 0 && height > 0
+            && width <= maximumMagnitude && height <= maximumMagnitude
+            && (x + width).isFinite && (y + height).isFinite
+            && range.contains(x + width) && range.contains(y + height)
+    }
+}
+
+/// Move feedback keeps an encoded-frame-normalized, unit-contained visible intersection and may
+/// add the exact unclipped frame in that same coordinate space for viewers that negotiated
+/// recoverable offscreen movement.
+public struct WebRTCWindowMoveTarget: Codable, Equatable, Sendable {
+    public let generation: UUID
+    public let normalizedFrame: WebRTCNormalizedRect
+    public let unclippedNormalizedFrame: WebRTCWindowMoveUnclippedNormalizedRect?
+
+    public init(
+        generation: UUID,
+        normalizedFrame: WebRTCNormalizedRect,
+        unclippedNormalizedFrame: WebRTCWindowMoveUnclippedNormalizedRect? = nil
+    ) {
+        self.generation = generation
+        self.normalizedFrame = normalizedFrame
+        self.unclippedNormalizedFrame = unclippedNormalizedFrame
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case generation, normalizedFrame, unclippedNormalizedFrame
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            generation: try container.decode(UUID.self, forKey: .generation),
+            normalizedFrame: try container.decode(WebRTCNormalizedRect.self, forKey: .normalizedFrame),
+            unclippedNormalizedFrame: try container.decodeIfPresent(
+                WebRTCWindowMoveUnclippedNormalizedRect.self,
+                forKey: .unclippedNormalizedFrame
+            )
+        )
+        guard isValid else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .generation,
+                in: container,
+                debugDescription: "Invalid focused-window move target."
+            )
+        }
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        guard isValid else {
+            throw EncodingError.invalidValue(
+                self,
+                .init(codingPath: encoder.codingPath, debugDescription: "Invalid focused-window move target.")
+            )
+        }
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(generation, forKey: .generation)
+        try container.encode(normalizedFrame, forKey: .normalizedFrame)
+        try container.encodeIfPresent(unclippedNormalizedFrame, forKey: .unclippedNormalizedFrame)
+    }
+
+    var isValid: Bool {
+        guard generation != WebRTCInputCapability.zeroUUIDForValidation,
+              normalizedFrame.isValid else { return false }
+        guard let full = unclippedNormalizedFrame else { return true }
+        guard full.isValid else { return false }
+        let tolerance = 0.000_000_001
+        return normalizedFrame.x >= full.x - tolerance
+            && normalizedFrame.y >= full.y - tolerance
+            && normalizedFrame.x + normalizedFrame.width <= full.x + full.width + tolerance
+            && normalizedFrame.y + normalizedFrame.height <= full.y + full.height + tolerance
+    }
+}
 
 public enum WebRTCWindowMoveFeedbackKind: String, Codable, Sendable {
     case targetAcquired
@@ -531,7 +683,8 @@ public enum WebRTCInputAction: Codable, Equatable, Sendable {
     case commitFocusedWindowMove(
         targetGeneration: UUID,
         start: WebRTCNormalizedPoint,
-        end: WebRTCNormalizedPoint
+        end: WebRTCNormalizedPoint,
+        allowsRecoverableOffscreen: Bool = false
     )
     case insertText(String, focusGeneration: UInt64)
     case backspace(focusGeneration: UInt64)
@@ -563,11 +716,16 @@ public enum WebRTCInputAction: Codable, Equatable, Sendable {
         case text
         case focusGeneration
         case targetGeneration
+        case allowsRecoverableOffscreen
     }
 
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let kind = try container.decode(Kind.self, forKey: .kind)
+        guard kind == .focusedWindowMoveCommit
+                || !container.contains(.allowsRecoverableOffscreen) else {
+            throw Self.invalidAction(in: container)
+        }
         switch kind {
         case .tap:
             guard !container.contains(.start), !container.contains(.end),
@@ -637,9 +795,25 @@ public enum WebRTCInputAction: Codable, Equatable, Sendable {
             }
             let start = try container.decode(WebRTCNormalizedPoint.self, forKey: .start)
             let end = try container.decode(WebRTCNormalizedPoint.self, forKey: .end)
-            self = kind == .focusedWindowMoveCommit
-                ? .commitFocusedWindowMove(targetGeneration: targetGeneration, start: start, end: end)
-                : .commitFocusedWindowResize(targetGeneration: targetGeneration, start: start, end: end)
+            if kind == .focusedWindowMoveCommit {
+                let allowsRecoverableOffscreen = if container.contains(.allowsRecoverableOffscreen) {
+                    try container.decode(Bool.self, forKey: .allowsRecoverableOffscreen)
+                } else {
+                    false
+                }
+                self = .commitFocusedWindowMove(
+                    targetGeneration: targetGeneration,
+                    start: start,
+                    end: end,
+                    allowsRecoverableOffscreen: allowsRecoverableOffscreen
+                )
+            } else {
+                self = .commitFocusedWindowResize(
+                    targetGeneration: targetGeneration,
+                    start: start,
+                    end: end
+                )
+            }
         case .text:
             guard !container.contains(.point), !container.contains(.start),
                   !container.contains(.end), !container.contains(.anchor),
@@ -712,11 +886,19 @@ public enum WebRTCInputAction: Codable, Equatable, Sendable {
         case .selectWindowForMove(let point):
             try container.encode(Kind.focusedWindowMoveSelection, forKey: .kind)
             try container.encode(point, forKey: .point)
-        case .commitFocusedWindowMove(let targetGeneration, let start, let end):
+        case .commitFocusedWindowMove(
+            let targetGeneration,
+            let start,
+            let end,
+            let allowsRecoverableOffscreen
+        ):
             try container.encode(Kind.focusedWindowMoveCommit, forKey: .kind)
             try container.encode(targetGeneration, forKey: .targetGeneration)
             try container.encode(start, forKey: .start)
             try container.encode(end, forKey: .end)
+            if allowsRecoverableOffscreen {
+                try container.encode(true, forKey: .allowsRecoverableOffscreen)
+            }
         case .insertText(let text, let focusGeneration):
             try container.encode(Kind.text, forKey: .kind)
             try container.encode(text, forKey: .text)
@@ -743,7 +925,7 @@ public enum WebRTCInputAction: Codable, Equatable, Sendable {
         case .selectWindowForResize(let point), .selectWindowForMove(let point):
             point.isValid
         case .commitFocusedWindowResize(let generation, let start, let end),
-             .commitFocusedWindowMove(let generation, let start, let end):
+             .commitFocusedWindowMove(let generation, let start, let end, _):
             generation != WebRTCInputCapability.zeroUUIDForValidation
                 && start.isValid && end.isValid
         case .insertText(let text, let focusGeneration):

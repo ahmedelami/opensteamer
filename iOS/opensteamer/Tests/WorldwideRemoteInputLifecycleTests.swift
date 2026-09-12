@@ -3157,7 +3157,7 @@ final class WorldwideSessionGenerationFenceTests: XCTestCase {
         )
         XCTAssertEqual(
             viewModel.focusedWindowResizeState.interaction?.target,
-            targetA
+            .init(resize: targetA)
         )
 
         viewModel.selectWindowForFocusedResize(
@@ -3225,7 +3225,7 @@ final class WorldwideSessionGenerationFenceTests: XCTestCase {
 
         XCTAssertEqual(
             viewModel.focusedWindowResizeState.interaction?.target,
-            successor
+            .init(resize: successor)
         )
         XCTAssertEqual(viewModel.debugRemoteInputState.focusGeneration, focusGeneration)
         XCTAssertEqual(viewModel.focusedInputIsSecure, secure)
@@ -4274,8 +4274,9 @@ final class WorldwideSessionGenerationFenceTests: XCTestCase {
 
         await replacementSendGate.open()
         await fulfillment(of: [replacementSendReturned], timeout: 2)
+        let interactionTarget = FocusedWindowInteractionTarget(resize: target)
         for _ in 0 ..< 80
-            where viewModel.focusedWindowResizeState.interaction?.target != target {
+            where viewModel.focusedWindowResizeState.interaction?.target != interactionTarget {
             await Task.yield()
         }
 
@@ -4283,7 +4284,7 @@ final class WorldwideSessionGenerationFenceTests: XCTestCase {
         XCTAssertEqual(viewModel.debugRemoteInputState.earlyFeedbackCount, 0)
         XCTAssertEqual(
             viewModel.focusedWindowResizeState.interaction?.target,
-            target
+            interactionTarget
         )
         XCTAssertEqual(viewModel.debugRemoteInputState.focusGeneration, 520)
         XCTAssertFalse(oldFixture.authorization.isValid)
@@ -4715,7 +4716,7 @@ final class WorldwideFocusedWindowMoveLifecycleTests: XCTestCase {
         fixture.select()
         await fixture.drain()
         fixture.acceptSelection()
-        XCTAssertEqual(fixture.viewModel.focusedWindowInteractionState.interaction?.target, fixture.target)
+        XCTAssertEqual(fixture.viewModel.focusedWindowInteractionState.interaction?.target, fixture.interactionTarget)
 
         // A drag can begin anywhere in the remote image, including outside the selected window.
         fixture.commit(fixture.target.generation)
@@ -4739,7 +4740,10 @@ final class WorldwideFocusedWindowMoveLifecycleTests: XCTestCase {
                 target: successor
             )
         )
-        XCTAssertEqual(fixture.viewModel.focusedWindowInteractionState.interaction?.target, successor)
+        XCTAssertEqual(
+            fixture.viewModel.focusedWindowInteractionState.interaction?.target,
+            .init(move: successor)
+        )
         fixture.commit(fixture.target.generation)
         fixture.viewModel.sendRemoteText("A", focusGeneration: fixture.focusGeneration)
         await fixture.drain()
@@ -4749,6 +4753,95 @@ final class WorldwideFocusedWindowMoveLifecycleTests: XCTestCase {
         XCTAssertEqual(fixture.viewModel.debugRemoteInputState.focusGeneration, fixture.focusGeneration)
         XCTAssertTrue(fixture.viewModel.focusedInputIsSecure)
         XCTAssertTrue(fixture.presentation.authorization.isValid)
+        await fixture.close()
+    }
+
+    @MainActor
+    func testMoveOffscreenCapabilityOptsInAndRetainsFullFrameAcrossScaleFence() async throws {
+        let fixture = try MoveLifecycleFixture(
+            supportsScaleRebinding: true,
+            supportsRecoverableOffscreen: true
+        )
+        XCTAssertTrue(fixture.beginMove())
+        fixture.select()
+        await fixture.drain()
+        fixture.acceptSelection()
+        XCTAssertEqual(
+            fixture.viewModel.focusedWindowInteractionState.interaction?.target,
+            fixture.interactionTarget
+        )
+        XCTAssertNotNil(
+            fixture.viewModel.focusedWindowInteractionState.interaction?
+                .target?.unclippedNormalizedFrame
+        )
+
+        let scaledSize = CGSize(width: 1_536, height: 864)
+        let token = WebRTCVideoPresentationToken(
+            bindingGeneration: 21,
+            dimensionGeneration: 2
+        )
+        fixture.viewModel.screenVideoPresentationDidInvalidate(
+            .formatTransition,
+            token: token,
+            for: fixture.presentation.lease
+        )
+        fixture.viewModel.screenVideoPresentationGeometryDidChange(
+            to: scaledSize,
+            for: fixture.presentation.lease
+        )
+        fixture.viewModel.focusedWindowMoveVideoFrameDidPresent(
+            size: scaledSize,
+            token: token,
+            for: fixture.presentation.lease
+        )
+        XCTAssertEqual(
+            fixture.viewModel.focusedWindowInteractionState.interaction?.target,
+            fixture.interactionTarget
+        )
+
+        fixture.commit(fixture.target.generation, videoSize: scaledSize)
+        await fixture.drain()
+        XCTAssertEqual(fixture.actions.last, .commitFocusedWindowMove(
+            targetGeneration: fixture.target.generation,
+            start: .init(x: 0.95, y: 0.95),
+            end: .init(x: 0.8, y: 0.8),
+            allowsRecoverableOffscreen: true
+        ))
+        await fixture.close()
+
+        let legacy = try MoveLifecycleFixture(supportsRecoverableOffscreen: false)
+        XCTAssertTrue(legacy.beginMove())
+        legacy.select()
+        await legacy.drain()
+        legacy.acceptSelection()
+        legacy.commit(legacy.target.generation)
+        await legacy.drain()
+        XCTAssertEqual(legacy.actions.last, .commitFocusedWindowMove(
+            targetGeneration: legacy.target.generation,
+            start: .init(x: 0.95, y: 0.95),
+            end: .init(x: 0.8, y: 0.8)
+        ))
+        await legacy.close()
+    }
+
+    @MainActor
+    func testNegotiatedMoveRejectsFeedbackMissingTheRequiredFullFrame() async throws {
+        let fixture = try MoveLifecycleFixture(
+            supportsRecoverableOffscreen: true,
+            includesUnclippedFrame: false
+        )
+        XCTAssertTrue(fixture.beginMove())
+        fixture.select()
+        await fixture.drain()
+
+        fixture.acceptSelection()
+
+        XCTAssertFalse(fixture.viewModel.focusedWindowInteractionState.isActive)
+        XCTAssertNil(fixture.viewModel.debugRemoteInputState.focusGeneration)
+        XCTAssertEqual(
+            fixture.viewModel.lastDiagnostic,
+            "The Mac returned mismatched focused-window move feedback."
+        )
         await fixture.close()
     }
 
@@ -4769,7 +4862,13 @@ final class WorldwideFocusedWindowMoveLifecycleTests: XCTestCase {
             id: 2, screenRequestID: fixture.capability.screenRequestID,
             inputSessionID: fixture.capability.inputSessionID, result: .accepted,
             focus: .editable(generation: fixture.focusGeneration, secure: true),
-            windowResize: .init(kind: .targetAcquired, target: fixture.target)
+            windowResize: .init(
+                kind: .targetAcquired,
+                target: .init(
+                    generation: fixture.target.generation,
+                    normalizedFrame: fixture.target.normalizedFrame
+                )
+            )
         ))
         fixture.commit(fixture.target.generation)
         await fixture.drain()
@@ -4801,7 +4900,13 @@ final class WorldwideFocusedWindowMoveLifecycleTests: XCTestCase {
                     id: 1, screenRequestID: fixture.capability.screenRequestID,
                     inputSessionID: fixture.capability.inputSessionID, result: .accepted,
                     focus: .editable(generation: fixture.focusGeneration, secure: true),
-                    windowResize: .init(kind: .windowSelected, target: fixture.target)
+                    windowResize: .init(
+                        kind: .windowSelected,
+                        target: .init(
+                            generation: fixture.target.generation,
+                            normalizedFrame: fixture.target.normalizedFrame
+                        )
+                    )
                 ))
             } else {
                 fixture.deliver(
@@ -4868,7 +4973,7 @@ final class WorldwideFocusedWindowMoveLifecycleTests: XCTestCase {
         )
         XCTAssertEqual(
             fixture.viewModel.focusedWindowInteractionState.interaction?.target,
-            fixture.target
+            fixture.interactionTarget
         )
         fixture.viewModel.screenVideoPresentationGeometryDidChange(
             to: scaledSize,
@@ -4878,7 +4983,7 @@ final class WorldwideFocusedWindowMoveLifecycleTests: XCTestCase {
             fixture.viewModel.focusedWindowInteractionState.interaction
         )
         XCTAssertEqual(suspended.mode, .move)
-        XCTAssertEqual(suspended.target, fixture.target)
+        XCTAssertEqual(suspended.target, fixture.interactionTarget)
         XCTAssertEqual(suspended.awaitingPresentedVideoSize, scaledSize)
         XCTAssertEqual(suspended.binding.viewerVideoSize, fixture.videoSize)
 
@@ -4910,7 +5015,7 @@ final class WorldwideFocusedWindowMoveLifecycleTests: XCTestCase {
         )
         XCTAssertNil(rebound.awaitingPresentedVideoSize)
         XCTAssertEqual(rebound.binding.viewerVideoSize, scaledSize)
-        XCTAssertEqual(rebound.target, fixture.target)
+        XCTAssertEqual(rebound.target, fixture.interactionTarget)
         XCTAssertEqual(fixture.viewModel.debugRemoteInputState.focusGeneration, fixture.focusGeneration)
         XCTAssertTrue(fixture.viewModel.focusedInputIsSecure)
 
@@ -4948,7 +5053,7 @@ final class WorldwideFocusedWindowMoveLifecycleTests: XCTestCase {
             fixture.viewModel.focusedWindowInteractionState.interaction
         )
         XCTAssertEqual(rebound.binding.viewerVideoSize, scaledSize)
-        XCTAssertEqual(rebound.target, fixture.target)
+        XCTAssertEqual(rebound.target, fixture.interactionTarget)
         XCTAssertNil(rebound.awaitingPresentationToken)
 
         // A delayed LiveKit size callback cannot fence or hide the already-proven presentation.
@@ -4982,7 +5087,7 @@ final class WorldwideFocusedWindowMoveLifecycleTests: XCTestCase {
             fixture.viewModel.focusedWindowInteractionState.interaction
         )
         XCTAssertEqual(preserved.mode, .move)
-        XCTAssertEqual(preserved.target, fixture.target)
+        XCTAssertEqual(preserved.target, fixture.interactionTarget)
         XCTAssertEqual(preserved.awaitingPresentationToken, token)
         await fixture.drain()
         XCTAssertEqual(fixture.actions, [
@@ -5192,7 +5297,7 @@ final class WorldwideFocusedWindowMoveLifecycleTests: XCTestCase {
         )
         XCTAssertNil(rebound.awaitingPresentedVideoSize)
         XCTAssertEqual(rebound.binding.viewerVideoSize, fixture.videoSize)
-        XCTAssertEqual(rebound.target, fixture.target)
+        XCTAssertEqual(rebound.target, fixture.interactionTarget)
         await fixture.close()
     }
 
@@ -5297,23 +5402,36 @@ private final class MoveLifecycleFixture {
     let focusGeneration: UInt64 = 701
     let containerSize = CGSize(width: 390, height: 844)
     let videoSize = CGSize(width: 1_920, height: 1_080)
-    let target = WebRTCWindowMoveTarget(
-        generation: UUID(), normalizedFrame: .init(x: 0.2, y: 0.2, width: 0.5, height: 0.4)
-    )
+    let target: WebRTCWindowMoveTarget
+    var interactionTarget: FocusedWindowInteractionTarget { .init(move: target) }
     var actions: [WebRTCInputAction] = []
     var videoSizes: [WebRTCInputVideoSize?] = []
 
     init(
         supportsMove: Bool = true,
         supportsResize: Bool = true,
-        supportsScaleRebinding: Bool = false
+        supportsScaleRebinding: Bool = false,
+        supportsRecoverableOffscreen: Bool = false,
+        includesUnclippedFrame: Bool? = nil
     ) throws {
+        let carriesUnclippedFrame = includesUnclippedFrame
+            ?? supportsRecoverableOffscreen
+        target = WebRTCWindowMoveTarget(
+            generation: UUID(),
+            normalizedFrame: supportsRecoverableOffscreen
+                ? .init(x: 0, y: 0.2, width: 0.2, height: 0.4)
+                : .init(x: 0.2, y: 0.2, width: 0.5, height: 0.4),
+            unclippedNormalizedFrame: carriesUnclippedFrame
+                ? .init(x: -0.3, y: 0.2, width: 0.5, height: 0.4)
+                : nil
+        )
         peer = try WebRTCPeer(configuration: .init(role: .viewer, iceServers: []))
         presentation = viewModel.debugInstallActiveScreenPresentationForTests(
             peer: peer, screenRequestID: focusGeneration,
             supportsFocusedWindowResize: supportsResize,
             supportsFocusedWindowMove: supportsMove,
-            supportsFocusedWindowMoveScaleRebinding: supportsScaleRebinding
+            supportsFocusedWindowMoveScaleRebinding: supportsScaleRebinding,
+            supportsFocusedWindowMoveRecoverableOffscreen: supportsRecoverableOffscreen
         )
         capability = try XCTUnwrap(viewModel.debugRemoteInputState.capability)
         viewModel.debugSetRemoteKeyboardFocusForTests(focusGeneration, secure: true)

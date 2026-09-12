@@ -1,4 +1,5 @@
 import CoreGraphics
+import WebRTCTransport
 
 /// Converts a tap in an aspect-fit renderer into the normalized coordinates of its video.
 /// Letterbox taps are deliberately rejected instead of being clamped onto a screen edge.
@@ -120,6 +121,43 @@ enum AspectFitCoordinateMapper {
             width: normalizedRect.width * visibleRect.width,
             height: normalizedRect.height * visibleRect.height
         )
+    }
+
+    /// Maps negotiated Move feedback without forcing the full window into the video bounds. The
+    /// overlay clips this result to `visibleVideoRect`; ordinary targets keep using `viewRect`.
+    static func unclippedViewRect(
+        forNormalizedRect normalizedRect: CGRect,
+        containerSize: CGSize,
+        videoSize: CGSize
+    ) -> CGRect? {
+        let maximumMagnitude = CGFloat(
+            WebRTCWindowMoveUnclippedNormalizedRect.maximumMagnitude
+        )
+        guard normalizedRect.origin.x.isFinite,
+              normalizedRect.origin.y.isFinite,
+              normalizedRect.width.isFinite,
+              normalizedRect.height.isFinite,
+              normalizedRect.width > 0,
+              normalizedRect.height > 0,
+              abs(normalizedRect.minX) <= maximumMagnitude,
+              abs(normalizedRect.minY) <= maximumMagnitude,
+              normalizedRect.width <= maximumMagnitude,
+              normalizedRect.height <= maximumMagnitude,
+              abs(normalizedRect.maxX) <= maximumMagnitude,
+              abs(normalizedRect.maxY) <= maximumMagnitude,
+              let visibleRect = visibleVideoRect(
+                  containerSize: containerSize,
+                  videoSize: videoSize
+              ) else { return nil }
+        let result = CGRect(
+            x: visibleRect.minX + normalizedRect.minX * visibleRect.width,
+            y: visibleRect.minY + normalizedRect.minY * visibleRect.height,
+            width: normalizedRect.width * visibleRect.width,
+            height: normalizedRect.height * visibleRect.height
+        )
+        guard result.minX.isFinite, result.minY.isFinite,
+              result.width.isFinite, result.height.isFinite else { return nil }
+        return result
     }
 }
 
