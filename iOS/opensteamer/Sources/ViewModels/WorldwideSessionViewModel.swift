@@ -1387,10 +1387,16 @@ final class WorldwideSessionViewModel: ObservableObject {
     var focusedWindowInteractionState: FocusedWindowResizeState { focusedWindowResizeState }
 
     private var signaling: RendezvousSignalingClient?
+    /// Immutable for one admitted media generation. Temporary Debug viewers use the restricted
+    /// topology so connecting a test phone cannot acquire any local audio-session authority.
+    private var sessionMediaTopology: WebRTCTransportMediaTopology = .full
+    private var sessionOwnsAudio: Bool {
+        sessionMediaTopology == .full
+    }
     private var peer: WebRTCPeer? {
         didSet {
             guard oldValue !== peer else { return }
-            startAudioClientDiagnostics(for: peer)
+            startAudioClientDiagnostics(for: sessionOwnsAudio ? peer : nil)
             remoteMediaControlsNegotiated = false
             clearRemoteMediaPresentation()
             cancelScreenMediaViewerSuspension(
@@ -1945,7 +1951,8 @@ final class WorldwideSessionViewModel: ObservableObject {
     }
 
     var canResumeAudioPlayback: Bool {
-        hasActiveSession
+        sessionOwnsAudio
+            && hasActiveSession
             && !audioLifecycle.audioRecoveryRequiresSessionReconnect
             && (audioRequiresExplicitResume || audioStateText == "Playback unavailable")
     }
@@ -1955,7 +1962,8 @@ final class WorldwideSessionViewModel: ObservableObject {
     }
 
     var canToggleIPhoneMicrophone: Bool {
-        hasActiveSession
+        sessionOwnsAudio
+            && hasActiveSession
             && peer != nil
             && !isMicrophoneAdmissionCleanupInProgress
             && !audioLifecycle.audioRecoveryRequiresSessionReconnect
@@ -2018,6 +2026,7 @@ final class WorldwideSessionViewModel: ObservableObject {
     func debugConnectWithInvitationForTests(
         invitationCode input: String,
         debugEndpointOverride: String? = nil,
+        mediaTopology: WebRTCTransportMediaTopology = .full,
         beforeAudioActivation: @MainActor () -> Void = {}
     ) -> Bool {
         guard !isConnecting, !hasActiveSession else { return false }
@@ -2053,7 +2062,22 @@ final class WorldwideSessionViewModel: ObservableObject {
         return connect(
             signalingClient: client,
             provenance: .unauthenticated,
+            mediaTopology: mediaTopology,
             beforeAudioActivation: beforeAudioActivation
+        )
+    }
+
+    /// Debug-device entry point for the temporary second viewer. It deliberately keeps the
+    /// existing audio-capable test constructor above unchanged for audio lifecycle fixtures.
+    @discardableResult
+    func debugConnectTemporaryTestViewer(
+        invitationCode input: String,
+        debugEndpointOverride: String? = nil
+    ) -> Bool {
+        debugConnectWithInvitationForTests(
+            invitationCode: input,
+            debugEndpointOverride: debugEndpointOverride,
+            mediaTopology: .videoControlOnly
         )
     }
     #endif
@@ -2066,10 +2090,12 @@ final class WorldwideSessionViewModel: ObservableObject {
     func connect(
         signalingClient client: RendezvousSignalingClient,
         provenance: MediaSessionProvenance = .unauthenticated,
+        mediaTopology: WebRTCTransportMediaTopology = .full,
         beforeAudioActivation: @MainActor () -> Void = {}
     ) -> Bool {
         guard !isConnecting, !hasActiveSession else { return false }
-        if sessionRetirementTask == nil,
+        if mediaTopology == .full,
+           sessionRetirementTask == nil,
            let retirementError = Self
             .iOSPeerRetirementAdmissionErrorMessage() {
             stateText = "Connection failed"
@@ -2079,15 +2105,21 @@ final class WorldwideSessionViewModel: ObservableObject {
 
         // Validation is complete. Rotate every session-owned fence before lifecycle preparation so
         // a startup-connected-call authorization cannot bind to the retired media generation.
-        beforeAudioActivation()
+        if mediaTopology == .full {
+            beforeAudioActivation()
+        }
         resetPublishedSessionState()
+        sessionMediaTopology = mediaTopology
         sessionGeneration = UUID()
         audioPolicyGeneration = UUID()
         isConnecting = true
         stateText = "Connecting securely"
         signaling = client
         automaticMicrophoneEligibleSessionGeneration =
-            provenance == .authenticatedPairedCoordinatorHandoff ? sessionGeneration : nil
+            mediaTopology == .full
+                && provenance == .authenticatedPairedCoordinatorHandoff
+                    ? sessionGeneration
+                    : nil
         automaticMicrophoneAttemptedSessionGeneration = nil
         manuallyDisabledMicrophoneSessionGeneration = nil
         microphoneAdmissionFailedSessionGeneration = nil
@@ -2128,27 +2160,33 @@ final class WorldwideSessionViewModel: ObservableObject {
                 if sessionRetirementGeneration == retirementGeneration {
                     sessionRetirementTask = nil
                 }
-                if let retirementError = Self
-                    .iOSPeerRetirementAdmissionErrorMessage() {
+                if sessionMediaTopology == .full,
+                   let retirementError = Self
+                       .iOSPeerRetirementAdmissionErrorMessage() {
                     failSession(
                         retirementError,
                         generation: generation
                     )
                     return
                 }
-                audioLifecycle.prepare(serverName: remoteDisplayName)
+                if sessionOwnsAudio {
+                    audioLifecycle.prepare(serverName: remoteDisplayName)
+                }
                 await runSession(client: client, generation: generation)
             }
         } else {
-            if let retirementError = Self
-                .iOSPeerRetirementAdmissionErrorMessage() {
+            if mediaTopology == .full,
+               let retirementError = Self
+                   .iOSPeerRetirementAdmissionErrorMessage() {
                 failSession(
                     retirementError,
                     generation: generation
                 )
                 return true
             }
-            audioLifecycle.prepare(serverName: remoteDisplayName)
+            if mediaTopology == .full {
+                audioLifecycle.prepare(serverName: remoteDisplayName)
+            }
             sessionTask = Task { [weak self] in
                 await self?.runSession(client: client, generation: generation)
             }
@@ -2305,6 +2343,7 @@ final class WorldwideSessionViewModel: ObservableObject {
         lastHandledApplicationLifecyclePhase = .active
         applicationIsActive = true
         refreshScreenLivenessDiagnostic()
+        guard sessionOwnsAudio else { return }
         recoverPassiveAudioLifecyclePreservingEstablishedMicrophone {
             establishedMicrophoneAuthorization in
             audioLifecycle.appBecameActive(
@@ -2322,6 +2361,11 @@ final class WorldwideSessionViewModel: ObservableObject {
         }
         lastHandledApplicationLifecyclePhase = .inactive
         applicationIsActive = false
+        guard sessionOwnsAudio else {
+            suspendRemoteInputForApplicationLifecycle()
+            refreshScreenLivenessDiagnostic()
+            return
+        }
         pausePendingIPhoneMicrophoneForInactiveApp()
         audioLifecycle.appBecameInactive()
         // `.inactive` is also used for short system interruptions while the viewer remains the
@@ -2338,6 +2382,10 @@ final class WorldwideSessionViewModel: ObservableObject {
         lastHandledApplicationLifecyclePhase = .background
         applicationIsActive = false
         suspendRemoteInputForApplicationLifecycle()
+        guard sessionOwnsAudio else {
+            hideScreenForPassiveLifecycleIfNeeded()
+            return
+        }
         pausePendingIPhoneMicrophoneForInactiveApp()
         recoverPassiveAudioLifecyclePreservingEstablishedMicrophone {
             establishedMicrophoneAuthorization in
@@ -2412,6 +2460,7 @@ final class WorldwideSessionViewModel: ObservableObject {
     }
 
     func resumeAudioPlayback() {
+        guard sessionOwnsAudio else { return }
         audioDiagnostics.retryRequested(at: Self.audioDiagnosticsNow())
         ordinaryPlayoutLivenessTracker.reset()
         ordinaryPlayoutAutomaticRecoveryConsumedSessionGeneration = nil
@@ -2426,6 +2475,7 @@ final class WorldwideSessionViewModel: ObservableObject {
     }
 
     func toggleIPhoneMicrophone() {
+        guard sessionOwnsAudio else { return }
         guard !isMicrophoneAdmissionCleanupInProgress else { return }
 
         if microphoneAdmissionFailedSessionGeneration == sessionGeneration {
@@ -6760,18 +6810,22 @@ final class WorldwideSessionViewModel: ObservableObject {
                     role: .viewer,
                     iceServers: iceServers,
                     icePolicy: .directPreferred,
-                    supportsRemoteMediaControls: true
+                    mediaTopology: sessionMediaTopology,
+                    supportsRemoteMediaControls: sessionOwnsAudio,
+                    supportsAudioClientDiagnostics: sessionOwnsAudio
                 )
             )
-            guard let audioTransactionDeviceBinding =
-                    newPeer.iOSAudioTransactionDeviceBinding,
-                  audioLifecycle.bindIOSAudioTransactionDevice(
-                    audioTransactionDeviceBinding
-                  ) else {
-                _ = await newPeer.close(reason: .protocolError)
-                throw WebRTCTransportError.nativeFailure(
-                    "The native iPhone audio transaction authority could not bind the current peer."
-                )
+            if sessionOwnsAudio {
+                guard let audioTransactionDeviceBinding =
+                        newPeer.iOSAudioTransactionDeviceBinding,
+                      audioLifecycle.bindIOSAudioTransactionDevice(
+                        audioTransactionDeviceBinding
+                      ) else {
+                    _ = await newPeer.close(reason: .protocolError)
+                    throw WebRTCTransportError.nativeFailure(
+                        "The native iPhone audio transaction authority could not bind the current peer."
+                    )
+                }
             }
             let coordinator = ICERecoveryCoordinator(
                 restart: { [weak self] in
@@ -6786,34 +6840,36 @@ final class WorldwideSessionViewModel: ObservableObject {
                 }
             )
             peer = newPeer
-            startAudioTransactionEventLoop(
-                peer: newPeer,
-                generation: generation
-            )
-            let newPeerIdentity = ObjectIdentifier(newPeer)
-            await newPeer.installIPhoneMicrophoneTransportSuspensionHandlers(
-                preparation: { [weak self] retirementContext in
-                    guard let self else { return nil }
-                    return prepareIPhoneMicrophoneForTransportSuspension(
-                        retirementContext: retirementContext,
-                        expectedPeerIdentity: newPeerIdentity,
-                        expectedSessionGeneration: generation
-                    )
-                },
-                completion: {
-                    [weak self] retirementContext,
-                    outputOnlyToken,
-                    succeeded in
-                    guard let self else { return }
-                    completeIPhoneMicrophoneTransportSuspension(
-                        retirementContext: retirementContext,
-                        outputOnlyToken: outputOnlyToken,
-                        succeeded: succeeded,
-                        expectedPeerIdentity: newPeerIdentity,
-                        expectedSessionGeneration: generation
-                    )
-                }
-            )
+            if sessionOwnsAudio {
+                startAudioTransactionEventLoop(
+                    peer: newPeer,
+                    generation: generation
+                )
+                let newPeerIdentity = ObjectIdentifier(newPeer)
+                await newPeer.installIPhoneMicrophoneTransportSuspensionHandlers(
+                    preparation: { [weak self] retirementContext in
+                        guard let self else { return nil }
+                        return prepareIPhoneMicrophoneForTransportSuspension(
+                            retirementContext: retirementContext,
+                            expectedPeerIdentity: newPeerIdentity,
+                            expectedSessionGeneration: generation
+                        )
+                    },
+                    completion: {
+                        [weak self] retirementContext,
+                        outputOnlyToken,
+                        succeeded in
+                        guard let self else { return }
+                        completeIPhoneMicrophoneTransportSuspension(
+                            retirementContext: retirementContext,
+                            outputOnlyToken: outputOnlyToken,
+                            succeeded: succeeded,
+                            expectedPeerIdentity: newPeerIdentity,
+                            expectedSessionGeneration: generation
+                        )
+                    }
+                )
+            }
             recoveryCoordinator = coordinator
             startPeerEventLoop(peer: newPeer, signaling: client, generation: generation)
             try await startStatistics(for: newPeer)
@@ -7055,7 +7111,8 @@ final class WorldwideSessionViewModel: ObservableObject {
                         epoch: epoch
                     )
                 }
-                if case .answer = payload {
+                if case .answer = payload,
+                   sessionOwnsAudio {
                     macHostedCallAnswerWasForwardedIfCurrent(
                         sourcePeer: sourcePeer,
                         sourceGeneration: generation,
@@ -7234,6 +7291,7 @@ final class WorldwideSessionViewModel: ObservableObject {
             break
 
         case .macHostedCallEvidenceChanged(let evidence):
+            guard sessionOwnsAudio else { break }
             handleMacHostedCallEvidence(
                 evidence,
                 sourcePeer: sourcePeer,
@@ -7248,10 +7306,16 @@ final class WorldwideSessionViewModel: ObservableObject {
                 .trimmingCharacters(in: .whitespacesAndNewlines),
                !displayName.isEmpty {
                 remoteDisplayName = displayName
-                audioLifecycle.updateServerName(displayName)
+                if sessionOwnsAudio {
+                    audioLifecycle.updateServerName(displayName)
+                }
             }
 
         case .remoteAudioTrack(let track):
+            guard sessionOwnsAudio else {
+                track.setEnabled(false)
+                break
+            }
             remoteAudioTrack = track
             audioLifecycle.remoteAudioBecameAvailable(track)
             if !ordinaryIOSPlayoutProofIsSuppressedByHostedCall {
@@ -7338,14 +7402,19 @@ final class WorldwideSessionViewModel: ObservableObject {
               peer === sourcePeer else { return }
 
         statistics = snapshot
-        audioDiagnostics.observeStatistics(snapshot, at: Self.audioDiagnosticsNow(), wallNow: Date())
-        // Optional native telemetry must never suspend the sequential peer-event consumer.
-        scheduleAudioDiagnosticsSample(from: sourcePeer, generation: generation)
         refreshScreenLivenessDiagnostic()
         await sendScreenClientDiagnosticsHeartbeat(
             through: sourcePeer,
             generation: generation
         )
+        guard sessionOwnsAudio else { return }
+        audioDiagnostics.observeStatistics(
+            snapshot,
+            at: Self.audioDiagnosticsNow(),
+            wallNow: Date()
+        )
+        // Optional native telemetry must never suspend the sequential peer-event consumer.
+        scheduleAudioDiagnosticsSample(from: sourcePeer, generation: generation)
         if hasOwnedIOSHostedCallPlayoutPolicy {
             await refreshIOSHostedCallPlayoutProof(
                 from: sourcePeer,
@@ -7634,6 +7703,7 @@ final class WorldwideSessionViewModel: ObservableObject {
     }
 
     private func tearDown(reason: RemoteSessionEndReason) {
+        let retiringSessionOwnedAudio = sessionOwnsAudio
         invalidateRawMicrophoneOracle()
         ordinaryPlayoutLivenessTracker.reset()
         microphoneAutomaticRecoveryConsumedBinding = nil
@@ -7673,7 +7743,9 @@ final class WorldwideSessionViewModel: ObservableObject {
         isMicrophoneAdmissionCleanupInProgress = false
         microphoneOutputOnlyToken = nil
         microphoneTransportSuspensionBinding = nil
-        audioLifecycle.stop()
+        if retiringSessionOwnedAudio {
+            audioLifecycle.stop()
+        }
         audioPolicyGeneration = UUID()
         verifiedAudioPolicyGeneration = nil
         audioPolicyRequiresFreshRecovery = false
@@ -7729,7 +7801,7 @@ final class WorldwideSessionViewModel: ObservableObject {
             // this consumer proves the old reducer namespace was reset before admission returns.
             let audioTransactionRetirementSucceeded =
                 await oldAudioTransactionEventTask?.value
-                    ?? (oldPeer == nil)
+                    ?? (!retiringSessionOwnedAudio || oldPeer == nil)
             await oldRecoveryCoordinator?.cancel()
             await oldSignaling?.close()
             return precedingRetirementSucceeded
@@ -7737,6 +7809,7 @@ final class WorldwideSessionViewModel: ObservableObject {
                 && audioTransactionRetirementSucceeded
         }
         sessionRetirementTask = retirementTask
+        sessionMediaTopology = .full
     }
 
     private func resetPublishedSessionState() {
@@ -7807,6 +7880,11 @@ final class WorldwideSessionViewModel: ObservableObject {
     private func macHostedCallChallengeChanged(
         _ challenge: WebRTCMacHostedCallChallenge?
     ) {
+        guard sessionOwnsAudio else {
+            retireMacHostedCallChallengeSendAttempt()
+            currentMacHostedCallChallenge = nil
+            return
+        }
         if currentMacHostedCallChallenge != challenge {
             retireMacHostedCallChallengeSendAttempt()
         }
@@ -7843,7 +7921,8 @@ final class WorldwideSessionViewModel: ObservableObject {
     /// answer has already crossed signaling. The peer independently rechecks native health and the
     /// bidirectional SDP capability before touching the wire.
     private func sendMacHostedCallChallengeIfPossible() {
-        guard let challenge = currentMacHostedCallChallenge,
+        guard sessionOwnsAudio,
+              let challenge = currentMacHostedCallChallenge,
               challenge.isValid,
               let sourcePeer = peer,
               isPeerConnected,
@@ -8029,7 +8108,8 @@ final class WorldwideSessionViewModel: ObservableObject {
         sourcePeer: WebRTCPeer,
         sourceGeneration: UUID
     ) {
-        guard sourceGeneration == sessionGeneration,
+        guard sessionOwnsAudio,
+              sourceGeneration == sessionGeneration,
               peer === sourcePeer else {
             return
         }
@@ -10725,10 +10805,12 @@ final class WorldwideSessionViewModel: ObservableObject {
         // The authenticated, current-generation inactive acknowledgement is the recovery proof
         // that permits remote audio to leave the fail-closed mute gate.
         recordViewerTransportHealthProof()
-        audioLifecycle.transportBecameHealthy()
         reconcileRemoteMediaCommandAvailability()
-        establishAutomaticIPhoneMicrophoneIntentIfEligible()
-        continueIPhoneMicrophoneEnablementIfPossible()
+        if sessionOwnsAudio {
+            audioLifecycle.transportBecameHealthy()
+            establishAutomaticIPhoneMicrophoneIntentIfEligible()
+            continueIPhoneMicrophoneEnablementIfPossible()
+        }
         await recoveryCoordinator?.iceStateChanged(.connected)
         scheduleScreenPresentationRecoveryIfNeeded()
     }
@@ -11248,6 +11330,14 @@ final class WorldwideSessionViewModel: ObservableObject {
     /// reentrancy tests to prove whether a replacement connect is accepted deterministically.
     func debugInstallSessionRunner(_ runner: @escaping @MainActor () async -> Void) {
         debugSessionRunner = runner
+    }
+
+    var debugSessionMediaTopologyForTests: WebRTCTransportMediaTopology {
+        sessionMediaTopology
+    }
+
+    var debugCurrentPeerForTests: WebRTCPeer? {
+        peer
     }
 
     func debugInstallIPhoneMicrophonePermissionRequester(
@@ -12422,11 +12512,13 @@ final class WorldwideSessionViewModel: ObservableObject {
             stateText = "Connected"
         }
         recordViewerTransportHealthProof()
-        audioLifecycle.transportBecameHealthy()
         reconcileRemoteMediaCommandAvailability()
-        await activatePendingIOSStartupConnectedCallPlayoutIfPossible()
-        establishAutomaticIPhoneMicrophoneIntentIfEligible()
-        continueIPhoneMicrophoneEnablementIfPossible()
+        if sessionOwnsAudio {
+            audioLifecycle.transportBecameHealthy()
+            await activatePendingIOSStartupConnectedCallPlayoutIfPossible()
+            establishAutomaticIPhoneMicrophoneIntentIfEligible()
+            continueIPhoneMicrophoneEnablementIfPossible()
+        }
         await recoveryCoordinator?.iceStateChanged(state)
         scheduleScreenPresentationRecoveryIfNeeded()
     }
@@ -12746,7 +12838,12 @@ final class WorldwideSessionViewModel: ObservableObject {
         _ state: String,
         requiresProof: Bool = false
     ) {
-        audioDiagnostics.record(.transportChanged, at: Self.audioDiagnosticsNow())
+        if sessionOwnsAudio {
+            audioDiagnostics.record(
+                .transportChanged,
+                at: Self.audioDiagnosticsNow()
+            )
+        }
         if screenMediaViewerAttempt?.phase == .resumed {
             // A completed resume may still carry an RTP freshness floor. Keep that non-covering
             // fence with the retained drawable so transport recovery cannot reinstall black or
@@ -12762,12 +12859,14 @@ final class WorldwideSessionViewModel: ObservableObject {
         clearRemoteMediaPresentation()
         invalidateMacHostedCallEvidence(notifyLifecycle: false)
         retireIOSHostedCallPlayoutAttempt()
-        audioLifecycle.transportBecameUncertain()
-        suspendIPhoneMicrophone(
-            stateText: "Paused — reconnecting",
-            preserveIntent: true,
-            reprovePlayout: false
-        )
+        if sessionOwnsAudio {
+            audioLifecycle.transportBecameUncertain()
+            suspendIPhoneMicrophone(
+                stateText: "Paused — reconnecting",
+                preserveIntent: true,
+                reprovePlayout: false
+            )
+        }
         let answerWasAwaitingSend = restartAnswerAwaitingSendEpoch != nil
         if let requestKey = pendingRecoveryProbe?.requestKey {
             earlyControlAcknowledgements.removeValue(forKey: requestKey)?

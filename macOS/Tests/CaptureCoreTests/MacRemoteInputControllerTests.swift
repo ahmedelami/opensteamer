@@ -66,6 +66,795 @@ final class MacRemoteInputControllerTests: XCTestCase {
         )
     }
 
+    func testLatestOwnerWinsAndStaleOwnerCannotRevokeOrReplaceGeometry() throws {
+        let system = MockMacRemoteInputSystem()
+        system.bounds = CGRect(x: 0, y: 0, width: 1_920, height: 1_080)
+        let clock = MockMacRemoteInputClock()
+        let controller = MacRemoteInputController(
+            allowRemoteControl: true,
+            system: system,
+            clock: clock
+        )
+        let firstOwner = MacRemoteInputOwnerToken()
+        let secondOwner = MacRemoteInputOwnerToken()
+        let firstSession = UUID()
+        let secondSession = UUID()
+
+        XCTAssertEqual(
+            controller.arm(
+                displayID: displayID,
+                screenRequestID: showID,
+                inputSessionID: firstSession,
+                ownerToken: firstOwner
+            ),
+            .armed
+        )
+        let landscapeGeometry = try XCTUnwrap(
+            ScreenVideoFrameGeometry(
+                surfaceWidth: 1_920,
+                surfaceHeight: 1_080,
+                contentRect: CGRect(x: 0, y: 0, width: 1_920, height: 1_080),
+                contentScale: 1,
+                scaleFactor: 1
+            )
+        )
+        controller.updateScreenVideoFrameGeometry(
+            landscapeGeometry,
+            ownerToken: firstOwner
+        )
+        clock.advance(by: 0.750)
+        XCTAssertEqual(
+            controller.handleTap(
+                screenRequestID: showID,
+                inputSessionID: firstSession,
+                normalizedPoint: .init(x: 0.25, y: 0.75),
+                viewerVideoSize: .init(width: 1_920, height: 1_080)
+            ),
+            .accepted(.none)
+        )
+
+        XCTAssertEqual(
+            controller.arm(
+                displayID: displayID,
+                screenRequestID: showID + 1,
+                inputSessionID: secondSession,
+                ownerToken: secondOwner,
+                authoritativeDisplayBounds: CGRect(x: 100, y: 200, width: 603, height: 1_311)
+            ),
+            .armed
+        )
+        let portraitGeometry = try XCTUnwrap(
+            ScreenVideoFrameGeometry(
+                surfaceWidth: 1_206,
+                surfaceHeight: 2_622,
+                contentRect: CGRect(x: 0, y: 0, width: 603, height: 1_311),
+                contentScale: 1,
+                scaleFactor: 2
+            )
+        )
+        controller.updateScreenVideoFrameGeometry(
+            portraitGeometry,
+            ownerToken: secondOwner
+        )
+        clock.advance(by: 0.750)
+
+        controller.revoke(ifOwnedBy: firstOwner)
+        controller.revoke()
+        controller.updateScreenVideoFrameGeometry(nil, ownerToken: firstOwner)
+        controller.updateScreenVideoFrameGeometry(
+            landscapeGeometry,
+            ownerToken: firstOwner
+        )
+        controller.updateAuthoritativeDisplayBounds(
+            CGRect(x: 0, y: 0, width: 1_280, height: 720),
+            for: displayID,
+            ownerToken: firstOwner
+        )
+        controller.updateAuthoritativeDisplayBounds(
+            CGRect(x: 0, y: 0, width: CGFloat.nan, height: 720),
+            for: displayID,
+            ownerToken: firstOwner
+        )
+
+        XCTAssertEqual(
+            controller.handleTap(
+                screenRequestID: showID,
+                inputSessionID: firstSession,
+                normalizedPoint: .init(x: 0.25, y: 0.75),
+                viewerVideoSize: .init(width: 1_920, height: 1_080)
+            ),
+            .rejected(.staleSession)
+        )
+        XCTAssertEqual(
+            controller.handleTap(
+                screenRequestID: showID + 1,
+                inputSessionID: secondSession,
+                normalizedPoint: .init(x: 0.25, y: 0.75),
+                viewerVideoSize: .init(width: 1_206, height: 2_622)
+            ),
+            .accepted(.none)
+        )
+        let posted = try XCTUnwrap(system.postedMousePoints.last)
+        XCTAssertEqual(posted.x, 250.75, accuracy: 0.000_1)
+        XCTAssertEqual(posted.y, 1_183.25, accuracy: 0.000_1)
+
+        controller.revoke(ifOwnedBy: secondOwner)
+        XCTAssertEqual(
+            controller.handleTap(
+                screenRequestID: showID + 1,
+                inputSessionID: secondSession,
+                normalizedPoint: .init(x: 0.25, y: 0.75),
+                viewerVideoSize: .init(width: 1_206, height: 2_622)
+            ),
+            .rejected(.staleSession)
+        )
+    }
+
+    func testFailedSuccessorArmPreservesIncumbentOwner() throws {
+        let system = MockMacRemoteInputSystem()
+        let clock = MockMacRemoteInputClock()
+        let controller = MacRemoteInputController(
+            allowRemoteControl: true,
+            system: system,
+            clock: clock
+        )
+        let firstOwner = MacRemoteInputOwnerToken()
+        let secondOwner = MacRemoteInputOwnerToken()
+        let geometry = try XCTUnwrap(fullFrameGeometry(for: system.bounds!))
+
+        XCTAssertEqual(
+            controller.arm(
+                displayID: displayID,
+                screenRequestID: showID,
+                inputSessionID: sessionID,
+                ownerToken: firstOwner,
+                initialFrameGeometry: geometry
+            ),
+            .armed
+        )
+        clock.advance(by: 0.750)
+        XCTAssertEqual(tap(controller), .accepted(.none))
+
+        system.displayBoundsSequence = [nil]
+        XCTAssertEqual(
+            controller.arm(
+                displayID: displayID + 1,
+                screenRequestID: showID + 1,
+                inputSessionID: UUID(),
+                ownerToken: secondOwner,
+                initialFrameGeometry: geometry
+            ),
+            .displayUnavailable
+        )
+        XCTAssertEqual(tap(controller), .accepted(.none))
+
+        XCTAssertEqual(
+            controller.arm(
+                displayID: displayID,
+                screenRequestID: showID + 1,
+                inputSessionID: UUID(),
+                ownerToken: secondOwner,
+                initialFrameGeometry: geometry,
+                authoritativeDisplayBounds: CGRect(
+                    x: 0,
+                    y: 0,
+                    width: CGFloat.nan,
+                    height: 1_080
+                )
+            ),
+            .displayUnavailable
+        )
+        XCTAssertEqual(tap(controller), .accepted(.none))
+    }
+
+    func testOlderShowCompletionCannotDisplaceNewerSuccessfullyArmedViewer() throws {
+        let system = MockMacRemoteInputSystem()
+        let clock = MockMacRemoteInputClock()
+        let controller = MacRemoteInputController(
+            allowRemoteControl: true,
+            system: system,
+            clock: clock
+        )
+        let firstOwner = MacRemoteInputOwnerToken()
+        let secondOwner = MacRemoteInputOwnerToken()
+        let firstClaim = controller.reserveOwnershipClaim(for: firstOwner)
+        let secondClaim = controller.reserveOwnershipClaim(for: secondOwner)
+        let geometry = try XCTUnwrap(fullFrameGeometry(for: system.bounds!))
+        let secondSession = UUID()
+
+        XCTAssertEqual(
+            controller.arm(
+                displayID: displayID,
+                screenRequestID: showID + 1,
+                inputSessionID: secondSession,
+                ownerToken: secondOwner,
+                ownershipClaim: secondClaim,
+                initialFrameGeometry: geometry
+            ),
+            .armed
+        )
+        XCTAssertEqual(
+            controller.arm(
+                displayID: displayID,
+                screenRequestID: showID,
+                inputSessionID: sessionID,
+                ownerToken: firstOwner,
+                ownershipClaim: firstClaim,
+                initialFrameGeometry: geometry
+            ),
+            .superseded
+        )
+        clock.advance(by: 0.750)
+        XCTAssertEqual(
+            controller.handleTap(
+                screenRequestID: showID + 1,
+                inputSessionID: secondSession,
+                normalizedPoint: .init(x: 0.5, y: 0.5),
+                viewerVideoSize: .init(width: 1_920, height: 1_080)
+            ),
+            .accepted(.none)
+        )
+    }
+
+    func testPendingNewerShowDoesNotDisplaceUntilItSuccessfullyArms() throws {
+        let system = MockMacRemoteInputSystem()
+        let clock = MockMacRemoteInputClock()
+        let controller = MacRemoteInputController(
+            allowRemoteControl: true,
+            system: system,
+            clock: clock
+        )
+        let firstOwner = MacRemoteInputOwnerToken()
+        let secondOwner = MacRemoteInputOwnerToken()
+        let firstClaim = controller.reserveOwnershipClaim(for: firstOwner)
+        let secondClaim = controller.reserveOwnershipClaim(for: secondOwner)
+        let geometry = try XCTUnwrap(fullFrameGeometry(for: system.bounds!))
+        let secondSession = UUID()
+
+        XCTAssertEqual(
+            controller.arm(
+                displayID: displayID,
+                screenRequestID: showID,
+                inputSessionID: sessionID,
+                ownerToken: firstOwner,
+                ownershipClaim: firstClaim,
+                initialFrameGeometry: geometry
+            ),
+            .armed,
+            "A reservation alone must not let a viewer that might fail displace the last successful Show."
+        )
+        XCTAssertEqual(
+            controller.arm(
+                displayID: displayID,
+                screenRequestID: showID + 1,
+                inputSessionID: secondSession,
+                ownerToken: secondOwner,
+                ownershipClaim: secondClaim,
+                initialFrameGeometry: geometry
+            ),
+            .armed
+        )
+        clock.advance(by: 0.750)
+        XCTAssertEqual(
+            controller.handleTap(
+                screenRequestID: showID,
+                inputSessionID: sessionID,
+                normalizedPoint: .init(x: 0.5, y: 0.5),
+                viewerVideoSize: .init(width: 1_920, height: 1_080)
+            ),
+            .rejected(.staleSession)
+        )
+        XCTAssertEqual(
+            controller.handleTap(
+                screenRequestID: showID + 1,
+                inputSessionID: secondSession,
+                normalizedPoint: .init(x: 0.5, y: 0.5),
+                viewerVideoSize: .init(width: 1_920, height: 1_080)
+            ),
+            .accepted(.none)
+        )
+    }
+
+    func testAutomaticResumeClaimCannotStealAfterNewerViewerArmsAndHides() throws {
+        let system = MockMacRemoteInputSystem()
+        let controller = makeController(system: system)
+        let firstOwner = MacRemoteInputOwnerToken()
+        let secondOwner = MacRemoteInputOwnerToken()
+        let firstClaim = controller.reserveOwnershipClaim(for: firstOwner)
+        let geometry = try XCTUnwrap(fullFrameGeometry(for: system.bounds!))
+
+        XCTAssertEqual(
+            controller.arm(
+                displayID: displayID,
+                screenRequestID: showID,
+                inputSessionID: sessionID,
+                ownerToken: firstOwner,
+                ownershipClaim: firstClaim,
+                initialFrameGeometry: geometry
+            ),
+            .armed
+        )
+        controller.revoke(ifOwnedBy: firstOwner)
+
+        let secondClaim = controller.reserveOwnershipClaim(for: secondOwner)
+        XCTAssertEqual(
+            controller.arm(
+                displayID: displayID,
+                screenRequestID: showID + 1,
+                inputSessionID: UUID(),
+                ownerToken: secondOwner,
+                ownershipClaim: secondClaim,
+                initialFrameGeometry: geometry
+            ),
+            .armed
+        )
+        controller.revoke(ifOwnedBy: secondOwner)
+
+        XCTAssertEqual(
+            controller.arm(
+                displayID: displayID,
+                screenRequestID: showID,
+                inputSessionID: UUID(),
+                ownerToken: firstOwner,
+                ownershipClaim: firstClaim,
+                initialFrameGeometry: geometry
+            ),
+            .superseded
+        )
+
+        let freshFirstClaim = controller.reserveOwnershipClaim(for: firstOwner)
+        XCTAssertEqual(
+            controller.arm(
+                displayID: displayID,
+                screenRequestID: showID + 2,
+                inputSessionID: UUID(),
+                ownerToken: firstOwner,
+                ownershipClaim: freshFirstClaim,
+                initialFrameGeometry: geometry
+            ),
+            .armed
+        )
+    }
+
+    func testFailedNewerShowDoesNotDisplaceEarlierSuccessfulClaim() throws {
+        let system = MockMacRemoteInputSystem()
+        let controller = makeController(system: system)
+        let firstOwner = MacRemoteInputOwnerToken()
+        let secondOwner = MacRemoteInputOwnerToken()
+        let firstClaim = controller.reserveOwnershipClaim(for: firstOwner)
+        let geometry = try XCTUnwrap(fullFrameGeometry(for: system.bounds!))
+
+        XCTAssertEqual(
+            controller.arm(
+                displayID: displayID,
+                screenRequestID: showID,
+                inputSessionID: sessionID,
+                ownerToken: firstOwner,
+                ownershipClaim: firstClaim,
+                initialFrameGeometry: geometry
+            ),
+            .armed
+        )
+        controller.revoke(ifOwnedBy: firstOwner)
+
+        let failedClaim = controller.reserveOwnershipClaim(for: secondOwner)
+        system.displayBoundsSequence = [nil]
+        XCTAssertEqual(
+            controller.arm(
+                displayID: displayID + 1,
+                screenRequestID: showID + 1,
+                inputSessionID: UUID(),
+                ownerToken: secondOwner,
+                ownershipClaim: failedClaim,
+                initialFrameGeometry: geometry
+            ),
+            .displayUnavailable
+        )
+        XCTAssertEqual(
+            controller.arm(
+                displayID: displayID,
+                screenRequestID: showID,
+                inputSessionID: UUID(),
+                ownerToken: firstOwner,
+                ownershipClaim: firstClaim,
+                initialFrameGeometry: geometry
+            ),
+            .armed
+        )
+    }
+
+    func testFailedPreparedSuccessorAcknowledgementPreservesCommittedIncumbent() throws {
+        let system = MockMacRemoteInputSystem()
+        let clock = MockMacRemoteInputClock()
+        let controller = MacRemoteInputController(
+            allowRemoteControl: true,
+            system: system,
+            clock: clock
+        )
+        let firstOwner = MacRemoteInputOwnerToken()
+        let secondOwner = MacRemoteInputOwnerToken()
+        let geometry = try XCTUnwrap(fullFrameGeometry(for: system.bounds!))
+        let firstRevocation = RemoteInputRevocationProbe()
+        let secondRevocation = RemoteInputRevocationProbe()
+        let firstActivation = try preparedActivation(
+            controller.prepareArm(
+                displayID: displayID,
+                screenRequestID: showID,
+                inputSessionID: sessionID,
+                ownerToken: firstOwner,
+                ownershipClaim: controller.reserveOwnershipClaim(for: firstOwner),
+                initialFrameGeometry: geometry,
+                revokeAuthorization: firstRevocation.revoke
+            )
+        )
+        XCTAssertTrue(try controller.withPreparedActivationCommit(firstActivation) { grants in
+            XCTAssertTrue(grants)
+        })
+
+        let secondSession = UUID()
+        let secondActivation = try preparedActivation(
+            controller.prepareArm(
+                displayID: displayID,
+                screenRequestID: showID + 1,
+                inputSessionID: secondSession,
+                ownerToken: secondOwner,
+                ownershipClaim: controller.reserveOwnershipClaim(for: secondOwner),
+                initialFrameGeometry: geometry,
+                revokeAuthorization: secondRevocation.revoke
+            )
+        )
+        XCTAssertThrowsError(
+            try controller.withPreparedActivationCommit(secondActivation) { grants in
+                XCTAssertTrue(grants)
+                throw PreparedActivationTestError.acknowledgementFailed
+            }
+        )
+
+        XCTAssertTrue(controller.isCommitted(firstActivation))
+        XCTAssertFalse(firstRevocation.isRevoked)
+        XCTAssertTrue(secondRevocation.isRevoked)
+        clock.advance(by: 0.750)
+        XCTAssertEqual(tap(controller), .accepted(.none))
+    }
+
+    func testOlderPreparedActivationDowngradesToViewOnlyAfterNewerCommit() throws {
+        let system = MockMacRemoteInputSystem()
+        let controller = makeController(system: system)
+        let firstOwner = MacRemoteInputOwnerToken()
+        let secondOwner = MacRemoteInputOwnerToken()
+        let firstClaim = controller.reserveOwnershipClaim(for: firstOwner)
+        let secondClaim = controller.reserveOwnershipClaim(for: secondOwner)
+        let firstRevocation = RemoteInputRevocationProbe()
+        let secondRevocation = RemoteInputRevocationProbe()
+        let geometry = try XCTUnwrap(fullFrameGeometry(for: system.bounds!))
+        let firstActivation = try preparedActivation(
+            controller.prepareArm(
+                displayID: displayID,
+                screenRequestID: showID,
+                inputSessionID: sessionID,
+                ownerToken: firstOwner,
+                ownershipClaim: firstClaim,
+                initialFrameGeometry: geometry,
+                revokeAuthorization: firstRevocation.revoke
+            )
+        )
+        let secondSession = UUID()
+        let secondActivation = try preparedActivation(
+            controller.prepareArm(
+                displayID: displayID,
+                screenRequestID: showID + 1,
+                inputSessionID: secondSession,
+                ownerToken: secondOwner,
+                ownershipClaim: secondClaim,
+                initialFrameGeometry: geometry,
+                revokeAuthorization: secondRevocation.revoke
+            )
+        )
+
+        XCTAssertTrue(try controller.withPreparedActivationCommit(secondActivation) { grants in
+            XCTAssertTrue(grants)
+        })
+        XCTAssertFalse(try controller.withPreparedActivationCommit(firstActivation) { grants in
+            XCTAssertFalse(grants, "The losing viewer must receive a view-only Active ACK.")
+        })
+
+        XCTAssertFalse(controller.isCommitted(firstActivation))
+        XCTAssertTrue(controller.isCommitted(secondActivation))
+        XCTAssertTrue(firstRevocation.isRevoked)
+        XCTAssertFalse(secondRevocation.isRevoked)
+    }
+
+    func testFinalTCCLossRevokesIncumbentBeforeViewOnlyDowngrade() throws {
+        let system = MockMacRemoteInputSystem()
+        let controller = makeController(system: system)
+        let firstOwner = MacRemoteInputOwnerToken()
+        let secondOwner = MacRemoteInputOwnerToken()
+        let geometry = try XCTUnwrap(fullFrameGeometry(for: system.bounds!))
+        let firstRevocation = RemoteInputRevocationProbe()
+        let firstActivation = try preparedActivation(
+            controller.prepareArm(
+                displayID: displayID,
+                screenRequestID: showID,
+                inputSessionID: sessionID,
+                ownerToken: firstOwner,
+                ownershipClaim: controller.reserveOwnershipClaim(for: firstOwner),
+                initialFrameGeometry: geometry,
+                revokeAuthorization: firstRevocation.revoke
+            )
+        )
+        XCTAssertTrue(try controller.withPreparedActivationCommit(firstActivation) { grants in
+            XCTAssertTrue(grants)
+        })
+
+        let candidateRevocation = RemoteInputRevocationProbe()
+        let candidateActivation = try preparedActivation(
+            controller.prepareArm(
+                displayID: displayID,
+                screenRequestID: showID + 1,
+                inputSessionID: UUID(),
+                ownerToken: secondOwner,
+                ownershipClaim: controller.reserveOwnershipClaim(for: secondOwner),
+                initialFrameGeometry: geometry,
+                revokeAuthorization: candidateRevocation.revoke
+            )
+        )
+        system.permissions = .init(accessibilityTrusted: false, postEventAllowed: true)
+        XCTAssertFalse(try controller.withPreparedActivationCommit(candidateActivation) { grants in
+            XCTAssertFalse(grants)
+        })
+        XCTAssertTrue(firstRevocation.isRevoked)
+        XCTAssertTrue(candidateRevocation.isRevoked)
+
+        system.permissions = .init(accessibilityTrusted: true, postEventAllowed: true)
+        XCTAssertEqual(tap(controller), .rejected(.staleSession))
+    }
+
+    func testObservedTCCLossInvalidatesEveryPreparedActivationAndOldResumeClaim() throws {
+        let system = MockMacRemoteInputSystem()
+        let controller = makeController(system: system)
+        let firstOwner = MacRemoteInputOwnerToken()
+        let secondOwner = MacRemoteInputOwnerToken()
+        let observerOwner = MacRemoteInputOwnerToken()
+        let geometry = try XCTUnwrap(fullFrameGeometry(for: system.bounds!))
+        let firstClaim = controller.reserveOwnershipClaim(for: firstOwner)
+        let firstRevocation = RemoteInputRevocationProbe()
+        let firstActivation = try preparedActivation(
+            controller.prepareArm(
+                displayID: displayID,
+                screenRequestID: showID,
+                inputSessionID: sessionID,
+                ownerToken: firstOwner,
+                ownershipClaim: firstClaim,
+                initialFrameGeometry: geometry,
+                revokeAuthorization: firstRevocation.revoke
+            )
+        )
+        XCTAssertTrue(try controller.withPreparedActivationCommit(firstActivation) { grants in
+            XCTAssertTrue(grants)
+        })
+
+        let pendingRevocation = RemoteInputRevocationProbe()
+        let pendingActivation = try preparedActivation(
+            controller.prepareArm(
+                displayID: displayID,
+                screenRequestID: showID + 1,
+                inputSessionID: UUID(),
+                ownerToken: secondOwner,
+                ownershipClaim: controller.reserveOwnershipClaim(for: secondOwner),
+                initialFrameGeometry: geometry,
+                revokeAuthorization: pendingRevocation.revoke
+            )
+        )
+
+        system.permissions = .init(accessibilityTrusted: false, postEventAllowed: true)
+        _ = controller.reserveOwnershipClaim(for: observerOwner)
+        XCTAssertTrue(firstRevocation.isRevoked)
+
+        system.permissions = .init(accessibilityTrusted: true, postEventAllowed: true)
+        XCTAssertFalse(try controller.withPreparedActivationCommit(pendingActivation) { grants in
+            XCTAssertFalse(grants)
+        })
+        XCTAssertTrue(pendingRevocation.isRevoked)
+
+        let staleResumeRevocation = RemoteInputRevocationProbe()
+        switch controller.prepareArm(
+            displayID: displayID,
+            screenRequestID: showID,
+            inputSessionID: UUID(),
+            ownerToken: firstOwner,
+            ownershipClaim: firstClaim,
+            initialFrameGeometry: geometry,
+            revokeAuthorization: staleResumeRevocation.revoke
+        ) {
+        case .superseded:
+            break
+        default:
+            XCTFail("A pre-TCC-loss automatic-resume claim must remain superseded.")
+        }
+        staleResumeRevocation.revoke()
+
+        let freshClaim = controller.reserveOwnershipClaim(for: firstOwner)
+        let freshActivation = try preparedActivation(
+            controller.prepareArm(
+                displayID: displayID,
+                screenRequestID: showID + 2,
+                inputSessionID: UUID(),
+                ownerToken: firstOwner,
+                ownershipClaim: freshClaim,
+                initialFrameGeometry: geometry,
+                revokeAuthorization: {}
+            )
+        )
+        XCTAssertTrue(try controller.withPreparedActivationCommit(freshActivation) { grants in
+            XCTAssertTrue(grants)
+        })
+    }
+
+    func testEveryLiveInputPermissionLossInvalidatesPreparedSuccessorAndRevokesIncumbent()
+        throws {
+        for action in ["tap", "drag", "scroll", "resize", "key"] {
+            let system = MockMacRemoteInputSystem()
+            let clock = MockMacRemoteInputClock()
+            let controller = makeController(system: system, clock: clock)
+            let incumbentOwner = MacRemoteInputOwnerToken()
+            let successorOwner = MacRemoteInputOwnerToken()
+            let geometry = try XCTUnwrap(fullFrameGeometry(for: system.bounds!))
+            let incumbentRevocation = RemoteInputRevocationProbe()
+            let incumbentActivation = try preparedActivation(
+                controller.prepareArm(
+                    displayID: displayID,
+                    screenRequestID: showID,
+                    inputSessionID: sessionID,
+                    ownerToken: incumbentOwner,
+                    ownershipClaim: controller.reserveOwnershipClaim(for: incumbentOwner),
+                    initialFrameGeometry: geometry,
+                    revokeAuthorization: incumbentRevocation.revoke
+                )
+            )
+            XCTAssertTrue(
+                try controller.withPreparedActivationCommit(incumbentActivation) { grants in
+                    XCTAssertTrue(grants, action)
+                },
+                action
+            )
+            clock.advance(by: 0.750)
+
+            if action == "key" {
+                let field = system.makeElement(role: "AXTextField", settable: true)
+                system.hitElement = field
+                system.currentFocusedElement = field
+                XCTAssertEqual(
+                    tap(controller),
+                    .accepted(.editable(generation: 1, secure: false)),
+                    action
+                )
+            }
+
+            let successorRevocation = RemoteInputRevocationProbe()
+            let successorActivation = try preparedActivation(
+                controller.prepareArm(
+                    displayID: displayID,
+                    screenRequestID: showID + 1,
+                    inputSessionID: UUID(),
+                    ownerToken: successorOwner,
+                    ownershipClaim: controller.reserveOwnershipClaim(for: successorOwner),
+                    initialFrameGeometry: geometry,
+                    revokeAuthorization: successorRevocation.revoke
+                )
+            )
+
+            system.permissions = .init(
+                accessibilityTrusted: false,
+                postEventAllowed: true
+            )
+            let result: MacRemoteInputResult
+            switch action {
+            case "tap":
+                result = tap(controller)
+            case "drag":
+                result = drag(controller)
+            case "scroll":
+                result = scroll(controller)
+            case "resize":
+                result = controller.requestFocusedWindowResizeTarget(
+                    screenRequestID: showID,
+                    inputSessionID: sessionID,
+                    viewerVideoSize: .init(width: 1_920, height: 1_080)
+                ).result
+            case "key":
+                result = controller.pressKey(
+                    screenRequestID: showID,
+                    inputSessionID: sessionID,
+                    focusGeneration: 1,
+                    key: .returnKey
+                )
+            default:
+                XCTFail("Unknown permission-loss action fixture: \(action)")
+                continue
+            }
+            XCTAssertEqual(result, .rejected(.permissionRequired), action)
+            XCTAssertTrue(
+                incumbentRevocation.isRevoked,
+                "\(action) must revoke the incumbent wire authorization after unlocking."
+            )
+
+            system.permissions = .init(
+                accessibilityTrusted: true,
+                postEventAllowed: true
+            )
+            XCTAssertFalse(
+                try controller.withPreparedActivationCommit(successorActivation) { grants in
+                    XCTAssertFalse(grants, action)
+                },
+                action
+            )
+            XCTAssertTrue(successorRevocation.isRevoked, action)
+            XCTAssertEqual(tap(controller), .rejected(.staleSession), action)
+        }
+    }
+
+    func testWrongControllerCannotConsumePreparedActivation() throws {
+        let system = MockMacRemoteInputSystem()
+        let owner = MacRemoteInputOwnerToken()
+        let firstController = makeController(system: system)
+        let secondController = makeController(system: system)
+        let revocation = RemoteInputRevocationProbe()
+        let activation = try preparedActivation(
+            firstController.prepareArm(
+                displayID: displayID,
+                screenRequestID: showID,
+                inputSessionID: sessionID,
+                ownerToken: owner,
+                ownershipClaim: firstController.reserveOwnershipClaim(for: owner),
+                initialFrameGeometry: try XCTUnwrap(fullFrameGeometry(for: system.bounds!)),
+                revokeAuthorization: revocation.revoke
+            )
+        )
+
+        XCTAssertFalse(try secondController.withPreparedActivationCommit(activation) { grants in
+            XCTAssertFalse(grants)
+        })
+        XCTAssertFalse(revocation.isRevoked)
+        XCTAssertTrue(try firstController.withPreparedActivationCommit(activation) { grants in
+            XCTAssertTrue(grants)
+        })
+        XCTAssertTrue(firstController.isCommitted(activation))
+    }
+
+    func testOwnerScopedArmUsesExactProvenStartupGeometry() throws {
+        let system = MockMacRemoteInputSystem()
+        let clock = MockMacRemoteInputClock()
+        let controller = MacRemoteInputController(
+            allowRemoteControl: true,
+            system: system,
+            clock: clock
+        )
+        let owner = MacRemoteInputOwnerToken()
+        let geometry = try XCTUnwrap(fullFrameGeometry(for: system.bounds!))
+
+        // A frame that arrived before this Show cannot be inherited by the new authority.
+        controller.updateScreenVideoFrameGeometry(geometry, ownerToken: owner)
+        XCTAssertEqual(
+            controller.arm(
+                displayID: displayID,
+                screenRequestID: showID,
+                inputSessionID: sessionID,
+                ownerToken: owner,
+                initialFrameGeometry: geometry
+            ),
+            .armed
+        )
+        XCTAssertEqual(
+            tap(controller),
+            .rejected(.screenFormatChanging)
+        )
+
+        // The already-forwarded startup frame becomes usable after the normal propagation fence,
+        // even when a static screen produces no additional post-arm sample.
+        clock.advance(by: 0.750)
+        XCTAssertEqual(tap(controller), .accepted(.none))
+    }
+
     func testTapMapsThroughNegativeGlobalDisplayOriginWithoutYFlip() {
         let system = MockMacRemoteInputSystem()
         system.bounds = CGRect(x: -1_920, y: -400, width: 1_920, height: 1_080)
@@ -3686,6 +4475,18 @@ final class MacRemoteInputControllerTests: XCTestCase {
         return (result, window)
     }
 
+    private func preparedActivation(
+        _ result: MacRemoteInputPrepareResult,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) throws -> MacRemoteInputPreparedActivation {
+        guard case .prepared(let activation) = result else {
+            XCTFail("Expected a prepared remote-input activation, got \(result)", file: file, line: line)
+            throw PreparedActivationTestError.notPrepared
+        }
+        return activation
+    }
+
     private func makeController(
         system: MockMacRemoteInputSystem,
         clock: MockMacRemoteInputClock = .init()
@@ -3824,6 +4625,26 @@ final class MacRemoteInputControllerTests: XCTestCase {
             source.range(of: endMarker, range: start..<source.endIndex)?.lowerBound
         )
         return String(source[start..<end])
+    }
+}
+
+private enum PreparedActivationTestError: Error {
+    case notPrepared
+    case acknowledgementFailed
+}
+
+private final class RemoteInputRevocationProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var revoked = false
+
+    var isRevoked: Bool {
+        lock.withLock { revoked }
+    }
+
+    func revoke() {
+        lock.withLock {
+            revoked = true
+        }
     }
 }
 

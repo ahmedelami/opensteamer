@@ -65,9 +65,84 @@ public struct MacRemoteInputPermissionStatus: Equatable, Sendable {
     }
 }
 
+/// Opaque identity for one screen-sharing service competing for global Mac input authority.
+///
+/// Multiple viewers may remain connected, but only the service whose token armed the current
+/// session may update its coordinate transform or revoke it. The token never crosses the wire.
+public struct MacRemoteInputOwnerToken: Hashable, Sendable {
+    private let value: UUID
+
+    public init() {
+        value = UUID()
+    }
+}
+
+/// Process-local ordering lease reserved when a viewer's ordinary Show is received.
+///
+/// The controller, not either service actor, owns the monotonic order. The highest claim that has
+/// successfully armed wins; a failed newer Show cannot displace a working viewer, while an older
+/// completion or automatic resume cannot retake authority after a newer Show succeeds.
+public struct MacRemoteInputOwnershipClaim: Equatable, Sendable {
+    fileprivate let ownerToken: MacRemoteInputOwnerToken
+    fileprivate let generation: UInt64
+    fileprivate let epoch: UInt64
+    fileprivate let permissionsWereAuthorizedAtReservation: Bool
+}
+
 /// Outcome of binding remote input to a specific screen-sharing session.
 public enum MacRemoteInputArmResult: Equatable, Sendable {
     case armed
+    case superseded
+    case disabled
+    case permissionRequired(MacRemoteInputPermissionStatus)
+    case displayUnavailable
+}
+
+/// A validated but not-yet-published remote-input session.
+///
+/// Preparing does not disturb the viewer that currently controls the Mac. The screen service
+/// carries this opaque value into the synchronous Active-acknowledgement transaction, where the
+/// controller either commits it or downgrades that acknowledgement to view-only.
+public final class MacRemoteInputPreparedActivation: @unchecked Sendable {
+    fileprivate let controllerID: UUID
+    fileprivate let displayID: UInt32
+    fileprivate let screenRequestID: UInt64
+    fileprivate let inputSessionID: UUID
+    fileprivate let ownerToken: MacRemoteInputOwnerToken
+    fileprivate let ownershipClaim: MacRemoteInputOwnershipClaim
+    fileprivate let initialFrameGeometry: ScreenVideoFrameGeometry?
+    fileprivate let authoritativeDisplayBounds: CGRect?
+    fileprivate let revokeAuthorization: @Sendable () -> Void
+    /// Accessed only while the owning controller's lock is held.
+    fileprivate var isConsumed = false
+
+    fileprivate init(
+        controllerID: UUID,
+        displayID: UInt32,
+        screenRequestID: UInt64,
+        inputSessionID: UUID,
+        ownerToken: MacRemoteInputOwnerToken,
+        ownershipClaim: MacRemoteInputOwnershipClaim,
+        initialFrameGeometry: ScreenVideoFrameGeometry?,
+        authoritativeDisplayBounds: CGRect?,
+        revokeAuthorization: @escaping @Sendable () -> Void
+    ) {
+        self.controllerID = controllerID
+        self.displayID = displayID
+        self.screenRequestID = screenRequestID
+        self.inputSessionID = inputSessionID
+        self.ownerToken = ownerToken
+        self.ownershipClaim = ownershipClaim
+        self.initialFrameGeometry = initialFrameGeometry
+        self.authoritativeDisplayBounds = authoritativeDisplayBounds
+        self.revokeAuthorization = revokeAuthorization
+    }
+}
+
+/// Outcome of validating an input session without displacing the current controller.
+public enum MacRemoteInputPrepareResult: Sendable {
+    case prepared(MacRemoteInputPreparedActivation)
+    case superseded
     case disabled
     case permissionRequired(MacRemoteInputPermissionStatus)
     case displayUnavailable
@@ -251,14 +326,23 @@ public final class MacRemoteInputController: @unchecked Sendable {
     private static let zeroUUID = UUID(
         uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
     )
+    private static let legacyOwnerToken = MacRemoteInputOwnerToken()
 
     private let allowRemoteControl: Bool
     private let system: any MacRemoteInputSystem
     private let clock: any MacRemoteInputClock
     private let makeWindowResizeGeneration: @Sendable () -> UUID
     private let lock = NSLock()
+    private let ownershipControllerID = UUID()
 
     private var isPermanentlyInvalidated = false
+    private var nextOwnershipClaimGeneration: UInt64 = 0
+    private var ownershipClaimEpoch: UInt64 = 0
+    private var highestSuccessfullyArmedClaimGeneration: UInt64 = 0
+    /// Authorization revocations discovered while the controller lock is held. `withLock`
+    /// drains these only after unlocking so TCC loss cannot invert the controller and WebRTC
+    /// input-authorization locks.
+    private var authorizationRevocationsAfterUnlock: [@Sendable () -> Void] = []
     private var activeSession: ActiveSession?
     private var screenVideoFrameGeometry: ScreenVideoFrameGeometry?
     private var candidateScreenVideoFrameGeometry: ScreenVideoFrameGeometry?
@@ -317,7 +401,274 @@ public final class MacRemoteInputController: @unchecked Sendable {
         }
     }
 
+    /// Reserves global successful-Show ordering before either service crosses an async boundary.
+    public func reserveOwnershipClaim(
+        for ownerToken: MacRemoteInputOwnerToken
+    ) -> MacRemoteInputOwnershipClaim {
+        var incumbentAuthorizationRevocation: (@Sendable () -> Void)?
+        let claim = withLock {
+            let permissionsAreAuthorized = system
+                .permissionStatus(promptIfNeeded: false)
+                .isAuthorized
+            if !permissionsAreAuthorized {
+                invalidateOwnershipClaimsLocked()
+                incumbentAuthorizationRevocation = activeSession?.revokeAuthorization
+                clearScreenVideoFrameGeometry()
+                revokeState()
+            }
+            return reserveOwnershipClaimLocked(
+                for: ownerToken,
+                permissionsWereAuthorizedAtReservation: permissionsAreAuthorized
+            )
+        }
+        incumbentAuthorizationRevocation?()
+        return claim
+    }
+
+    private func reserveOwnershipClaimLocked(
+        for ownerToken: MacRemoteInputOwnerToken,
+        permissionsWereAuthorizedAtReservation: Bool = true
+    ) -> MacRemoteInputOwnershipClaim {
+        nextOwnershipClaimGeneration &+= 1
+        if nextOwnershipClaimGeneration == 0 {
+            nextOwnershipClaimGeneration = 1
+        }
+        let claim = MacRemoteInputOwnershipClaim(
+            ownerToken: ownerToken,
+            generation: nextOwnershipClaimGeneration,
+            epoch: ownershipClaimEpoch,
+            permissionsWereAuthorizedAtReservation:
+                permissionsWereAuthorizedAtReservation
+        )
+        return claim
+    }
+
+    private func invalidateOwnershipClaimsLocked() {
+        ownershipClaimEpoch &+= 1
+        if ownershipClaimEpoch == 0 {
+            ownershipClaimEpoch = 1
+        }
+        highestSuccessfullyArmedClaimGeneration = 0
+    }
+
+    /// Validates a prospective input owner without revoking the last successfully activated one.
+    ///
+    /// The returned activation is deliberately provisional. Call
+    /// `withPreparedActivationCommit(_:operation:)` around the exact Active acknowledgement send.
+    /// Only a successful send publishes the new owner and advances global Show ordering.
+    public func prepareArm(
+        displayID: UInt32,
+        screenRequestID: UInt64,
+        inputSessionID: UUID,
+        ownerToken: MacRemoteInputOwnerToken,
+        ownershipClaim: MacRemoteInputOwnershipClaim,
+        initialFrameGeometry: ScreenVideoFrameGeometry? = nil,
+        authoritativeDisplayBounds: CGRect? = nil,
+        revokeAuthorization: @escaping @Sendable () -> Void
+    ) -> MacRemoteInputPrepareResult {
+        var incumbentAuthorizationRevocation: (@Sendable () -> Void)?
+        let result: MacRemoteInputPrepareResult = withLock {
+            guard !isPermanentlyInvalidated, allowRemoteControl else {
+                return .disabled
+            }
+            guard ownershipClaim.ownerToken == ownerToken,
+                  ownershipClaim.epoch == ownershipClaimEpoch,
+                  ownershipClaim.permissionsWereAuthorizedAtReservation,
+                  ownershipClaim.generation
+                    >= highestSuccessfullyArmedClaimGeneration else {
+                return .superseded
+            }
+            let permissions = system.permissionStatus(promptIfNeeded: false)
+            guard permissions.isAuthorized else {
+                // TCC applies process-wide. Once either grant is lost, no prior viewer may
+                // silently regain control if the user restores it later.
+                incumbentAuthorizationRevocation = activeSession?.revokeAuthorization
+                invalidateOwnershipClaimsLocked()
+                clearScreenVideoFrameGeometry()
+                revokeState()
+                return .permissionRequired(permissions)
+            }
+            guard validDisplayBounds(for: displayID) != nil else {
+                return .displayUnavailable
+            }
+            let validatedAuthoritativeBounds: CGRect?
+            if let authoritativeDisplayBounds {
+                guard let bounds = Self.validatedDisplayBounds(authoritativeDisplayBounds) else {
+                    return .displayUnavailable
+                }
+                validatedAuthoritativeBounds = bounds
+            } else {
+                validatedAuthoritativeBounds = nil
+            }
+            return .prepared(
+                MacRemoteInputPreparedActivation(
+                    controllerID: ownershipControllerID,
+                    displayID: displayID,
+                    screenRequestID: screenRequestID,
+                    inputSessionID: inputSessionID,
+                    ownerToken: ownerToken,
+                    ownershipClaim: ownershipClaim,
+                    initialFrameGeometry: initialFrameGeometry,
+                    authoritativeDisplayBounds: validatedAuthoritativeBounds,
+                    revokeAuthorization: revokeAuthorization
+                )
+            )
+        }
+        incumbentAuthorizationRevocation?()
+        return result
+    }
+
+    /// Serializes the final Active acknowledgement with global input ownership publication.
+    ///
+    /// `operation(true)` must synchronously send an Active acknowledgement carrying the prepared
+    /// capability. If a newer viewer already committed, or control became unavailable after
+    /// preparation, `operation(false)` instead sends the same Active acknowledgement view-only.
+    /// A throwing send leaves the incumbent owner and successful-Show generation unchanged.
+    public func withPreparedActivationCommit(
+        _ activation: MacRemoteInputPreparedActivation,
+        operation: (_ grantsInput: Bool) throws -> Void
+    ) throws -> Bool {
+        guard activation.controllerID == ownershipControllerID else {
+            // Do not touch another controller's one-shot state under this controller's lock.
+            try operation(false)
+            return false
+        }
+        var displacedAuthorizationRevocation: (@Sendable () -> Void)?
+        var shouldRevokeCandidate = false
+
+        lock.lock()
+        let permissionsAreCurrent = system.permissionStatus(promptIfNeeded: false).isAuthorized
+        if !permissionsAreCurrent {
+            displacedAuthorizationRevocation = activeSession?.revokeAuthorization
+            invalidateOwnershipClaimsLocked()
+            clearScreenVideoFrameGeometry()
+            revokeState()
+        }
+        let canCommit = !activation.isConsumed
+            && !isPermanentlyInvalidated
+            && allowRemoteControl
+            && activation.ownershipClaim.ownerToken == activation.ownerToken
+            && activation.ownershipClaim.epoch == ownershipClaimEpoch
+            && activation.ownershipClaim.permissionsWereAuthorizedAtReservation
+            && activation.ownershipClaim.generation
+                >= highestSuccessfullyArmedClaimGeneration
+            && permissionsAreCurrent
+            && validDisplayBounds(for: activation.displayID) != nil
+
+        // Every prepared value is one-shot, including a view-only downgrade or failed send.
+        activation.isConsumed = true
+        do {
+            try operation(canCommit)
+            if canCommit {
+                displacedAuthorizationRevocation = activeSession?.revokeAuthorization
+                clearScreenVideoFrameGeometry()
+                revokeState()
+                activeSession = ActiveSession(
+                    displayID: activation.displayID,
+                    screenRequestID: activation.screenRequestID,
+                    inputSessionID: activation.inputSessionID,
+                    ownerToken: activation.ownerToken,
+                    ownershipClaimGeneration: activation.ownershipClaim.generation,
+                    authoritativeDisplayBounds: activation.authoritativeDisplayBounds,
+                    revokeAuthorization: activation.revokeAuthorization
+                )
+                highestSuccessfullyArmedClaimGeneration =
+                    activation.ownershipClaim.generation
+                if let initialFrameGeometry = activation.initialFrameGeometry {
+                    updateScreenVideoFrameGeometryLocked(initialFrameGeometry)
+                }
+                resetRateLimits(now: clock.now())
+            } else {
+                shouldRevokeCandidate = true
+            }
+            lock.unlock()
+        } catch {
+            shouldRevokeCandidate = true
+            lock.unlock()
+            activation.revokeAuthorization()
+            displacedAuthorizationRevocation?()
+            throw error
+        }
+
+        // Never acquire an input-authorization lock while holding the controller lock. An input
+        // already admitted by the displaced viewer will acquire the controller next and observe
+        // the newly committed session before it can inject anything.
+        if shouldRevokeCandidate {
+            activation.revokeAuthorization()
+        }
+        displacedAuthorizationRevocation?()
+        return canCommit
+    }
+
+    /// Whether this exact prepared generation is the controller's current committed owner.
+    public func isCommitted(_ activation: MacRemoteInputPreparedActivation) -> Bool {
+        withLock {
+            guard activation.controllerID == ownershipControllerID,
+                  let activeSession else {
+                return false
+            }
+            return activeSession.ownerToken == activation.ownerToken
+                && activeSession.ownershipClaimGeneration
+                    == activation.ownershipClaim.generation
+                && activeSession.screenRequestID == activation.screenRequestID
+                && activeSession.inputSessionID == activation.inputSessionID
+        }
+    }
+
+    /// Arms only if no newer ordinary Show has already activated global ownership.
+    @discardableResult
+    public func arm(
+        displayID: UInt32,
+        screenRequestID: UInt64,
+        inputSessionID: UUID,
+        ownerToken: MacRemoteInputOwnerToken,
+        ownershipClaim: MacRemoteInputOwnershipClaim,
+        initialFrameGeometry: ScreenVideoFrameGeometry? = nil,
+        authoritativeDisplayBounds: CGRect? = nil
+    ) -> MacRemoteInputArmResult {
+        withLock {
+            return armLocked(
+                displayID: displayID,
+                screenRequestID: screenRequestID,
+                inputSessionID: inputSessionID,
+                ownerToken: ownerToken,
+                ownershipClaim: ownershipClaim,
+                initialFrameGeometry: initialFrameGeometry,
+                authoritativeDisplayBounds: authoritativeDisplayBounds,
+                clearsFrameGeometry: true
+            )
+        }
+    }
+
     /// Replaces any previous authorization and arms one exact active screen share.
+    @discardableResult
+    public func arm(
+        displayID: UInt32,
+        screenRequestID: UInt64,
+        inputSessionID: UUID,
+        ownerToken: MacRemoteInputOwnerToken,
+        initialFrameGeometry: ScreenVideoFrameGeometry? = nil,
+        authoritativeDisplayBounds: CGRect? = nil
+    ) -> MacRemoteInputArmResult {
+        withLock {
+            let ownershipClaim = reserveOwnershipClaimLocked(
+                for: ownerToken
+            )
+            return armLocked(
+                displayID: displayID,
+                screenRequestID: screenRequestID,
+                inputSessionID: inputSessionID,
+                ownerToken: ownerToken,
+                ownershipClaim: ownershipClaim,
+                initialFrameGeometry: initialFrameGeometry,
+                authoritativeDisplayBounds: authoritativeDisplayBounds,
+                clearsFrameGeometry: true
+            )
+        }
+    }
+
+    /// Source-compatible single-owner entry point retained for CaptureCore's focused unit tests.
+    /// Production screen services must use the owner-scoped public overload above.
     @discardableResult
     public func arm(
         displayID: UInt32,
@@ -326,11 +677,18 @@ public final class MacRemoteInputController: @unchecked Sendable {
         authoritativeDisplayBounds: CGRect? = nil
     ) -> MacRemoteInputArmResult {
         withLock {
-            armLocked(
+            let ownershipClaim = reserveOwnershipClaimLocked(
+                for: Self.legacyOwnerToken
+            )
+            return armLocked(
                 displayID: displayID,
                 screenRequestID: screenRequestID,
                 inputSessionID: inputSessionID,
-                authoritativeDisplayBounds: authoritativeDisplayBounds
+                ownerToken: Self.legacyOwnerToken,
+                ownershipClaim: ownershipClaim,
+                initialFrameGeometry: nil,
+                authoritativeDisplayBounds: authoritativeDisplayBounds,
+                clearsFrameGeometry: false
             )
         }
     }
@@ -340,20 +698,32 @@ public final class MacRemoteInputController: @unchecked Sendable {
         displayID: UInt32,
         screenRequestID: UInt64,
         inputSessionID: UUID,
-        authoritativeDisplayBounds: CGRect?
+        ownerToken: MacRemoteInputOwnerToken,
+        ownershipClaim: MacRemoteInputOwnershipClaim,
+        initialFrameGeometry: ScreenVideoFrameGeometry?,
+        authoritativeDisplayBounds: CGRect?,
+        clearsFrameGeometry: Bool
     ) -> MacRemoteInputArmResult {
         guard !isPermanentlyInvalidated else {
             return .disabled
         }
 
-        revokeState()
-
         guard allowRemoteControl else {
             return .disabled
         }
 
+        guard ownershipClaim.ownerToken == ownerToken,
+              ownershipClaim.epoch == ownershipClaimEpoch,
+              ownershipClaim.permissionsWereAuthorizedAtReservation,
+              ownershipClaim.generation
+                >= highestSuccessfullyArmedClaimGeneration else {
+            return .superseded
+        }
+
         let permissions = system.permissionStatus(promptIfNeeded: false)
         guard permissions.isAuthorized else {
+            // TCC loss invalidates every viewer equally, so no incumbent authority remains valid.
+            revokeForPermissionLossLocked()
             return .permissionRequired(permissions)
         }
 
@@ -370,19 +740,43 @@ public final class MacRemoteInputController: @unchecked Sendable {
             validatedAuthoritativeBounds = nil
         }
 
+        // Only a fully validated successor may replace the incumbent. Display/configuration
+        // failures from a second viewer therefore cannot knock a working first viewer offline.
+        if clearsFrameGeometry {
+            clearScreenVideoFrameGeometry()
+        }
+        revokeState()
         activeSession = ActiveSession(
             displayID: displayID,
             screenRequestID: screenRequestID,
             inputSessionID: inputSessionID,
-            authoritativeDisplayBounds: validatedAuthoritativeBounds
+            ownerToken: ownerToken,
+            ownershipClaimGeneration: ownershipClaim.generation,
+            authoritativeDisplayBounds: validatedAuthoritativeBounds,
+            revokeAuthorization: nil
         )
+        highestSuccessfullyArmedClaimGeneration = ownershipClaim.generation
+        if let initialFrameGeometry {
+            updateScreenVideoFrameGeometryLocked(initialFrameGeometry)
+        }
         resetRateLimits(now: clock.now())
         return .armed
     }
 
-    /// Immediately revokes the active input session and any focused-element grant.
+    /// Revokes input only when the caller still owns the active session.
+    ///
+    /// A delayed Hide, disconnect, or capture-stop callback from an older viewer is a no-op.
+    public func revoke(ifOwnedBy ownerToken: MacRemoteInputOwnerToken) {
+        withLock {
+            guard activeSession?.ownerToken == ownerToken else { return }
+            revokeState()
+        }
+    }
+
+    /// Source-compatible single-owner entry point. It cannot revoke an owner-scoped session.
     public func revoke() {
         withLock {
+            guard activeSession?.ownerToken == Self.legacyOwnerToken else { return }
             revokeState()
         }
     }
@@ -392,10 +786,12 @@ public final class MacRemoteInputController: @unchecked Sendable {
     /// remained stable, while the same authenticated Show/input capability stays valid.
     public func updateAuthoritativeDisplayBounds(
         _ bounds: CGRect?,
-        for displayID: UInt32
+        for displayID: UInt32,
+        ownerToken: MacRemoteInputOwnerToken
     ) {
         withLock {
             guard var session = activeSession,
+                  session.ownerToken == ownerToken,
                   session.displayID == displayID else {
                 return
             }
@@ -421,36 +817,69 @@ public final class MacRemoteInputController: @unchecked Sendable {
         }
     }
 
+    /// Source-compatible single-owner entry point retained for CaptureCore's focused unit tests.
+    public func updateAuthoritativeDisplayBounds(
+        _ bounds: CGRect?,
+        for displayID: UInt32
+    ) {
+        updateAuthoritativeDisplayBounds(
+            bounds,
+            for: displayID,
+            ownerToken: Self.legacyOwnerToken
+        )
+    }
+
     /// Observes the geometry of a complete frame that has entered WebRTC.
     ///
     /// A new transform closes input for a bounded propagation interval. Passing nil closes the
     /// gate while capture is stopped or geometry cannot be proven.
+    public func updateScreenVideoFrameGeometry(
+        _ geometry: ScreenVideoFrameGeometry?,
+        ownerToken: MacRemoteInputOwnerToken
+    ) {
+        withLock {
+            guard activeSession?.ownerToken == ownerToken else { return }
+            updateScreenVideoFrameGeometryLocked(geometry)
+        }
+    }
+
+    /// Source-compatible single-owner entry point retained for CaptureCore's focused unit tests.
     public func updateScreenVideoFrameGeometry(_ geometry: ScreenVideoFrameGeometry?) {
         withLock {
-            guard let geometry else {
-                clearScreenVideoFrameGeometry()
+            guard activeSession?.ownerToken == Self.legacyOwnerToken
+                    || activeSession == nil else {
                 return
             }
+            updateScreenVideoFrameGeometryLocked(geometry)
+        }
+    }
 
-            if let target = authorizedWindowResizeTarget,
-               !target.frameGeometry.hasSameInputTransform(as: geometry) {
-                authorizedWindowResizeTarget = nil
-            }
+    private func updateScreenVideoFrameGeometryLocked(
+        _ geometry: ScreenVideoFrameGeometry?
+    ) {
+        guard let geometry else {
+            clearScreenVideoFrameGeometry()
+            return
+        }
 
-            let now = clock.now()
-            guard let candidateScreenVideoFrameGeometry,
-                  candidateScreenVideoFrameGeometry.hasSameInputTransform(as: geometry),
-                  let candidateScreenVideoFrameGeometrySince else {
-                screenVideoFrameGeometry = nil
-                candidateScreenVideoFrameGeometry = geometry
-                self.candidateScreenVideoFrameGeometrySince = now
-                return
-            }
+        if let target = authorizedWindowResizeTarget,
+           !target.frameGeometry.hasSameInputTransform(as: geometry) {
+            authorizedWindowResizeTarget = nil
+        }
 
-            if now - candidateScreenVideoFrameGeometrySince
-                >= Self.minimumFrameGeometryStability {
-                screenVideoFrameGeometry = geometry
-            }
+        let now = clock.now()
+        guard let candidateScreenVideoFrameGeometry,
+              candidateScreenVideoFrameGeometry.hasSameInputTransform(as: geometry),
+              let candidateScreenVideoFrameGeometrySince else {
+            screenVideoFrameGeometry = nil
+            candidateScreenVideoFrameGeometry = geometry
+            self.candidateScreenVideoFrameGeometrySince = now
+            return
+        }
+
+        if now - candidateScreenVideoFrameGeometrySince
+            >= Self.minimumFrameGeometryStability {
+            screenVideoFrameGeometry = geometry
         }
     }
 
@@ -544,7 +973,7 @@ public final class MacRemoteInputController: @unchecked Sendable {
             return .rejected(.invalidPoint)
         }
         guard hasCurrentPermissions() else {
-            revokeState()
+            revokeForPermissionLossLocked()
             return .rejected(.permissionRequired)
         }
         guard let liveDisplayBounds = validDisplayBounds(for: session.displayID) else {
@@ -716,7 +1145,7 @@ public final class MacRemoteInputController: @unchecked Sendable {
             return .rejected(.invalidPoint)
         }
         guard hasCurrentPermissions() else {
-            revokeState()
+            revokeForPermissionLossLocked()
             return .rejected(.permissionRequired)
         }
         guard let liveDisplayBounds = validDisplayBounds(for: session.displayID) else {
@@ -901,7 +1330,7 @@ public final class MacRemoteInputController: @unchecked Sendable {
             return .rejected(.invalidPoint)
         }
         guard hasCurrentPermissions() else {
-            revokeState()
+            revokeForPermissionLossLocked()
             return .rejected(.permissionRequired)
         }
         guard let liveDisplayBounds = validDisplayBounds(for: session.displayID) else {
@@ -1555,7 +1984,7 @@ public final class MacRemoteInputController: @unchecked Sendable {
             return .rejected(.invalidPoint, diagnostic: nil)
         }
         guard hasCurrentPermissions() else {
-            revokeState()
+            revokeForPermissionLossLocked()
             return .rejected(.permissionRequired, diagnostic: nil)
         }
         guard let liveDisplayBounds = validDisplayBounds(for: session.displayID) else {
@@ -2272,7 +2701,7 @@ public final class MacRemoteInputController: @unchecked Sendable {
             return (nil, .staleSession)
         }
         guard hasCurrentPermissions() else {
-            revokeState()
+            revokeForPermissionLossLocked()
             return (nil, .permissionRequired)
         }
         guard let focus = authorizedFocus, focus.generation == focusGeneration else {
@@ -2529,6 +2958,18 @@ public final class MacRemoteInputController: @unchecked Sendable {
         windowResizeBucket.reset(at: now)
     }
 
+    /// Invalidates every pre-loss ownership claim and queues the incumbent wire capability for
+    /// revocation. Callers are inside `withLock`; the callback is deliberately invoked only after
+    /// that helper releases the controller lock.
+    private func revokeForPermissionLossLocked() {
+        if let revokeAuthorization = activeSession?.revokeAuthorization {
+            authorizationRevocationsAfterUnlock.append(revokeAuthorization)
+        }
+        invalidateOwnershipClaimsLocked()
+        clearScreenVideoFrameGeometry()
+        revokeState()
+    }
+
     /// Clears all authority and refills buckets for the next explicitly armed session.
     private func revokeState() {
         activeSession = nil
@@ -2543,7 +2984,12 @@ public final class MacRemoteInputController: @unchecked Sendable {
     /// Serializes a complete authorization-and-post transaction.
     private func withLock<T>(_ body: () throws -> T) rethrows -> T {
         lock.lock()
-        defer { lock.unlock() }
+        defer {
+            let revocations = authorizationRevocationsAfterUnlock
+            authorizationRevocationsAfterUnlock.removeAll(keepingCapacity: false)
+            lock.unlock()
+            revocations.forEach { $0() }
+        }
         return try body()
     }
 
@@ -2559,7 +3005,10 @@ private struct ActiveSession: Sendable {
     let displayID: UInt32
     let screenRequestID: UInt64
     let inputSessionID: UUID
+    let ownerToken: MacRemoteInputOwnerToken
+    let ownershipClaimGeneration: UInt64
     var authoritativeDisplayBounds: CGRect?
+    let revokeAuthorization: (@Sendable () -> Void)?
 }
 
 /// Stable conversion identity for fractional logical scroll carry.

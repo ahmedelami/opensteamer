@@ -402,13 +402,14 @@ final class WorldwideScreenAutomaticResumeCommitLatch: @unchecked Sendable {
     private let lock = NSLock()
     private var state = State.pending
 
-    func commit(_ operation: () throws -> Void) throws {
+    func commit<Result>(_ operation: () throws -> Result) throws -> Result {
         try lock.withLock {
             guard case .pending = state else {
                 throw WorldwideScreenServiceError.transportUnavailable
             }
-            try operation()
+            let result = try operation()
             state = .committed
+            return result
         }
     }
 
@@ -822,9 +823,11 @@ actor WorldwideScreenService {
     private let maximumWidth: Int
     private let framesPerSecond: Int
     private let maximumVideoBitrate: Int
+    private let featureProfile: WorldwideScreenServiceFeatureProfile
     private var screenVideoAdaptationPolicy:
         WorldwideScreenVideoAdaptationPolicy
     private let remoteInputController: MacRemoteInputController
+    private let remoteInputOwnerToken = MacRemoteInputOwnerToken()
     private let remoteMediaController: any MacRemoteMediaControlling
     private weak var captureLifetime: CaptureServiceLifetime?
     private let captureLifetimeIsRequired: Bool
@@ -857,7 +860,8 @@ actor WorldwideScreenService {
     private var audioClientDiagnostics = WorldwideAudioClientDiagnosticsSink(
         hostPID: ProcessInfo.processInfo.processIdentifier
     )
-    private let audioClientDiagnosticsReportWriter = WorldwideAudioClientDiagnosticsReportWriter()
+    private let audioClientDiagnosticsReportWriter:
+        WorldwideAudioClientDiagnosticsReportWriter?
     private var screenVideoAdaptationTask: Task<Void, Never>?
     private var screenVideoAdaptationFastStatisticsAreAvailable = false
     private var screenVideoAdaptationPolicyRevision: UInt64 = 0
@@ -911,6 +915,7 @@ actor WorldwideScreenService {
         let attemptID: UUID
         let finalAcknowledgementCommit:
             WorldwideScreenAutomaticResumeCommitLatch
+        let inputOwnershipClaim: MacRemoteInputOwnershipClaim?
         var probeAuthorization: WebRTCControlAuthorization?
         var forwardingAuthorization: WebRTCControlAuthorization?
         var boundary: WorldwideScreenSampleSink.ResumeMarkerBoundary?
@@ -919,6 +924,8 @@ actor WorldwideScreenService {
     }
     private var automaticScreenMediaResumeContext:
         AutomaticScreenMediaResumeContext?
+    private var latestShowInputOwnershipClaim:
+        MacRemoteInputOwnershipClaim?
     private var automaticScreenMediaResumeTimeoutTask: Task<Void, Never>?
     /// Invalidates a timeout that has already awakened but has not yet re-entered this actor.
     /// Task cancellation alone cannot fence that queued call across actor reentrancy.
@@ -1115,6 +1122,7 @@ actor WorldwideScreenService {
         maximumWidth: Int,
         framesPerSecond: Int,
         maximumVideoBitrate: Int,
+        featureProfile: WorldwideScreenServiceFeatureProfile = .fullPrimary,
         remoteInputController: MacRemoteInputController,
         remoteMediaController: any MacRemoteMediaControlling =
             MacSystemNowPlayingController(),
@@ -1143,17 +1151,26 @@ actor WorldwideScreenService {
         self.systemAudioDisplayID = systemAudioDisplayID
         self.maximumWidth = maximumWidth
         self.framesPerSecond = framesPerSecond
-        self.maximumVideoBitrate = maximumVideoBitrate
+        let effectiveMaximumVideoBitrate = featureProfile
+            .maximumVideoBitrate(configured: maximumVideoBitrate)
+        self.maximumVideoBitrate = effectiveMaximumVideoBitrate
+        self.featureProfile = featureProfile
+        audioClientDiagnosticsReportWriter = featureProfile
+            .allowsAudioClientDiagnostics
+                ? WorldwideAudioClientDiagnosticsReportWriter()
+                : nil
         screenVideoAdaptationPolicy = WorldwideScreenVideoAdaptationPolicy(
-            configuredTotalRTPBitrateBps: maximumVideoBitrate,
+            configuredTotalRTPBitrateBps: effectiveMaximumVideoBitrate,
             baseFramesPerSecond: framesPerSecond
         )
         self.remoteInputController = remoteInputController
         self.remoteMediaController = remoteMediaController
         self.captureLifetime = captureLifetime
         captureLifetimeIsRequired = captureLifetime != nil
-        self.iPhoneMicrophoneForwardingPolicy =
-            iPhoneMicrophoneForwardingPolicy
+        self.iPhoneMicrophoneForwardingPolicy = featureProfile
+            .allowsIPhoneMicrophoneAndDefaultInputRouting
+                ? iPhoneMicrophoneForwardingPolicy
+                : .suppressedForLANCoexistence
         self.makeServiceTeardownWatchdog = makeServiceTeardownWatchdog
         self.makeNativeCaptureWatchdog = makeNativeCaptureWatchdog
         self.logger = logger
@@ -1170,6 +1187,7 @@ actor WorldwideScreenService {
         maximumWidth: Int,
         framesPerSecond: Int,
         maximumVideoBitrate: Int,
+        featureProfile: WorldwideScreenServiceFeatureProfile = .fullPrimary,
         remoteInputController: MacRemoteInputController,
         remoteMediaController: any MacRemoteMediaControlling =
             MacSystemNowPlayingController(),
@@ -1197,17 +1215,26 @@ actor WorldwideScreenService {
         self.systemAudioDisplayID = systemAudioDisplayID
         self.maximumWidth = maximumWidth
         self.framesPerSecond = framesPerSecond
-        self.maximumVideoBitrate = maximumVideoBitrate
+        let effectiveMaximumVideoBitrate = featureProfile
+            .maximumVideoBitrate(configured: maximumVideoBitrate)
+        self.maximumVideoBitrate = effectiveMaximumVideoBitrate
+        self.featureProfile = featureProfile
+        audioClientDiagnosticsReportWriter = featureProfile
+            .allowsAudioClientDiagnostics
+                ? WorldwideAudioClientDiagnosticsReportWriter()
+                : nil
         screenVideoAdaptationPolicy = WorldwideScreenVideoAdaptationPolicy(
-            configuredTotalRTPBitrateBps: maximumVideoBitrate,
+            configuredTotalRTPBitrateBps: effectiveMaximumVideoBitrate,
             baseFramesPerSecond: framesPerSecond
         )
         self.remoteInputController = remoteInputController
         self.remoteMediaController = remoteMediaController
         self.captureLifetime = captureLifetime
         captureLifetimeIsRequired = captureLifetime != nil
-        self.iPhoneMicrophoneForwardingPolicy =
-            iPhoneMicrophoneForwardingPolicy
+        self.iPhoneMicrophoneForwardingPolicy = featureProfile
+            .allowsIPhoneMicrophoneAndDefaultInputRouting
+                ? iPhoneMicrophoneForwardingPolicy
+                : .suppressedForLANCoexistence
         self.makeServiceTeardownWatchdog = makeServiceTeardownWatchdog
         self.makeNativeCaptureWatchdog = makeNativeCaptureWatchdog
         self.logger = logger
@@ -1240,8 +1267,10 @@ actor WorldwideScreenService {
         }
         isStarted = true
 
-        remoteMediaController.start { [weak self] update in
-            Task { await self?.remoteMediaStateDidChange(update) }
+        if featureProfile.allowsNowPlaying {
+            remoteMediaController.start { [weak self] update in
+                Task { await self?.remoteMediaStateDidChange(update) }
+            }
         }
 
         await startIPhoneMicrophoneDeviceMonitoringIfNeeded()
@@ -1252,8 +1281,12 @@ actor WorldwideScreenService {
             }
         } catch {
             isStopped = true
-            remoteMediaController.stop()
-            shutdownBlackHoleAudioRouting()
+            if featureProfile.allowsNowPlaying {
+                remoteMediaController.stop()
+            }
+            if featureProfile.allowsIPhoneMicrophoneAndDefaultInputRouting {
+                shutdownBlackHoleAudioRouting()
+            }
             iPhoneMicrophoneForwarding.shutdown()
             completionContinuation.finish()
             throw error
@@ -1297,7 +1330,9 @@ actor WorldwideScreenService {
             clearCompatibilityBlock: true
         )
 
-        shutdownBlackHoleAudioRouting()
+        if featureProfile.allowsIPhoneMicrophoneAndDefaultInputRouting {
+            shutdownBlackHoleAudioRouting()
+        }
         iPhoneMicrophoneForwarding.shutdown()
         signalingTask?.cancel()
         signalingTask = nil
@@ -1309,8 +1344,10 @@ actor WorldwideScreenService {
         audioClientDiagnosticsEventTask = nil
         audioClientDiagnosticsFreshnessTask?.cancel()
         audioClientDiagnosticsFreshnessTask = nil
-        audioClientDiagnostics.markUnavailable(.stopped)
-        logAudioClientDiagnosticsIfDue()
+        if featureProfile.allowsAudioClientDiagnostics {
+            audioClientDiagnostics.markUnavailable(.stopped)
+            logAudioClientDiagnosticsIfDue()
+        }
         screenVideoAdaptationTask?.cancel()
         screenVideoAdaptationTask = nil
         screenVideoAdaptationFastStatisticsAreAvailable = false
@@ -1321,7 +1358,9 @@ actor WorldwideScreenService {
         keyFrameControlTask?.cancel()
         keyFrameControlTask = nil
         resetRemoteMediaCommandQueue()
-        remoteMediaController.stop()
+        if featureProfile.allowsNowPlaying {
+            remoteMediaController.stop()
+        }
         latestRemoteMediaControllerRevision = 0
         latestRemoteMediaItem = nil
         let coordinator = recoveryCoordinator
@@ -1515,7 +1554,11 @@ actor WorldwideScreenService {
                 iceServers: iceServers,
                 icePolicy: icePolicy,
                 maximumVideoBitrate: maximumVideoBitrate,
-                supportsRemoteMediaControls: remoteMediaController.isAvailable
+                mediaTopology: featureProfile.transportMediaTopology,
+                supportsRemoteMediaControls: featureProfile.allowsNowPlaying
+                    && remoteMediaController.isAvailable,
+                supportsAudioClientDiagnostics:
+                    featureProfile.allowsAudioClientDiagnostics
             )
         )
         cancelSharedClockEpochRecovery(
@@ -1577,7 +1620,9 @@ actor WorldwideScreenService {
             }
         )
         self.peer = peer
-        audioClientDiagnostics.bind(peerGeneration: generation)
+        if featureProfile.allowsAudioClientDiagnostics {
+            audioClientDiagnostics.bind(peerGeneration: generation)
+        }
         iPhoneMicrophoneForwarding.replacePeer(
             peer: peer,
             peerGeneration: generation
@@ -1585,7 +1630,9 @@ actor WorldwideScreenService {
         recoveryCoordinator = coordinator
         let events = peer.events
         let screenClientDiagnosticsEvents = peer.screenClientDiagnosticsEvents
-        let audioClientDiagnosticsEvents = peer.audioClientDiagnosticsEvents
+        let audioClientDiagnosticsEvents = featureProfile.allowsAudioClientDiagnostics
+            ? peer.audioClientDiagnosticsEvents
+            : nil
         peerEventTask = Task { [weak self] in
             await self?.consumePeerEvents(
                 events,
@@ -1600,26 +1647,28 @@ actor WorldwideScreenService {
                 sourcePeerGeneration: generation
             )
         }
-        audioClientDiagnosticsEventTask = Task { [weak self] in
-            for await event in audioClientDiagnosticsEvents {
+        if let audioClientDiagnosticsEvents {
+            audioClientDiagnosticsEventTask = Task { [weak self] in
+                for await event in audioClientDiagnosticsEvents {
+                    guard !Task.isCancelled else { return }
+                    await self?.handleAudioClientDiagnosticsEvent(
+                        event, sourcePeer: peer, sourcePeerGeneration: generation
+                    )
+                }
                 guard !Task.isCancelled else { return }
-                await self?.handleAudioClientDiagnosticsEvent(
-                    event, sourcePeer: peer, sourcePeerGeneration: generation
+                await self?.audioClientDiagnosticsStreamEnded(
+                    sourcePeer: peer, sourcePeerGeneration: generation
                 )
             }
-            guard !Task.isCancelled else { return }
-            await self?.audioClientDiagnosticsStreamEnded(
-                sourcePeer: peer, sourcePeerGeneration: generation
-            )
-        }
-        audioClientDiagnosticsFreshnessTask = Task { [weak self] in
-            while !Task.isCancelled {
-                do { try await Task.sleep(for: .seconds(2)) } catch { return }
-                let negotiated = await peer.audioClientDiagnosticsIsNegotiated()
-                guard !Task.isCancelled else { return }
-                await self?.tickAudioClientDiagnostics(
-                    negotiated: negotiated, sourcePeer: peer, sourcePeerGeneration: generation
-                )
+            audioClientDiagnosticsFreshnessTask = Task { [weak self] in
+                while !Task.isCancelled {
+                    do { try await Task.sleep(for: .seconds(2)) } catch { return }
+                    let negotiated = await peer.audioClientDiagnosticsIsNegotiated()
+                    guard !Task.isCancelled else { return }
+                    await self?.tickAudioClientDiagnostics(
+                        negotiated: negotiated, sourcePeer: peer, sourcePeerGeneration: generation
+                    )
+                }
             }
         }
         try await peer.startStatistics(
@@ -1740,6 +1789,7 @@ actor WorldwideScreenService {
     }
 
     private func logAudioClientDiagnosticsIfDue() {
+        guard let audioClientDiagnosticsReportWriter else { return }
         let now = ProcessInfo.processInfo.systemUptime
         let latest = audioClientDiagnostics.latest(now: now)
         let terminal: Bool
@@ -1757,6 +1807,10 @@ actor WorldwideScreenService {
 
     var latestAudioClientDiagnostics: WorldwideAudioClientDiagnosticsSink.Latest {
         audioClientDiagnostics.latest(now: ProcessInfo.processInfo.systemUptime)
+    }
+
+    var audioClientDiagnosticsReportWriterIsInstalledForTesting: Bool {
+        audioClientDiagnosticsReportWriter != nil
     }
 
     // MARK: - System Now Playing
@@ -2185,6 +2239,7 @@ actor WorldwideScreenService {
             break
 
         case .macHostedCallChallengeReceived(let challenge):
+            guard featureProfile.allowsSystemAudio else { break }
             installMacHostedCallChallenge(
                 challenge,
                 sourcePeer: sourcePeer,
@@ -3097,6 +3152,7 @@ actor WorldwideScreenService {
             attemptID: attemptID,
             finalAcknowledgementCommit:
                 WorldwideScreenAutomaticResumeCommitLatch(),
+            inputOwnershipClaim: latestShowInputOwnershipClaim,
             probeAuthorization: nil,
             forwardingAuthorization: nil,
             boundary: nil,
@@ -3712,7 +3768,9 @@ actor WorldwideScreenService {
                 throw WorldwideScreenServiceError.transportUnavailable
             }
             let inputSession = armRemoteInputIfAvailable(
-                screenRequestID: context.notice.screenRequestID
+                screenRequestID: context.notice.screenRequestID,
+                ownershipClaim: context.inputOwnershipClaim,
+                initialFrameGeometry: boundary.geometry
             )
             // Retire the queued deadline before entering the atomic forwarding/ACK critical
             // section. Its generation fence also makes an already-awakened timeout a no-op.
@@ -3741,10 +3799,28 @@ actor WorldwideScreenService {
                         boundary: boundary,
                         authorizedBy: forwardingAuthorization
                     ) {
-                        try context.finalAcknowledgementCommit.commit(operation)
+                        try context.finalAcknowledgementCommit.commit {
+                            guard let inputSession else {
+                                try operation(false)
+                                return false
+                            }
+                            return try remoteInputController
+                                .withPreparedActivationCommit(
+                                    inputSession.activation,
+                                    operation: operation
+                                )
+                        }
                     }
                 }
             )
+            if let inputSession,
+               !remoteInputController.isCommitted(inputSession.activation),
+               activeInputCapability == inputSession.capability,
+               activeInputAuthorization === inputSession.authorization {
+                inputSession.authorization.revoke()
+                activeInputCapability = nil
+                activeInputAuthorization = nil
+            }
             screenVideoAdaptationPolicy.automaticResumeAttemptSucceeded()
             screenVideoAdaptationPolicyRevision &+= 1
         } catch {
@@ -3898,6 +3974,17 @@ actor WorldwideScreenService {
             return
         }
 
+        let inputOwnershipClaim: MacRemoteInputOwnershipClaim?
+        if request.command == .showScreen {
+            let claim = remoteInputController.reserveOwnershipClaim(
+                for: remoteInputOwnerToken
+            )
+            latestShowInputOwnershipClaim = claim
+            inputOwnershipClaim = claim
+        } else {
+            inputOwnershipClaim = nil
+        }
+
         if request.command != .requestKeyFrame {
             screenVisibilityCommandEpoch &+= 1
             if screenVisibilityCommandEpoch == 0 {
@@ -3959,7 +4046,11 @@ actor WorldwideScreenService {
                     throw WorldwideScreenServiceError.transportUnavailable
                 }
                 let inputSession = armRemoteInputIfAvailable(
-                    screenRequestID: request.id
+                    screenRequestID: request.id,
+                    ownershipClaim: inputOwnershipClaim,
+                    initialFrameGeometry: sink.remoteInputStartupGeometry(
+                        authorizedBy: authorization
+                    )
                 )
                 let authorizationPeerGeneration = peerGeneration
                 let authorizationRecoveryEpoch = recoveryProofEpoch
@@ -3973,17 +4064,37 @@ actor WorldwideScreenService {
                     inputAuthorization: inputSession?.authorization,
                     finalAuthorizationCheck: {
                         sink.allowsActiveUseWhileAuthorizationHeld(authorization)
+                    },
+                    withFinalInputOwnershipCommit: { operation in
+                        guard let inputSession else {
+                            try operation(false)
+                            return false
+                        }
+                        return try remoteInputController
+                            .withPreparedActivationCommit(
+                                inputSession.activation,
+                                operation: operation
+                            )
                     }
                 )
-                let inputSessionRemainsCurrent: Bool
-                if let inputSession {
-                    inputSessionRemainsCurrent = activeInputCapability == inputSession.capability
-                        && activeInputAuthorization === inputSession.authorization
-                        && inputSession.authorization.isValid
-                } else {
-                    inputSessionRemainsCurrent = activeInputCapability == nil
-                        && activeInputAuthorization == nil
+                if let inputSession,
+                   !remoteInputController.isCommitted(inputSession.activation),
+                   activeInputCapability == inputSession.capability,
+                   activeInputAuthorization === inputSession.authorization {
+                    inputSession.authorization.revoke()
+                    activeInputCapability = nil
+                    activeInputAuthorization = nil
                 }
+                let inputSessionRemainsCurrent =
+                    Self.activeAcknowledgementInputStateIsCurrent(
+                        preparedCapability: inputSession?.capability,
+                        preparedAuthorization: inputSession?.authorization,
+                        activeCapability: activeInputCapability,
+                        activeAuthorization: activeInputAuthorization,
+                        preparedActivationIsCommitted: inputSession.map {
+                            remoteInputController.isCommitted($0.activation)
+                        } ?? false
+                    )
                 let acknowledgementSessionIsCurrent =
                     authorizationPeerGeneration == peerGeneration
                         && authorizationRecoveryEpoch == recoveryProofEpoch
@@ -4323,40 +4434,83 @@ actor WorldwideScreenService {
 
     // MARK: - Remote input
 
+    /// A superseded prepared owner is a successful view-only Active transition, not a screen
+    /// failure. If input was published, however, every local identity and the controller commit
+    /// must still match exactly before the service keeps that capability alive.
+    nonisolated static func activeAcknowledgementInputStateIsCurrent(
+        preparedCapability: WebRTCInputCapability?,
+        preparedAuthorization: WebRTCInputAuthorization?,
+        activeCapability: WebRTCInputCapability?,
+        activeAuthorization: WebRTCInputAuthorization?,
+        preparedActivationIsCommitted: Bool
+    ) -> Bool {
+        if activeCapability == nil, activeAuthorization == nil {
+            return true
+        }
+        guard preparedActivationIsCommitted,
+              let preparedCapability,
+              let preparedAuthorization,
+              activeCapability == preparedCapability,
+              activeAuthorization === preparedAuthorization,
+              preparedAuthorization.isValid else {
+            return false
+        }
+        return true
+    }
+
     /// Binds an input capability to the active display and exact Show request.
     private func armRemoteInputIfAvailable(
-        screenRequestID: UInt64
+        screenRequestID: UInt64,
+        ownershipClaim: MacRemoteInputOwnershipClaim?,
+        initialFrameGeometry: ScreenVideoFrameGeometry?
     ) -> ArmedRemoteInputSession? {
         revokeRemoteInputAuthorization()
-        guard let captureDisplayID else {
+        guard let captureDisplayID,
+              let ownershipClaim else {
             return nil
         }
 
         let inputSessionID = UUID()
-        switch remoteInputController.arm(
+        let authorization = WebRTCInputAuthorization()
+        switch remoteInputController.prepareArm(
             displayID: captureDisplayID,
             screenRequestID: screenRequestID,
             inputSessionID: inputSessionID,
-            authoritativeDisplayBounds: captureAuthoritativeDisplayBounds
+            ownerToken: remoteInputOwnerToken,
+            ownershipClaim: ownershipClaim,
+            initialFrameGeometry: initialFrameGeometry,
+            authoritativeDisplayBounds: captureAuthoritativeDisplayBounds,
+            revokeAuthorization: {
+                authorization.revoke()
+            }
         ) {
-        case .armed:
+        case .prepared(let activation):
             let capability = Self.remoteInputCapability(
                 inputSessionID: inputSessionID,
                 screenRequestID: screenRequestID
             )
-            let authorization = WebRTCInputAuthorization()
             activeInputCapability = capability
             activeInputAuthorization = authorization
-            logger.info("Worldwide remote input is active for this screen session")
+            logger.info("Worldwide remote input is prepared for this screen session")
             return ArmedRemoteInputSession(
                 capability: capability,
-                authorization: authorization
+                authorization: authorization,
+                activation: activation
             )
 
+        case .superseded:
+            authorization.revoke()
+            logger.info(
+                "Worldwide remote input remains inactive because a newer viewer owns control"
+            )
+            return nil
+
         case .disabled:
+            authorization.revoke()
             return nil
 
         case .permissionRequired(let status):
+            authorization.revoke()
             logger.info(
                 "Worldwide remote input remains view-only; Accessibility trusted=" +
                 "\(status.accessibilityTrusted), event posting allowed=\(status.postEventAllowed)"
@@ -4364,6 +4518,7 @@ actor WorldwideScreenService {
             return nil
 
         case .displayUnavailable:
+            authorization.revoke()
             logger.error("Worldwide remote input could not bind the captured display")
             return nil
         }
@@ -4826,10 +4981,13 @@ actor WorldwideScreenService {
 
     /// Revokes the transport token and controller state synchronously.
     private func revokeRemoteInputAuthorization() {
-        activeInputAuthorization?.revoke()
+        let authorization = activeInputAuthorization
         activeInputAuthorization = nil
-        remoteInputController.revoke()
         activeInputCapability = nil
+        // Detach actor state first, then acquire the shared controller before the independent
+        // transport token. The final Active-ACK path owns those locks in that same order.
+        remoteInputController.revoke(ifOwnedBy: remoteInputOwnerToken)
+        authorization?.revoke()
     }
 
     // MARK: - ICE recovery and proof
@@ -6611,21 +6769,33 @@ actor WorldwideScreenService {
         guard generation == peerGeneration, !isStopped else {
             return
         }
+        let recoveryAudioIsReady = Self.recoveryAudioIsReady(
+            allowsSystemAudio: featureProfile.allowsSystemAudio,
+            systemAudioIsLive: systemAudioIsLive,
+            audioAuthorizationIsValid: audioAuthorization?.isValid == true
+        )
         if !recoveryProofRequired,
            peerIsConnected,
            iceIsConnected,
            controlChannelIsOpen,
-           systemAudioIsLive,
-           audioAuthorization?.isValid == true {
+           recoveryAudioIsReady {
             isRecovering = false
             return
         }
         guard isRecovering
                 || recoveryProofRequired
                 || systemAudioStartInProgress
-                || !systemAudioIsLive else { return }
+                || !recoveryAudioIsReady else { return }
         logger.error("Worldwide ICE recovery exhausted its bounded attempts")
         await stop()
+    }
+
+    nonisolated static func recoveryAudioIsReady(
+        allowsSystemAudio: Bool,
+        systemAudioIsLive: Bool,
+        audioAuthorizationIsValid: Bool
+    ) -> Bool {
+        !allowsSystemAudio || (systemAudioIsLive && audioAuthorizationIsValid)
     }
 
     // MARK: - Native screen capture
@@ -6797,10 +6967,12 @@ actor WorldwideScreenService {
         // and revoke controller state synchronously before it schedules actor cleanup.
         let authorization = WebRTCControlAuthorization()
         let inputController = remoteInputController
+        let inputOwnerToken = remoteInputOwnerToken
         let sink = WorldwideScreenSampleSink(
             capturer: capturer,
             captureLifetime: captureLifetime,
             remoteInputController: inputController,
+            remoteInputOwnerToken: inputOwnerToken,
             didRequireCaptureFormatRenegotiation: { [weak self] sink in
                 Task {
                     await self?.renegotiateScreenCaptureFormat(for: sink)
@@ -6808,7 +6980,7 @@ actor WorldwideScreenService {
             }
         ) { [weak self] source, message in
             authorization.revoke()
-            inputController.revoke()
+            inputController.revoke(ifOwnedBy: inputOwnerToken)
             Task {
                 await self?.screenCaptureDidStop(
                     source: source,
@@ -6896,7 +7068,8 @@ actor WorldwideScreenService {
             captureVideoBaseDimensions = baseDimensions
             remoteInputController.updateAuthoritativeDisplayBounds(
                 format.authoritativeDisplayBounds,
-                for: format.displayID
+                for: format.displayID,
+                ownerToken: remoteInputOwnerToken
             )
             capturer.adaptOutput(
                 width: Int32(baseDimensions.width),
@@ -7124,7 +7297,10 @@ actor WorldwideScreenService {
         captureAuthoritativeDisplayBounds = nil
         captureForwardingAuthorization?.revoke()
         captureForwardingAuthorization = nil
-        remoteInputController.updateScreenVideoFrameGeometry(nil)
+        remoteInputController.updateScreenVideoFrameGeometry(
+            nil,
+            ownerToken: remoteInputOwnerToken
+        )
         do {
             try await source.stop()
             guard captureSink === sink,
@@ -7208,6 +7384,7 @@ actor WorldwideScreenService {
 
     /// Starts audio for a healthy route and closes on non-recoverable startup failure.
     private func startSystemAudioOrStopSession() async -> Bool {
+        guard featureProfile.allowsSystemAudio else { return true }
         guard !systemAudioStartInProgress else { return false }
         do {
             try await startSystemAudio()
@@ -7517,7 +7694,8 @@ actor WorldwideScreenService {
         sourcePeer: WebRTCPeer,
         sourcePeerGeneration: UInt64
     ) {
-        guard peer === sourcePeer,
+        guard featureProfile.allowsSystemAudio,
+              peer === sourcePeer,
               peerGeneration == sourcePeerGeneration,
               sourcePeerGeneration > 0 else {
             return
@@ -7844,9 +8022,10 @@ private struct PendingRecoveryProofRequest: Equatable {
 }
 
 /// Transport capability and revocable authorization installed for one Show request.
-private struct ArmedRemoteInputSession {
+private struct ArmedRemoteInputSession: Sendable {
     let capability: WebRTCInputCapability
     let authorization: WebRTCInputAuthorization
+    let activation: MacRemoteInputPreparedActivation
 }
 
 /// Thread-safe gate between ScreenCaptureKit callbacks and the WebRTC video capturer.
@@ -7866,7 +8045,10 @@ extension MacExternalVideoCapturer: WorldwideScreenFrameCapturing {
 /// The only remote-input capability needed by the screen-sample boundary. Keeping this narrow
 /// makes geometry continuity independently testable without exposing input injection itself.
 protocol WorldwideRemoteInputGeometryUpdating: Sendable {
-    func updateScreenVideoFrameGeometry(_ geometry: ScreenVideoFrameGeometry?)
+    func updateScreenVideoFrameGeometry(
+        _ geometry: ScreenVideoFrameGeometry?,
+        ownerToken: MacRemoteInputOwnerToken
+    )
 }
 
 extension MacRemoteInputController: WorldwideRemoteInputGeometryUpdating {}
@@ -7924,6 +8106,7 @@ final class WorldwideScreenSampleSink: ScreenVideoSampleConsumer, @unchecked Sen
 
     private let capturer: any WorldwideScreenFrameCapturing
     private let remoteInputController: any WorldwideRemoteInputGeometryUpdating
+    private let remoteInputOwnerToken: MacRemoteInputOwnerToken
     private let didRequireCaptureFormatRenegotiation:
         @Sendable (WorldwideScreenSampleSink) -> Void
     private let didStop: @Sendable (ScreenVideoCaptureSource, String) -> Void
@@ -7960,6 +8143,7 @@ final class WorldwideScreenSampleSink: ScreenVideoSampleConsumer, @unchecked Sen
         capturer: any WorldwideScreenFrameCapturing,
         captureLifetime: CaptureServiceLifetime? = nil,
         remoteInputController: any WorldwideRemoteInputGeometryUpdating,
+        remoteInputOwnerToken: MacRemoteInputOwnerToken = MacRemoteInputOwnerToken(),
         didRequireCaptureFormatRenegotiation: @escaping @Sendable (
             WorldwideScreenSampleSink
         ) -> Void,
@@ -7976,6 +8160,7 @@ final class WorldwideScreenSampleSink: ScreenVideoSampleConsumer, @unchecked Sen
         self.captureLifetime = captureLifetime
         captureLifetimeIsRequired = captureLifetime != nil
         self.remoteInputController = remoteInputController
+        self.remoteInputOwnerToken = remoteInputOwnerToken
         self.didRequireCaptureFormatRenegotiation =
             didRequireCaptureFormatRenegotiation
         self.scheduleFormatRenegotiationFallback =
@@ -7998,7 +8183,10 @@ final class WorldwideScreenSampleSink: ScreenVideoSampleConsumer, @unchecked Sen
             guard lifetimeAllowsCapture, forwardingPhase == .ready else {
                 return (false, nil)
             }
-            remoteInputController.updateScreenVideoFrameGeometry(nil)
+            remoteInputController.updateScreenVideoFrameGeometry(
+                nil,
+                ownerToken: remoteInputOwnerToken
+            )
             invalidateFormatRenegotiationFallbackLocked()
             formatRenegotiationDetector.reset()
             let retiredAuthorization = forwardingAuthorization
@@ -8060,6 +8248,25 @@ final class WorldwideScreenSampleSink: ScreenVideoSampleConsumer, @unchecked Sen
             return true
         }
         return committed && authorization.isValid
+    }
+
+    /// Returns the exact frame transform already admitted for this Show generation.
+    ///
+    /// Remote input arms after native capture startup. Handing this snapshot to the controller
+    /// prevents an otherwise static screen from waiting indefinitely for another post-arm frame.
+    func remoteInputStartupGeometry(
+        authorizedBy authorization: WebRTCControlAuthorization
+    ) -> ScreenVideoFrameGeometry? {
+        guard authorization.isValid else { return nil }
+        return lock.withLock {
+            guard forwardingAuthorization === authorization,
+                  forwardingPhase == .active,
+                  formatIsProven,
+                  callbackGateAllowsEntry else {
+                return nil
+            }
+            return lastProvenFrameGeometry
+        }
     }
 
     /// Distinguishes a retriable display transition from terminal startup unavailability.
@@ -8166,7 +8373,10 @@ final class WorldwideScreenSampleSink: ScreenVideoSampleConsumer, @unchecked Sen
             return nil
         }
         guard let boundary else { return nil }
-        remoteInputController.updateScreenVideoFrameGeometry(nil)
+        remoteInputController.updateScreenVideoFrameGeometry(
+            nil,
+            ownerToken: remoteInputOwnerToken
+        )
         return boundary
     }
 
@@ -8243,7 +8453,8 @@ final class WorldwideScreenSampleSink: ScreenVideoSampleConsumer, @unchecked Sen
                 automaticResumeRealFrameCount = 0
                 lastAutomaticResumeRealFrameTimestampSeconds = nil
                 remoteInputController.updateScreenVideoFrameGeometry(
-                    boundary.geometry
+                    boundary.geometry,
+                    ownerToken: remoteInputOwnerToken
                 )
                 do {
                     return try operation()
@@ -8252,7 +8463,10 @@ final class WorldwideScreenSampleSink: ScreenVideoSampleConsumer, @unchecked Sen
                     // remove geometry before releasing either lock so input cannot leak through.
                     forwardingPhase = .resumeAwaitingPresentation
                     resumeBoundaryGeometry = boundary.geometry
-                    remoteInputController.updateScreenVideoFrameGeometry(nil)
+                    remoteInputController.updateScreenVideoFrameGeometry(
+                        nil,
+                        ownerToken: remoteInputOwnerToken
+                    )
                     throw error
                 }
             }
@@ -8281,7 +8495,10 @@ final class WorldwideScreenSampleSink: ScreenVideoSampleConsumer, @unchecked Sen
             return authorization
         }
         retiredAuthorization?.revoke()
-        remoteInputController.updateScreenVideoFrameGeometry(nil)
+        remoteInputController.updateScreenVideoFrameGeometry(
+            nil,
+            ownerToken: remoteInputOwnerToken
+        )
     }
 
     /// Forwards image-backed, timestamped samples only while the gate is open.
@@ -8447,7 +8664,10 @@ final class WorldwideScreenSampleSink: ScreenVideoSampleConsumer, @unchecked Sen
                     // Defensive backstop: invalid metadata must never enter media/input admission
                     // even if the detector's classification changes in a future refactor.
                     formatIsProven = false
-                    remoteInputController.updateScreenVideoFrameGeometry(nil)
+                    remoteInputController.updateScreenVideoFrameGeometry(
+                        nil,
+                        ownerToken: remoteInputOwnerToken
+                    )
                     return (false, nil, armFormatRenegotiationFallbackLocked())
                 }
                 invalidateFormatRenegotiationFallbackLocked()
@@ -8455,21 +8675,31 @@ final class WorldwideScreenSampleSink: ScreenVideoSampleConsumer, @unchecked Sen
                 capturer.captureScreenFrame(pixelBuffer: pixelBuffer, timestamp: timestamp)
                 if let frameGeometry {
                     lastProvenFrameGeometry = frameGeometry
-                    remoteInputController.updateScreenVideoFrameGeometry(frameGeometry)
+                    remoteInputController.updateScreenVideoFrameGeometry(
+                        frameGeometry,
+                        ownerToken: remoteInputOwnerToken
+                    )
                 } else if let lastProvenFrameGeometry {
                     // Missing per-frame attachments are not themselves a format transition. The
                     // exact pixel-surface check above and the authoritative display-mode callback
                     // fence this reuse to the currently proven capture generation.
                     remoteInputController.updateScreenVideoFrameGeometry(
-                        lastProvenFrameGeometry
+                        lastProvenFrameGeometry,
+                        ownerToken: remoteInputOwnerToken
                     )
                 } else {
-                    remoteInputController.updateScreenVideoFrameGeometry(nil)
+                    remoteInputController.updateScreenVideoFrameGeometry(
+                        nil,
+                        ownerToken: remoteInputOwnerToken
+                    )
                 }
                 return (false, nil, nil)
             case .dropFrame:
                 formatIsProven = false
-                remoteInputController.updateScreenVideoFrameGeometry(nil)
+                remoteInputController.updateScreenVideoFrameGeometry(
+                    nil,
+                    ownerToken: remoteInputOwnerToken
+                )
                 return (false, nil, armFormatRenegotiationFallbackLocked())
             case .renegotiate:
                 let suspension = suspendForFormatRenegotiationLocked()
@@ -8482,7 +8712,10 @@ final class WorldwideScreenSampleSink: ScreenVideoSampleConsumer, @unchecked Sen
         }
         transition.retiredAuthorization?.revoke()
         if transition.requiresRenegotiation {
-            remoteInputController.updateScreenVideoFrameGeometry(nil)
+            remoteInputController.updateScreenVideoFrameGeometry(
+                nil,
+                ownerToken: remoteInputOwnerToken
+            )
             didRequireCaptureFormatRenegotiation(self)
         }
         if let fallbackToken = transition.fallbackToken {
@@ -8532,7 +8765,10 @@ final class WorldwideScreenSampleSink: ScreenVideoSampleConsumer, @unchecked Sen
         }
         guard transition.didLatch else { return }
         // Clear the old transform before revocation waits for an already-linearized input action.
-        remoteInputController.updateScreenVideoFrameGeometry(nil)
+        remoteInputController.updateScreenVideoFrameGeometry(
+            nil,
+            ownerToken: remoteInputOwnerToken
+        )
         transition.retiredAuthorization?.revoke()
     }
 
@@ -8573,7 +8809,10 @@ final class WorldwideScreenSampleSink: ScreenVideoSampleConsumer, @unchecked Sen
         }
         // Close the stale coordinate map before token revocation can wait for an input operation
         // that already linearized against the previous sink generation.
-        remoteInputController.updateScreenVideoFrameGeometry(nil)
+        remoteInputController.updateScreenVideoFrameGeometry(
+            nil,
+            ownerToken: remoteInputOwnerToken
+        )
         transition.retiredAuthorization?.revoke()
         if transition.requiresRenegotiation {
             didRequireCaptureFormatRenegotiation(self)
@@ -8636,7 +8875,10 @@ final class WorldwideScreenSampleSink: ScreenVideoSampleConsumer, @unchecked Sen
         }
         transition.retiredAuthorization?.revoke()
         if transition.requiresRenegotiation {
-            remoteInputController.updateScreenVideoFrameGeometry(nil)
+            remoteInputController.updateScreenVideoFrameGeometry(
+                nil,
+                ownerToken: remoteInputOwnerToken
+            )
             didRequireCaptureFormatRenegotiation(self)
         }
     }

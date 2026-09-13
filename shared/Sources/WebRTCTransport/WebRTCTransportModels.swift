@@ -9,12 +9,22 @@ public enum WebRTCICEPolicy: String, Codable, Sendable {
     case relayOnly
 }
 
+/// Immutable native media topology selected before a peer factory or transceiver exists.
+///
+/// The restricted topology is used by auxiliary screen viewers that must never allocate host
+/// audio capture, receive a phone microphone, or advertise an audio media section.
+public enum WebRTCTransportMediaTopology: Equatable, Sendable {
+    case full
+    case videoControlOnly
+}
+
 /// Immutable inputs used to construct one role-specific WebRTC peer.
 public struct WebRTCTransportConfiguration: Sendable {
     public let role: RemotePeerRole
     public let iceServers: [RemoteICEServer]
     public let icePolicy: WebRTCICEPolicy
     public let maximumVideoBitrate: Int?
+    public let mediaTopology: WebRTCTransportMediaTopology
     /// Explicit local opt-in for the versioned Mac Now Playing control protocol.
     /// Both peers must independently enable and negotiate it before any wire message is sent.
     public let supportsRemoteMediaControls: Bool
@@ -26,6 +36,7 @@ public struct WebRTCTransportConfiguration: Sendable {
         iceServers: [RemoteICEServer],
         icePolicy: WebRTCICEPolicy = .directPreferred,
         maximumVideoBitrate: Int? = nil,
+        mediaTopology: WebRTCTransportMediaTopology = .full,
         supportsRemoteMediaControls: Bool = false,
         supportsAudioClientDiagnostics: Bool = true
     ) {
@@ -33,6 +44,7 @@ public struct WebRTCTransportConfiguration: Sendable {
         self.iceServers = iceServers
         self.icePolicy = icePolicy
         self.maximumVideoBitrate = maximumVideoBitrate
+        self.mediaTopology = mediaTopology
         self.supportsRemoteMediaControls = supportsRemoteMediaControls
         self.supportsAudioClientDiagnostics = supportsAudioClientDiagnostics
     }

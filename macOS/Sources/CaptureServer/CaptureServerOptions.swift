@@ -19,6 +19,7 @@ struct CaptureServerOptions {
     var worldwideTotalRTPBitrate: UInt32 = 50_000_000
     var lanEnabled = true
     var worldwideEnabled = false
+    var secondaryTestViewerEnabled = false
     var resetWorldwidePairing = false
     var allowRemoteControl = false
     var rendezvousURL: URL?
@@ -62,6 +63,9 @@ struct CaptureServerOptions {
                              Total WebRTC RTP bitrate ceiling. Defaults to 50000000.
       --no-screen            Disable the screen video service.
       --worldwide            Enable one-code WebRTC access using the explicitly configured endpoint.
+      --secondary-test-viewer
+                             Add one consume-once worldwide viewer alongside the primary host.
+                             Requires --worldwide; secondary audio/routing/Now Playing stay disabled.
       --reset-worldwide-pairing
                              Forget the paired iPhone before starting worldwide mode.
       --allow-remote-control Allow pointer and keyboard input for the active worldwide screen session.
@@ -165,6 +169,8 @@ struct CaptureServerOptions {
                 options.screenEnabled = false
             case "--worldwide":
                 options.worldwideEnabled = true
+            case "--secondary-test-viewer":
+                options.secondaryTestViewerEnabled = true
             case "--reset-worldwide-pairing":
                 options.resetWorldwidePairing = true
             case "--allow-remote-control":
@@ -277,6 +283,10 @@ struct CaptureServerOptions {
             throw CaptureServerOptionError.invalid("--force-relay requires --worldwide")
         } else if options.allowRemoteControl {
             throw CaptureServerOptionError.invalid("--allow-remote-control requires --worldwide")
+        } else if options.secondaryTestViewerEnabled {
+            throw CaptureServerOptionError.invalid(
+                "--secondary-test-viewer requires --worldwide"
+            )
         }
 
         if !options.lanEnabled, !options.worldwideEnabled {

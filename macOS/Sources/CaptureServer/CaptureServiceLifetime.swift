@@ -41,6 +41,8 @@ final class CaptureServiceLifetime: @unchecked Sendable {
     private var server: TCPServer?
     private var screenService: ScreenVideoService?
     private var worldwideCoordinator: WorldwideHostCoordinator?
+    private var secondaryTestViewerCoordinator:
+        WorldwideSecondaryTestViewerCoordinator?
     private var remoteInputController: MacRemoteInputController?
     private var teardownTask: Task<CaptureServiceShutdownConfirmation, Never>?
 
@@ -106,6 +108,16 @@ final class CaptureServiceLifetime: @unchecked Sendable {
         }
     }
 
+    func install(
+        secondaryTestViewerCoordinator:
+            WorldwideSecondaryTestViewerCoordinator
+    ) throws {
+        try whileValid {
+            self.secondaryTestViewerCoordinator =
+                secondaryTestViewerCoordinator
+        }
+    }
+
     func requireValid() throws {
         try whileValid {}
         try Task.checkCancellation()
@@ -141,6 +153,13 @@ final class CaptureServiceLifetime: @unchecked Sendable {
         return await screenService.finishStop(afterRevoking: lifecycleTask)
     }
 
+    private static func stopSecondaryTestViewer(
+        _ coordinator: WorldwideSecondaryTestViewerCoordinator?
+    ) async -> Bool {
+        guard let coordinator else { return true }
+        return await coordinator.stop()
+    }
+
     private func whileValid(_ body: () throws -> Void) throws {
         try lock.withLock {
             do {
@@ -168,17 +187,27 @@ final class CaptureServiceLifetime: @unchecked Sendable {
         let screenLifecycleTask = screenService?.revoke()
 
         let coordinator = worldwideCoordinator
+        let secondaryTestViewerCoordinator =
+            secondaryTestViewerCoordinator
         let screenService = screenService
         teardownTask = Task {
             async let worldwideConfirmation = Self.stopWorldwideCoordinator(coordinator)
+            async let secondaryConfirmation = Self.stopSecondaryTestViewer(
+                secondaryTestViewerCoordinator
+            )
             async let lanConfirmation = Self.stopLANScreenService(
                 screenService,
                 afterRevoking: screenLifecycleTask
             )
-            let confirmations = await (lanConfirmation, worldwideConfirmation)
+            let confirmations = await (
+                lanConfirmation,
+                worldwideConfirmation,
+                secondaryConfirmation
+            )
             return CaptureServiceShutdownConfirmation(
                 lanScreenCaptureIsConfirmed: confirmations.0,
-                worldwideNativeCaptureIsConfirmed: confirmations.1
+                worldwideNativeCaptureIsConfirmed:
+                    confirmations.1 && confirmations.2
             )
         }
     }

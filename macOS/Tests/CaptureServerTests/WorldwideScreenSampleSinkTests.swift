@@ -5,6 +5,57 @@ import XCTest
 @testable import CaptureServer
 
 final class WorldwideScreenSampleSinkTests: XCTestCase {
+    func testLateStaleSinkGeometryCannotMutateSuccessorOwner() throws {
+        let geometryUpdater = RecordingRemoteInputGeometryUpdater()
+        let firstOwner = MacRemoteInputOwnerToken()
+        let secondOwner = MacRemoteInputOwnerToken()
+        let firstSink = WorldwideScreenSampleSink(
+            capturer: RecordingScreenFrameCapturer(),
+            remoteInputController: geometryUpdater,
+            remoteInputOwnerToken: firstOwner,
+            didRequireCaptureFormatRenegotiation: { _ in },
+            didStop: { _, _ in }
+        )
+        let secondSink = WorldwideScreenSampleSink(
+            capturer: RecordingScreenFrameCapturer(),
+            remoteInputController: geometryUpdater,
+            remoteInputOwnerToken: secondOwner,
+            didRequireCaptureFormatRenegotiation: { _ in },
+            didStop: { _, _ in }
+        )
+        _ = try XCTUnwrap(firstSink.beginForwarding())
+        _ = try XCTUnwrap(secondSink.beginForwarding())
+        geometryUpdater.reset()
+        geometryUpdater.selectActiveOwner(secondOwner)
+        let currentGeometry = try makeFullFrameGeometry()
+        let staleGeometry = try XCTUnwrap(
+            ScreenVideoFrameGeometry(
+                surfaceWidth: 640,
+                surfaceHeight: 360,
+                contentRect: CGRect(x: 20, y: 0, width: 600, height: 360),
+                contentScale: 1,
+                scaleFactor: 1
+            )
+        )
+
+        // Model a delayed callback from the retired sink after the successor is already live.
+        secondSink.consumeScreenVideoSample(
+            try makeImageSample(),
+            frameGeometry: currentGeometry
+        )
+        firstSink.consumeScreenVideoSample(
+            try makeImageSample(),
+            frameGeometry: staleGeometry
+        )
+        firstSink.stopForwarding()
+
+        XCTAssertEqual(
+            geometryUpdater.ownerTokens,
+            [secondOwner, firstOwner, firstOwner]
+        )
+        XCTAssertEqual(geometryUpdater.currentGeometry, currentGeometry)
+    }
+
     func testExpectedStartupSurfaceMustBeRenderedBeforeForwardingCanCommit() throws {
         let capturer = RecordingScreenFrameCapturer()
         let sink = WorldwideScreenSampleSink(
@@ -46,6 +97,15 @@ final class WorldwideScreenSampleSinkTests: XCTestCase {
         XCTAssertEqual(capturer.captureCount, 1)
         XCTAssertTrue(sink.commitForwardingStartup(authorizedBy: authorization))
         XCTAssertTrue(sink.allowsActiveUse(authorizedBy: authorization))
+        XCTAssertEqual(
+            sink.remoteInputStartupGeometry(authorizedBy: authorization),
+            exactFrame
+        )
+
+        authorization.revoke()
+        XCTAssertNil(
+            sink.remoteInputStartupGeometry(authorizedBy: authorization)
+        )
     }
 
     func testUpscaledStaleStartupSourceWaitsForSelectedFramebuffer() throws {
@@ -1154,17 +1214,47 @@ private final class RecordingRemoteInputGeometryUpdater:
 {
     private let lock = NSLock()
     private var recordedUpdates: [ScreenVideoFrameGeometry?] = []
+    private var recordedOwnerTokens: [MacRemoteInputOwnerToken] = []
+    private var activeOwnerToken: MacRemoteInputOwnerToken?
+    private var storedCurrentGeometry: ScreenVideoFrameGeometry?
 
     var updates: [ScreenVideoFrameGeometry?] {
         lock.withLock { recordedUpdates }
     }
 
-    func updateScreenVideoFrameGeometry(_ geometry: ScreenVideoFrameGeometry?) {
-        lock.withLock { recordedUpdates.append(geometry) }
+    var ownerTokens: [MacRemoteInputOwnerToken] {
+        lock.withLock { recordedOwnerTokens }
+    }
+
+    var currentGeometry: ScreenVideoFrameGeometry? {
+        lock.withLock { storedCurrentGeometry }
+    }
+
+    func updateScreenVideoFrameGeometry(
+        _ geometry: ScreenVideoFrameGeometry?,
+        ownerToken: MacRemoteInputOwnerToken
+    ) {
+        lock.withLock {
+            recordedUpdates.append(geometry)
+            recordedOwnerTokens.append(ownerToken)
+            if activeOwnerToken == nil || activeOwnerToken == ownerToken {
+                storedCurrentGeometry = geometry
+            }
+        }
+    }
+
+    func selectActiveOwner(_ ownerToken: MacRemoteInputOwnerToken) {
+        lock.withLock {
+            activeOwnerToken = ownerToken
+            storedCurrentGeometry = nil
+        }
     }
 
     func reset() {
-        lock.withLock { recordedUpdates.removeAll(keepingCapacity: true) }
+        lock.withLock {
+            recordedUpdates.removeAll(keepingCapacity: true)
+            recordedOwnerTokens.removeAll(keepingCapacity: true)
+        }
     }
 }
 

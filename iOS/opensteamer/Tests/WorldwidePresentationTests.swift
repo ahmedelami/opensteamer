@@ -17,6 +17,76 @@ final class WorldwidePresentationTests: XCTestCase {
         XCTAssertEqual(endpoint, URL(string: "wss://opensteamer.example.test"))
     }
 
+    #if DEBUG
+    func testTemporaryTestViewerRetainsInvitationUntilTransportConsumesIt() {
+        let endpoint = URL(string: "wss://opensteamer.example.test/v1/rendezvous")!
+        var connectedInvitation: String?
+        var connectedEndpoint: String?
+
+        let pendingInvitation = BrowserView.startTemporaryTestViewer(
+            invitationCode: "  TEST-INVITATION  ",
+            endpoint: endpoint,
+            connect: { invitation, endpointOverride in
+                connectedInvitation = invitation
+                connectedEndpoint = endpointOverride
+                return true
+            }
+        )
+
+        XCTAssertEqual(pendingInvitation, "TEST-INVITATION")
+        XCTAssertEqual(connectedInvitation, "TEST-INVITATION")
+        XCTAssertEqual(connectedEndpoint, endpoint.absoluteString)
+    }
+
+    func testTemporaryTestViewerPreservesInvitationWhenSessionInitiationIsRejected() {
+        let endpoint = URL(string: "wss://opensteamer.example.test/v1/rendezvous")!
+
+        let pendingInvitation = BrowserView.startTemporaryTestViewer(
+            invitationCode: "TEST-INVITATION",
+            endpoint: endpoint,
+            connect: { _, _ in false }
+        )
+
+        XCTAssertNil(pendingInvitation)
+    }
+
+    func testTemporaryTestViewerClearsOnlyAfterExactAttemptConnectsToPeer() {
+        var clearCount = 0
+        let clear: () -> Bool = {
+            clearCount += 1
+            return true
+        }
+
+        XCTAssertFalse(
+            BrowserView.clearTemporaryTestViewerInvitationIfConsumed(
+                pendingInvitation: "TEST-INVITATION",
+                currentInvitation: "TEST-INVITATION",
+                isPeerConnected: false,
+                clearInvitation: clear
+            )
+        )
+        XCTAssertFalse(
+            BrowserView.clearTemporaryTestViewerInvitationIfConsumed(
+                pendingInvitation: "TEST-INVITATION",
+                currentInvitation: "A-NEWER-INVITATION",
+                isPeerConnected: true,
+                clearInvitation: clear
+            )
+        )
+        XCTAssertEqual(clearCount, 0)
+
+        XCTAssertTrue(
+            BrowserView.clearTemporaryTestViewerInvitationIfConsumed(
+                pendingInvitation: "TEST-INVITATION",
+                currentInvitation: " TEST-INVITATION ",
+                isPeerConnected: true,
+                clearInvitation: clear
+            )
+        )
+        XCTAssertEqual(clearCount, 1)
+    }
+    #endif
+
     func testSupersededPreparedSessionCannotConnectAtHandoffEntry() async {
         let staleGeneration = UUID()
         let currentGeneration = UUID()

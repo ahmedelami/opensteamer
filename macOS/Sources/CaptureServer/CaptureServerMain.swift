@@ -323,6 +323,8 @@ struct CaptureServerMain {
                 try serviceLifetime.requireValid()
                 worldwideHostCoordinator = coordinator
 
+                // Present an already-ready primary invitation before any optional sidecar work.
+                // A secondary rendezvous can therefore never consume the primary code's window.
                 switch startResult {
                 case .invitation(let invitationCode):
                     // This is the sole intentional presentation of the pairing capability.
@@ -336,6 +338,86 @@ struct CaptureServerMain {
                     fflush(stdout)
                 case .paired:
                     logger.info("Worldwide host is available for the paired iPhone")
+                }
+
+                if options.secondaryTestViewerEnabled {
+                    // Construct only after primary startup and presentation. Invitation RNG or
+                    // signaling-client construction failure is optional and cannot tear down the
+                    // paired host. Both services share only the owner-scoped input controller.
+                    let construction = constructOptionalSecondaryTestViewer {
+                        let secondaryService = try WorldwideScreenService(
+                            endpoint: rendezvousURL,
+                            forceRelay: options.forceRelay,
+                            screenDisplayID: displaySelection.screenDisplayID,
+                            screenDisplayRequirement: screenDisplayRequirement,
+                            systemAudioDisplayID: displaySelection.systemAudioDisplayID,
+                            maximumWidth: options.screenMaximumWidth,
+                            framesPerSecond: options.screenFramesPerSecond,
+                            maximumVideoBitrate: Int(
+                                options.worldwideTotalRTPBitrate
+                            ),
+                            featureProfile: .secondaryTest,
+                            remoteInputController: remoteInputController,
+                            captureLifetime:
+                                virtualDisplayOwner == nil ? nil : serviceLifetime,
+                            iPhoneMicrophoneForwardingPolicy:
+                                options.iPhoneMicrophoneForwardingPolicy,
+                            makeServiceTeardownWatchdog: {
+                                virtualDisplayTeardownDeadline?.makeMediaServiceWatchdog()
+                            },
+                            makeNativeCaptureWatchdog: {
+                                virtualDisplayTeardownDeadline?.makeNativeCaptureWatchdog()
+                            },
+                            logger: logger
+                        )
+                        return WorldwideSecondaryTestViewerCoordinator(
+                            service: secondaryService
+                        )
+                    }
+                    switch construction {
+                    case .unavailable(let failureDescription):
+                        logger.error(
+                            "Secondary test viewer is unavailable; the primary paired host " +
+                                "remains active: " + failureDescription
+                        )
+                    case .constructed(let secondaryTestViewerCoordinator):
+                        try serviceLifetime.install(
+                            secondaryTestViewerCoordinator:
+                                secondaryTestViewerCoordinator
+                        )
+                        let outcome = try await startOptionalSecondaryTestViewer(
+                            start: {
+                                try await runUntilProcessTermination(
+                                    terminationSignals:
+                                        activeTerminationSignalMonitor?.events
+                                ) {
+                                    try await secondaryTestViewerCoordinator.start()
+                                }
+                            },
+                            stop: {
+                                await secondaryTestViewerCoordinator.stop()
+                            }
+                        )
+                        switch outcome {
+                        case .started(let invitationCode):
+                            // Like primary bootstrap, this is the sole intentional presentation
+                            // of the secret. The secondary owner never logs or persists it.
+                            print("")
+                            print("Secondary one-time test viewer code")
+                            print("-----------------------------------")
+                            print(invitationCode)
+                            print("Enter this code on the secondary iPhone before it expires.")
+                            print("")
+                            fflush(stdout)
+                        case .unavailable(let failureDescription):
+                            logger.error(
+                                "Secondary test viewer is unavailable; the primary paired host " +
+                                    "remains active: " + failureDescription
+                            )
+                        }
+                        try activeTerminationSignalMonitor?.throwIfSignaled()
+                        try serviceLifetime.requireValid()
+                    }
                 }
             } else {
                 worldwideHostCoordinator = nil
@@ -560,6 +642,40 @@ struct CaptureServerMain {
                     }
                 }
             }
+        }
+    }
+
+    /// Contains optional sidecar construction (including invitation RNG failure) so it cannot
+    /// prevent an already-started paired primary from remaining available.
+    @MainActor
+    static func constructOptionalSecondaryTestViewer<Viewer>(
+        _ construct: () throws -> Viewer
+    ) -> SecondaryTestViewerConstructionOutcome<Viewer> {
+        do {
+            return .constructed(try construct())
+        } catch {
+            return .unavailable(error.localizedDescription)
+        }
+    }
+
+    /// Contains an optional sidecar startup failure so it cannot tear down the paired primary.
+    /// Process cancellation and unconfirmed native capture teardown remain process-fatal.
+    @MainActor
+    static func startOptionalSecondaryTestViewer(
+        start: () async throws -> String,
+        stop: () async -> Bool
+    ) async throws -> SecondaryTestViewerStartupOutcome {
+        do {
+            return .started(try await start())
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let termination as ProcessTerminationRequest {
+            throw termination
+        } catch {
+            guard await stop() else {
+                throw CaptureServerMainError.nativeCaptureTeardownUnconfirmed
+            }
+            return .unavailable(error.localizedDescription)
         }
     }
 
@@ -807,6 +923,18 @@ struct CaptureServerMain {
             }
         }
     }
+}
+
+/// Optional sidecar startup either yields its one-time capability or a contained failure.
+enum SecondaryTestViewerStartupOutcome: Equatable, Sendable {
+    case started(String)
+    case unavailable(String)
+}
+
+/// Construction is kept separate from startup because invitation generation itself may fail.
+enum SecondaryTestViewerConstructionOutcome<Viewer> {
+    case constructed(Viewer)
+    case unavailable(String)
 }
 
 /// First terminal condition observed while running worldwide-only mode.

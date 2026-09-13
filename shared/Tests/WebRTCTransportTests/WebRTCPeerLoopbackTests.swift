@@ -389,6 +389,254 @@ private func makeScreenClientDiagnosticsHeartbeat(
 }
 
 final class WebRTCPeerLoopbackTests: XCTestCase {
+    func testVideoControlOnlyHostBuildsNoAudioTopologyOrSDPSection() async throws {
+        let host = try WebRTCPeer(
+            configuration: WebRTCTransportConfiguration(
+                role: .host,
+                iceServers: [],
+                mediaTopology: .videoControlOnly,
+                supportsAudioClientDiagnostics: false
+            )
+        )
+        let viewer = try WebRTCPeer(
+            configuration: WebRTCTransportConfiguration(
+                role: .viewer,
+                iceServers: [],
+                mediaTopology: .videoControlOnly,
+                supportsAudioClientDiagnostics: false
+            )
+        )
+        defer {
+            Task {
+                await host.close(reason: .normal)
+                await viewer.close(reason: .normal)
+            }
+        }
+
+        XCTAssertNil(host.externalAudioCapturer)
+        let usesCustomAudioDevice = await host
+            .usesCustomMacStereoAudioDeviceForTesting
+        let microphoneReceiverID = await host
+            .iPhoneMicrophoneReceiverIDForTesting
+        XCTAssertFalse(usesCustomAudioDevice)
+        XCTAssertNil(microphoneReceiverID)
+
+        let offerTask = Task<String?, Never> {
+            for await event in host.events {
+                if case .outboundSignal(.offer(let sdp)) = event {
+                    return sdp
+                }
+            }
+            return nil
+        }
+        try await host.start()
+        let offeredValue = await offerTask.value
+        let offer = try XCTUnwrap(offeredValue)
+
+        XCTAssertTrue(mediaSections(kind: "audio", in: offer).isEmpty)
+        XCTAssertEqual(mediaSections(kind: "video", in: offer).count, 1)
+        XCTAssertFalse(MacHostedCallEvidenceSDP.peerSupportsEvidence(in: offer))
+
+        let answerTask = Task<String?, Never> {
+            for await event in viewer.events {
+                if case .outboundSignal(.answer(let sdp)) = event {
+                    return sdp
+                }
+            }
+            return nil
+        }
+        try await viewer.receive(.offer(sdp: offer))
+        let answerValue = await answerTask.value
+        let answer = try XCTUnwrap(answerValue)
+
+        XCTAssertTrue(mediaSections(kind: "audio", in: answer).isEmpty)
+        XCTAssertEqual(mediaSections(kind: "video", in: answer).count, 1)
+        XCTAssertFalse(MacHostedCallEvidenceSDP.peerSupportsEvidence(in: answer))
+    }
+
+    func testHeadlessViewerTaskLocalCannotAddAudioToRestrictedHost() async throws {
+        let host = try WebRTCPeer.makeHeadlessViewerForTesting(
+            configuration: WebRTCTransportConfiguration(
+                role: .host,
+                iceServers: [],
+                mediaTopology: .videoControlOnly,
+                supportsAudioClientDiagnostics: false
+            )
+        )
+        defer {
+            Task { await host.close(reason: .normal) }
+        }
+
+        let usesCustomAudioDevice = await host
+            .usesCustomMacStereoAudioDeviceForTesting
+        let microphoneReceiverID = await host
+            .iPhoneMicrophoneReceiverIDForTesting
+        XCTAssertFalse(usesCustomAudioDevice)
+        XCTAssertNil(host.externalAudioCapturer)
+        XCTAssertNil(microphoneReceiverID)
+    }
+
+    func testVideoControlOnlyViewerRejectsEveryAudioLineEndingBeforeNativeSDP()
+        async throws {
+        let viewer = try WebRTCPeer(
+            configuration: WebRTCTransportConfiguration(
+                role: .viewer,
+                iceServers: [],
+                mediaTopology: .videoControlOnly,
+                supportsAudioClientDiagnostics: false
+            )
+        )
+        defer {
+            Task { await viewer.close(reason: .normal) }
+        }
+
+        for offer in [
+            "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n",
+            "v=0\nm=audio 9 UDP/TLS/RTP/SAVPF 111\n",
+            "v=0\rm=audio 9 UDP/TLS/RTP/SAVPF 111\r",
+            "v=0\r\nM=AUDIO 9 UDP/TLS/RTP/SAVPF 111\r\n"
+        ] {
+            do {
+                try await viewer.receive(.offer(sdp: offer))
+                XCTFail("A restricted viewer must reject every audio media section")
+            } catch let error as WebRTCTransportError {
+                guard case .invalidSessionDescription = error else {
+                    return XCTFail("Unexpected restricted-viewer error: \(error)")
+                }
+            }
+            let remoteDescriptionIsSet = await viewer
+                .remoteDescriptionIsSetForTesting
+            XCTAssertFalse(
+                remoteDescriptionIsSet,
+                "Audio SDP must be rejected before native remote-description application."
+            )
+        }
+    }
+
+    func testSupersededInputDecisionSendsViewOnlyActiveWithoutDisablingVideo()
+        async throws {
+        let host = try WebRTCPeer(
+            configuration: WebRTCTransportConfiguration(
+                role: .host,
+                iceServers: [],
+                mediaTopology: .videoControlOnly,
+                supportsAudioClientDiagnostics: false
+            )
+        )
+        let viewer = try WebRTCPeer(
+            configuration: WebRTCTransportConfiguration(
+                role: .viewer,
+                iceServers: [],
+                mediaTopology: .videoControlOnly,
+                supportsAudioClientDiagnostics: false
+            )
+        )
+        let recorder = LoopbackRecorder()
+        let expectations = LoopbackExpectations()
+        let hostForwarder = Task {
+            do {
+                for await event in host.events {
+                    for milestone in await recorder.observe(event, from: .host) {
+                        expectations.fulfill(milestone)
+                    }
+                    if case .outboundSignal(let payload) = event {
+                        for milestone in await recorder.recordEmitted(payload, from: .host) {
+                            expectations.fulfill(milestone)
+                        }
+                        try await viewer.handle(payload)
+                        for milestone in await recorder.recordDelivered(payload, from: .host) {
+                            expectations.fulfill(milestone)
+                        }
+                    }
+                }
+            } catch {
+                await recorder.recordForwardingError(error)
+            }
+        }
+        let viewerForwarder = Task {
+            do {
+                for await event in viewer.events {
+                    for milestone in await recorder.observe(event, from: .viewer) {
+                        expectations.fulfill(milestone)
+                    }
+                    if case .outboundSignal(let payload) = event {
+                        for milestone in await recorder.recordEmitted(payload, from: .viewer) {
+                            expectations.fulfill(milestone)
+                        }
+                        try await host.handle(payload)
+                        for milestone in await recorder.recordDelivered(payload, from: .viewer) {
+                            expectations.fulfill(milestone)
+                        }
+                    }
+                }
+            } catch {
+                await recorder.recordForwardingError(error)
+            }
+        }
+        defer {
+            hostForwarder.cancel()
+            viewerForwarder.cancel()
+            Task {
+                await host.close(reason: .normal)
+                await viewer.close(reason: .normal)
+            }
+        }
+
+        try await host.start()
+        await fulfillment(
+            of: [
+                expectations.hostConnected,
+                expectations.viewerConnected,
+                expectations.hostDataChannelOpen,
+                expectations.viewerDataChannelOpen,
+                expectations.remoteVideoTrack
+            ],
+            timeout: 8
+        )
+        let showID = try await viewer.setScreenVisible(true)
+        await fulfillment(of: [expectations.showRequestReceived], timeout: 3)
+
+        let candidateAuthorization = WebRTCInputAuthorization()
+        let candidateCapability = WebRTCInputCapability(
+            inputSessionID: UUID(),
+            screenRequestID: showID,
+            supportsPrimaryDrag: true,
+            supportsScroll: true
+        )
+        try await host.acknowledgeActiveControlRequestIfTransportHealthy(
+            id: showID,
+            authorization: WebRTCControlAuthorization(),
+            inputCapability: candidateCapability,
+            inputAuthorization: candidateAuthorization,
+            withFinalInputOwnershipCommit: { operation in
+                try operation(false)
+                candidateAuthorization.revoke()
+                return false
+            }
+        )
+        await fulfillment(of: [expectations.showAcknowledged], timeout: 3)
+
+        let snapshot = await recorder.snapshot()
+        XCTAssertEqual(
+            snapshot.controlAcknowledgements,
+            [WebRTCControlAcknowledgement(id: showID, state: .active)]
+        )
+        XCTAssertTrue(snapshot.viewerInputAuthorizations.isEmpty)
+        XCTAssertFalse(candidateAuthorization.isValid)
+        let encodingActivityValue = await host
+            .screenVideoEncodingActivityForTesting()
+        let encodingActivity = try XCTUnwrap(encodingActivityValue)
+        XCTAssertFalse(encodingActivity.isEmpty)
+        XCTAssertTrue(
+            encodingActivity.allSatisfy { $0 },
+            "A superseded controller must remain an active screen viewer."
+        )
+        XCTAssertTrue(
+            snapshot.forwardingErrors.isEmpty,
+            snapshot.forwardingErrors.joined(separator: "\n")
+        )
+    }
+
     func testScreenVideoEncodingLimitsApplyAtomicallyAndFailClosed() async throws {
         let host = try WebRTCPeer(
             configuration: WebRTCTransportConfiguration(

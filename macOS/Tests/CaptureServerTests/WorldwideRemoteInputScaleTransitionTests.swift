@@ -40,6 +40,63 @@ private actor DelayedFallbackAdaptationProbe {
 
 /// Locks the remote-input authorization boundary to the exact live screen-format generation.
 final class WorldwideRemoteInputScaleTransitionTests: XCTestCase {
+    func testSupersededPreparedInputKeepsSuccessfulActiveTransitionViewOnly() {
+        let capability = WebRTCInputCapability(
+            inputSessionID: UUID(),
+            screenRequestID: 73,
+            supportsPrimaryDrag: true,
+            supportsScroll: true
+        )
+        let authorization = WebRTCInputAuthorization()
+
+        XCTAssertTrue(
+            WorldwideScreenService.activeAcknowledgementInputStateIsCurrent(
+                preparedCapability: capability,
+                preparedAuthorization: authorization,
+                activeCapability: nil,
+                activeAuthorization: nil,
+                preparedActivationIsCommitted: false
+            ),
+            "Losing input ownership must preserve the healthy view-only screen transition."
+        )
+        XCTAssertTrue(
+            WorldwideScreenService.activeAcknowledgementInputStateIsCurrent(
+                preparedCapability: capability,
+                preparedAuthorization: authorization,
+                activeCapability: capability,
+                activeAuthorization: authorization,
+                preparedActivationIsCommitted: true
+            )
+        )
+        XCTAssertFalse(
+            WorldwideScreenService.activeAcknowledgementInputStateIsCurrent(
+                preparedCapability: capability,
+                preparedAuthorization: authorization,
+                activeCapability: capability,
+                activeAuthorization: authorization,
+                preparedActivationIsCommitted: false
+            )
+        )
+        XCTAssertFalse(
+            WorldwideScreenService.activeAcknowledgementInputStateIsCurrent(
+                preparedCapability: capability,
+                preparedAuthorization: authorization,
+                activeCapability: capability,
+                activeAuthorization: WebRTCInputAuthorization(),
+                preparedActivationIsCommitted: true
+            )
+        )
+        XCTAssertFalse(
+            WorldwideScreenService.activeAcknowledgementInputStateIsCurrent(
+                preparedCapability: capability,
+                preparedAuthorization: authorization,
+                activeCapability: capability,
+                activeAuthorization: nil,
+                preparedActivationIsCommitted: true
+            )
+        )
+    }
+
     func testPostResumeFreshnessFenceRejectsQueuedPreRestorationStatistics() {
         let beforeResumeSequence: UInt64 = 40
         let minimumPostResumeSequence: UInt64 = 41
@@ -926,7 +983,11 @@ final class WorldwideRemoteInputScaleTransitionTests: XCTestCase {
             sink.range(of: "let transition = lock.withLock")
         )
         let clearGeometry = try XCTUnwrap(
-            sink.range(of: "remoteInputController.updateScreenVideoFrameGeometry(nil)")
+            sink.range(
+                of: "remoteInputController.updateScreenVideoFrameGeometry(\n"
+                    + "            nil,\n"
+                    + "            ownerToken: remoteInputOwnerToken"
+            )
         )
         let revokeToken = try XCTUnwrap(
             sink.range(
@@ -1110,6 +1171,7 @@ final class WorldwideRemoteInputScaleTransitionTests: XCTestCase {
                 "authoritativeDisplayBounds: captureAuthoritativeDisplayBounds"
             )
         )
+        XCTAssertTrue(arm.contains("initialFrameGeometry: initialFrameGeometry"))
     }
 
     private func serviceSlice(after startMarker: String, before endMarker: String) throws -> String {

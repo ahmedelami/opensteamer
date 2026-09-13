@@ -32,6 +32,43 @@ struct BrowserView: View {
         }
     }
 
+    #if DEBUG
+    /// Starts the one-use raw-invitation path without entering the durable pairing coordinator.
+    /// The returned value remains saved until transport proves the host consumed the invitation.
+    @MainActor
+    static func startTemporaryTestViewer(
+        invitationCode: String,
+        endpoint: URL,
+        connect: (_ invitationCode: String, _ endpointOverride: String) -> Bool
+    ) -> String? {
+        let normalizedInvitation = invitationCode.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard !normalizedInvitation.isEmpty,
+              connect(normalizedInvitation, endpoint.absoluteString) else {
+            return nil
+        }
+        return normalizedInvitation
+    }
+
+    /// Consumes the saved one-time code only after this exact attempt reaches its host peer.
+    @MainActor
+    static func clearTemporaryTestViewerInvitationIfConsumed(
+        pendingInvitation: String?,
+        currentInvitation: String,
+        isPeerConnected: Bool,
+        clearInvitation: () -> Bool
+    ) -> Bool {
+        guard isPeerConnected,
+              let pendingInvitation,
+              currentInvitation.trimmingCharacters(in: .whitespacesAndNewlines)
+                == pendingInvitation else {
+            return false
+        }
+        return clearInvitation()
+    }
+    #endif
+
     static let savedPairUnavailableMessage =
         "Beluga couldn’t reach the saved paired Mac. The pairing remains saved securely on this iPhone. The Mac may be asleep, offline, or temporarily unavailable."
 
@@ -67,6 +104,7 @@ struct BrowserView: View {
     @State private var worldwidePreparationGeneration = UUID()
     @FocusState private var invitationCodeIsFocused: Bool
     #if DEBUG
+    @State private var temporaryViewerInvitationAwaitingConsumption: String?
     @AppStorage("debugWorldwideRendezvousEndpoint")
     private var debugWorldwideRendezvousEndpoint = "ws://127.0.0.1:8788"
     #endif
@@ -128,6 +166,7 @@ struct BrowserView: View {
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .keyboardType(.URL)
+                    .accessibilityIdentifier("debugWorldwideRendezvousEndpoint")
 
                 Text("Debug builds may override the bundled WSS endpoint. Plain ws:// is accepted only for loopback testing.")
                     .font(.caption)
@@ -244,6 +283,19 @@ struct BrowserView: View {
                 break
             }
         }
+        #if DEBUG
+        .onChange(of: worldwideViewModel.isPeerConnected) { _, isConnected in
+            guard Self.clearTemporaryTestViewerInvitationIfConsumed(
+                pendingInvitation: temporaryViewerInvitationAwaitingConsumption,
+                currentInvitation: trimmedInvitationCode,
+                isPeerConnected: isConnected,
+                clearInvitation: invitationCodeState.clearSavedCode
+            ) else { return }
+            temporaryViewerInvitationAwaitingConsumption = nil
+            showsInvitationCode = false
+            invitationCodeIsFocused = false
+        }
+        #endif
         .toolbar {
             Button {
                 viewModel.startBrowsing()
@@ -458,6 +510,28 @@ struct BrowserView: View {
         )
         .accessibilityIdentifier("connectWorldwide")
 
+        #if DEBUG
+        Button {
+            connectTemporaryTestViewer()
+        } label: {
+            Label("Connect Temporary Test Viewer", systemImage: "iphone.gen3")
+        }
+        .disabled(
+            trimmedInvitationCode.isEmpty
+                || worldwideViewModel.isConnecting
+                || worldwideViewModel.hasActiveSession
+                || worldwideConnection.isConnecting
+        )
+        .accessibilityIdentifier("connectTemporaryWorldwideViewer")
+        .accessibilityHint(
+            "Uses the one-time invitation above without saving a paired Mac."
+        )
+
+        Text("Connects this Debug app as a one-time second viewer without saving or changing a paired Mac.")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        #endif
+
         if let storageError = invitationCodeState.storageError {
             Label(storageError, systemImage: "exclamationmark.triangle")
                 .font(.caption)
@@ -654,6 +728,29 @@ struct BrowserView: View {
             }
         }
     }
+
+    #if DEBUG
+    private func connectTemporaryTestViewer() {
+        invitationCodeState.persistNow()
+        guard let endpoint = configuredWorldwideEndpoint() else {
+            worldwideConnection.reportConfigurationError(
+                "This build does not have a valid worldwide rendezvous endpoint."
+            )
+            return
+        }
+
+        temporaryViewerInvitationAwaitingConsumption = Self.startTemporaryTestViewer(
+            invitationCode: trimmedInvitationCode,
+            endpoint: endpoint,
+            connect: { invitation, endpointOverride in
+                worldwideViewModel.debugConnectTemporaryTestViewer(
+                    invitationCode: invitation,
+                    debugEndpointOverride: endpointOverride
+                )
+            }
+        )
+    }
+    #endif
 
     private func connectPairedWorldwide() {
         guard let endpoint = configuredWorldwideEndpoint() else {

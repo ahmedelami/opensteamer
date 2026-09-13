@@ -577,6 +577,7 @@ actor WorldwideHostCoordinator {
             maximumWidth: maximumWidth,
             framesPerSecond: framesPerSecond,
             maximumVideoBitrate: maximumVideoBitrate,
+            featureProfile: .fullPrimary,
             remoteInputController: remoteInputController,
             captureLifetime: captureLifetime,
             iPhoneMicrophoneForwardingPolicy:

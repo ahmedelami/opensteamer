@@ -131,6 +131,41 @@ final class CaptureServerOptionsTests: XCTestCase {
         XCTAssertFalse(options.lanEnabled)
     }
 
+    func testSecondaryTestViewerIsDisabledByDefault() throws {
+        let options = try CaptureServerOptions.parse(["CaptureServer"])
+
+        XCTAssertFalse(options.secondaryTestViewerEnabled)
+    }
+
+    func testSecondaryTestViewerRequiresWorldwideMode() {
+        XCTAssertThrowsError(
+            try CaptureServerOptions.parse([
+                "CaptureServer",
+                "--secondary-test-viewer",
+            ])
+        ) { error in
+            XCTAssertEqual(
+                error.localizedDescription,
+                "--secondary-test-viewer requires --worldwide"
+            )
+        }
+    }
+
+    func testSecondaryTestViewerUsesWorldwideSecurityDefaults() throws {
+        let options = try CaptureServerOptions.parse([
+            "CaptureServer",
+            "--worldwide",
+            "--rendezvous-url",
+            "wss://rendezvous.example.invalid",
+            "--secondary-test-viewer",
+        ], environment: [:])
+
+        XCTAssertTrue(options.worldwideEnabled)
+        XCTAssertTrue(options.secondaryTestViewerEnabled)
+        XCTAssertFalse(options.lanEnabled)
+        XCTAssertNil(options.duration)
+    }
+
     func testWorldwideModeRequiresExplicitRendezvousConfiguration() {
         XCTAssertThrowsError(
             try CaptureServerOptions.parse(

@@ -17044,6 +17044,51 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         XCTAssertFalse(viewModel.hasActiveSession)
     }
 
+    func testTemporaryDebugViewerNeverAcquiresLocalAudioLifecycle()
+        async throws {
+        let fixture = makeFixture()
+        let viewModel = WorldwideSessionViewModel(
+            audioLifecycle: fixture.controller
+        )
+        viewModel.debugInstallSessionRunner {}
+        viewModel.debugInstallStatisticsStarter { _ in }
+        let invitation = try RemoteInvitationCode.generate()
+
+        XCTAssertTrue(
+            viewModel.debugConnectTemporaryTestViewer(
+                invitationCode: invitation.exportedCode,
+                debugEndpointOverride: "ws://127.0.0.1:9"
+            )
+        )
+        XCTAssertEqual(
+            viewModel.debugSessionMediaTopologyForTests,
+            .videoControlOnly
+        )
+        XCTAssertEqual(fixture.playback.activateCount, 0)
+        XCTAssertEqual(fixture.events.startCount, 0)
+        XCTAssertFalse(viewModel.canResumeAudioPlayback)
+        XCTAssertFalse(viewModel.canToggleIPhoneMicrophone)
+
+        try await viewModel.debugDeliverReadyForRaceTests()
+        let peer = try XCTUnwrap(viewModel.debugCurrentPeerForTests)
+        let peerTopology = await peer.mediaTopologyForTesting
+        let usesCustomAudioTransactionDevice = await peer
+            .usesCustomIOSAudioTransactionDeviceForTesting
+        let hasLocalMicrophoneTrack = await peer
+            .hasLocalIPhoneMicrophoneTrackForTesting
+        XCTAssertEqual(peerTopology, .videoControlOnly)
+        XCTAssertFalse(usesCustomAudioTransactionDevice)
+        XCTAssertFalse(hasLocalMicrophoneTrack)
+        XCTAssertNil(peer.iOSAudioTransactionDeviceBinding)
+
+        viewModel.disconnect()
+        let freshPreparationWasAdmitted = await viewModel
+            .admitFreshConnectionPreparation()
+        XCTAssertTrue(freshPreparationWasAdmitted)
+        XCTAssertEqual(fixture.playback.deactivateCount, 0)
+        XCTAssertEqual(fixture.events.stopCount, 0)
+    }
+
     func testReplacementConnectionWaitsForRetiredPeerCloseBeforeAudioActivation() async throws {
         let fixture = makeFixture()
         let viewModel = WorldwideSessionViewModel(
